@@ -3,6 +3,7 @@ import time
 from typing import Dict, List
 import os
 
+
 import numpy as np
 import pandas as pd
 import torch
@@ -43,6 +44,7 @@ def load_network(inp_file: str):
         edges.append([j, i])
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
     return wn, node_to_index, wn.pump_name_list, edge_index
+
 
 
 def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate.pth") -> GNNSurrogate:
