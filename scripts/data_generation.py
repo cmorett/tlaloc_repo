@@ -75,10 +75,7 @@ test_results_list  = [results_list[i] for i in test_idx]
 # Then your X_train, Y_train come from train_results_list, etc.
 # And `test_results_list` now exists.
 
-
-# =============================================================================
 # Now extract features (X) and labels (Y) from each sim_results in results_list
-# =============================================================================
 
 X_list = []  # input features for each time‐step sample
 Y_list = []  # target labels for each time‐step sample
@@ -122,12 +119,6 @@ for sim_results in results_list:
             c_next = quality_array[i + 1, idx]
             out_nodes.append([p_next, c_next])
         Y_list.append(np.array(out_nodes))
-
-
-for idx, arr in enumerate(X_list):
-    print(f"Index {idx}: arr.shape = {arr.shape}, arr.dtype = {arr.dtype}")
-    assert arr.dtype in (np.float32, np.float64)
-    assert arr.ndim == 2 and arr.shape[1] == 4
 
 
 for arr in X_list:
