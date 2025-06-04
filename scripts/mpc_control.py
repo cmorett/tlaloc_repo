@@ -1,6 +1,8 @@
 import argparse
 import time
 from typing import Dict, List
+import os
+
 
 import numpy as np
 import pandas as pd
@@ -44,10 +46,28 @@ def load_network(inp_file: str):
     return wn, node_to_index, wn.pump_name_list, edge_index
 
 
-def load_surrogate_model(device: torch.device) -> GNNSurrogate:
-    """Load trained GNN surrogate weights."""
+
+def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate.pth") -> GNNSurrogate:
+    """Load trained GNN surrogate weights.
+
+    Parameters
+    ----------
+    device : torch.device
+        Device to map the model to.
+    path : str, optional
+        Location of the saved state dict, by default ``models/gnn_surrogate.pth``.
+
+    Returns
+    -------
+    GNNSurrogate
+        Loaded surrogate model set to eval mode.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"{path} not found. Run train_gnn.py to generate the surrogate weights."
+        )
     model = GNNSurrogate(in_dim=4, hidden_dim=64, out_dim=2).to(device)
-    state = torch.load("models/gnn_surrogate.pth", map_location=device)
+    state = torch.load(path, map_location=device)
     model.load_state_dict(state)
     model.eval()
     return model
@@ -213,7 +233,11 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     wn, node_to_index, pump_names, edge_index = load_network("CTown.inp")
     edge_index = edge_index.to(device)
-    model = load_surrogate_model(device)
+    try:
+        model = load_surrogate_model(device)
+    except FileNotFoundError as e:
+        print(e)
+        return
 
     simulate_closed_loop(
         wn, model, edge_index, args.horizon, args.iterations, node_to_index, pump_names, device
