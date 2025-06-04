@@ -4,11 +4,17 @@ A GNN, MPC-gradient based, optimizer for EPANET water systems
 
 ## Training
 
-The repository provides a simple training script `scripts/train_gnn.py` which expects
-feature and label data saved as NumPy arrays. Each feature entry should be a
-Python dictionary containing `edge_index` and `node_features` arrays. Because the
-arrays are stored with Python objects, the script loads them using
-`allow_pickle=True`.
+The repository provides a simple training script `scripts/train_gnn.py` which
+expects feature and label data saved as NumPy arrays. Two dataset formats are
+supported:
+
+1. **Dictionary format** – each entry of ``X`` is a dictionary containing the
+   graph ``edge_index`` and a ``node_features`` array.
+2. **Matrix format** – ``X`` is an array of node feature matrices and a shared
+   ``edge_index`` array is stored separately.
+
+The script automatically detects which format is provided and loads the data
+accordingly.
 
 Example usage:
 
