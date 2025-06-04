@@ -1,10 +1,12 @@
 import argparse
+
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch_geometric.data import Data, DataLoader
 from torch_geometric.nn import GCNConv
-import torch.nn.functional as F
+
 
 class SimpleGCN(nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels):
@@ -19,6 +21,7 @@ class SimpleGCN(nn.Module):
         x = self.conv2(x, edge_index)
         return F.log_softmax(x, dim=1)
 
+
 def load_dataset(x_path: str, y_path: str):
     """Load graph data saved as numpy object arrays.
 
@@ -30,10 +33,13 @@ def load_dataset(x_path: str, y_path: str):
     data_list = []
     for graph_dict, label in zip(X, y):
         edge_index = torch.tensor(graph_dict['edge_index'], dtype=torch.long)
-        node_feat = torch.tensor(graph_dict['node_features'], dtype=torch.float)
+        node_feat = torch.tensor(
+            graph_dict['node_features'], dtype=torch.float
+        )
         data = Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
         data_list.append(data)
     return data_list
+
 
 def train(model, loader, optimizer, device):
     model.train()
@@ -71,16 +77,59 @@ def main(args: argparse.Namespace):
     torch.save(model.state_dict(), args.output)
     print(f"Model saved to {args.output}")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a simple GCN model")
-    parser.add_argument("--x-path", default="X_train.npy", help="Path to graph feature file")
-    parser.add_argument("--y-path", default="y_train.npy", help="Path to label file")
-    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
-    parser.add_argument("--batch-size", type=int, default=32, help="Training batch size")
-    parser.add_argument("--hidden-dim", type=int, default=64, help="Hidden dimension")
-    parser.add_argument("--num-classes", type=int, default=2, help="Number of output classes")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--log-every", type=int, default=10, help="Log every n epochs")
-    parser.add_argument("--output", default="model.pt", help="Output model file")
+    parser.add_argument(
+        "--x-path",
+        default="X_train.npy",
+        help="Path to graph feature file",
+    )
+    parser.add_argument(
+        "--y-path",
+        default="y_train.npy",
+        help="Path to label file",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=50,
+        help="Number of training epochs",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help="Training batch size",
+    )
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=64,
+        help="Hidden dimension",
+    )
+    parser.add_argument(
+        "--num-classes",
+        type=int,
+        default=2,
+        help="Number of output classes",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-3,
+        help="Learning rate",
+    )
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=10,
+        help="Log every n epochs",
+    )
+    parser.add_argument(
+        "--output",
+        default="model.pt",
+        help="Output model file",
+    )
     args = parser.parse_args()
     main(args)
