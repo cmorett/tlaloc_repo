@@ -75,7 +75,6 @@ test_results_list  = [results_list[i] for i in test_idx]
 # Then your X_train, Y_train come from train_results_list, etc.
 # And `test_results_list` now exists.
 
-# Now extract features (X) and labels (Y) from each sim_results in results_list
 
 X_list = []  # input features for each time‐step sample
 Y_list = []  # target labels for each time‐step sample
