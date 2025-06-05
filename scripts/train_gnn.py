@@ -22,22 +22,45 @@ class SimpleGCN(nn.Module):
         return F.log_softmax(x, dim=1)
 
 
-def load_dataset(x_path: str, y_path: str):
-    """Load graph data saved as numpy object arrays.
+def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.npy"):
+    """Load training data.
 
-    Each entry of ``X`` should be a dictionary containing ``edge_index`` and
-    ``node_features`` arrays.
+    The function supports two dataset layouts:
+
+    1. **Dictionary format** – each element of ``X`` is a dictionary containing
+       ``edge_index`` and ``node_features`` arrays.
+    2. **Matrix format** – ``X`` is an array of node feature matrices while a
+       shared ``edge_index`` array is stored separately.
     """
+
     X = np.load(x_path, allow_pickle=True)
     y = np.load(y_path, allow_pickle=True)
     data_list = []
-    for graph_dict, label in zip(X, y):
-        edge_index = torch.tensor(graph_dict['edge_index'], dtype=torch.long)
-        node_feat = torch.tensor(
-            graph_dict['node_features'], dtype=torch.float
-        )
-        data = Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
-        data_list.append(data)
+
+    # Detect whether the first entry is a dictionary (object array) or a plain
+    # matrix. ``np.ndarray`` with ``dtype=object`` will require calling
+    # ``item()`` to obtain the underlying dictionary.
+    first_elem = X[0]
+    if isinstance(first_elem, dict) or (
+        isinstance(first_elem, np.ndarray) and first_elem.dtype == object
+    ):
+        for graph_dict, label in zip(X, y):
+            d = graph_dict if isinstance(graph_dict, dict) else graph_dict.item()
+            edge_index = torch.tensor(d["edge_index"], dtype=torch.long)
+            node_feat = torch.tensor(d["node_features"], dtype=torch.float32)
+            data_list.append(
+                Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
+            )
+    else:
+        # ``X`` already contains node feature matrices. Load the shared
+        # ``edge_index`` from ``edge_index_path``.
+        edge_index = torch.tensor(np.load(edge_index_path), dtype=torch.long)
+        for node_feat, label in zip(X, y):
+            node_feat = torch.tensor(node_feat, dtype=torch.float32)
+            data_list.append(
+                Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
+            )
+
     return data_list
 
 
@@ -56,7 +79,7 @@ def train(model, loader, optimizer, device):
 
 def main(args: argparse.Namespace):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    data_list = load_dataset(args.x_path, args.y_path)
+    data_list = load_dataset(args.x_path, args.y_path, args.edge_index_path)
     loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
 
     sample = data_list[0]
@@ -88,6 +111,11 @@ if __name__ == "__main__":
         "--y-path",
         default="y_train.npy",
         help="Path to label file",
+    )
+    parser.add_argument(
+        "--edge-index-path",
+        default="edge_index.npy",
+        help="Path to edge index file (used with matrix-format datasets)",
     )
     parser.add_argument(
         "--epochs",
