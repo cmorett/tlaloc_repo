@@ -37,13 +37,19 @@ def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.np
     y = np.load(y_path, allow_pickle=True)
     data_list = []
 
-    # Detect whether the first entry is a dictionary (object array) or a plain
-    # matrix. ``np.ndarray`` with ``dtype=object`` will require calling
-    # ``item()`` to obtain the underlying dictionary.
+    # Detect whether each element is a dictionary or a matrix of node features.
+    # ``np.save`` often wraps objects in 0-d arrays of ``dtype=object``. Those
+    # require calling ``item()`` to retrieve the underlying Python object.
     first_elem = X[0]
-    if isinstance(first_elem, dict) or (
-        isinstance(first_elem, np.ndarray) and first_elem.dtype == object
-    ):
+    is_dict = False
+    if isinstance(first_elem, dict):
+        is_dict = True
+    elif isinstance(first_elem, np.ndarray) and first_elem.ndim == 0:
+        maybe_dict = first_elem.item()
+        if isinstance(maybe_dict, dict):
+            is_dict = True
+
+    if is_dict:
         for graph_dict, label in zip(X, y):
             d = graph_dict if isinstance(graph_dict, dict) else graph_dict.item()
             edge_index = torch.tensor(d["edge_index"], dtype=torch.long)
@@ -56,6 +62,8 @@ def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.np
         # ``edge_index`` from ``edge_index_path``.
         edge_index = torch.tensor(np.load(edge_index_path), dtype=torch.long)
         for node_feat, label in zip(X, y):
+            if isinstance(node_feat, np.ndarray):
+                node_feat = node_feat.astype(np.float32)
             node_feat = torch.tensor(node_feat, dtype=torch.float32)
             data_list.append(
                 Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
