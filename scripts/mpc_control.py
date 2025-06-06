@@ -85,9 +85,18 @@ def prepare_node_features(
     pump_names: List[str],
     device: torch.device,
 ) -> torch.Tensor:
-    """Build node features incorporating pump control vector."""
+    """Build node features for the surrogate model.
+
+    The original training data only contained four features per node
+    (base demand, current pressure, chlorine and elevation).  Including
+    pump control values here therefore leads to a mismatch with the
+    surrogate model loaded from disk which expects exactly four input
+    channels.  To avoid runtime errors we ignore ``pump_controls`` and
+    construct feature vectors with the same four-dimensional layout used
+    during training.
+    """
     num_nodes = len(wn.node_name_list)
-    feats = np.zeros((num_nodes, 5), dtype=np.float32)
+    feats = np.zeros((num_nodes, 4), dtype=np.float32)
     for name, idx in node_to_index.items():
         node = wn.get_node(name)
         if name in wn.junction_name_list:
@@ -102,11 +111,7 @@ def prepare_node_features(
         feats[idx, 1] = pressures.get(name, 0.0)
         feats[idx, 2] = chlorine.get(name, 0.0)
         feats[idx, 3] = elev
-    # Pump control feature goes to end node of each pump
-    for k, pump in enumerate(pump_names):
-        end_node = wn.get_link(pump).end_node.name
-        idx = node_to_index[end_node]
-        feats[idx, 4] += float(pump_controls[k].item())
+    # ``pump_controls`` is ignored since the model was trained without it.
     return torch.tensor(feats, dtype=torch.float32, device=device)
 
 
