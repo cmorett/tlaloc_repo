@@ -78,8 +78,11 @@ def build_dataset(
         quality_array = quality.values
         times = pressures.index
 
+        pump_status = sim_results.link["status"][wn_template.pump_name_list].values
+
         for i in range(len(times) - 1):
             feat_nodes = []
+            controls = pump_status[i]
             for node in wn_template.node_name_list:
                 idx = pressures.columns.get_loc(node)
                 p_t = pressure_array[i, idx]
@@ -97,7 +100,9 @@ def build_dataset(
                 else:
                     elev = wn_template.get_node(node).head
 
-                feat_nodes.append([base_d, p_t, c_t, elev])
+                feat = [base_d, p_t, c_t, elev]
+                feat.extend(controls.tolist())
+                feat_nodes.append(feat)
             X_sample = np.array(feat_nodes, dtype=np.float64)
             X_list.append(X_sample)
 

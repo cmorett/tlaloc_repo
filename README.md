@@ -6,7 +6,11 @@ A GNN, MPC-gradient based, optimizer for EPANET water systems
 
 The repository provides a simple training script `scripts/train_gnn.py` which
 expects feature and label data saved in the `data/` directory as NumPy arrays.
-Two dataset formats are
+Each node feature vector has the layout
+``[base_demand, pressure, chlorine, elevation, pump_1, ..., pump_N]`` where the
+additional elements represent the speeds of all pumps in the network.  The
+helper script `scripts/data_generation.py` generates these arrays as well as the
+graph ``edge_index``.  Two dataset formats are
 supported:
 
 1. **Dictionary format** – each entry of ``X`` is a dictionary containing the
@@ -30,5 +34,17 @@ python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy 
 ```
 
 The trained model weights are saved to `models/gnn_surrogate.pth` by default.
+
+## Running MPC control
+
+Once the surrogate model is trained you can run gradient-based MPC using
+`scripts/mpc_control.py`:
+
+```bash
+python scripts/mpc_control.py --horizon 6 --iterations 50
+```
+
+This executes a 24‑hour closed loop simulation where pump actions are
+optimized at each hour.  Results are written to `data/mpc_history.csv`.
 
 I'll complete the README Later

@@ -35,8 +35,9 @@ def _prepare_features(
     wn: wntr.network.WaterNetworkModel,
     pressures: Dict[str, float],
     chlorine: Dict[str, float],
+    pump_controls: np.ndarray,
 ) -> torch.Tensor:
-    """Build 4-dimensional node features.
+    """Build node features including pump controls.
 
     Parameters
     ----------
@@ -48,10 +49,11 @@ def _prepare_features(
     Returns
     -------
     torch.Tensor
-        Tensor of shape ``[num_nodes, 4]`` with
-        [base_demand, pressure, chlorine, elevation].
+        Tensor of shape ``[num_nodes, 4 + num_pumps]`` with
+        [base_demand, pressure, chlorine, elevation, pump1, ...].
     """
 
+    num_pumps = len(pump_controls)
     feats = []
     for name in wn.node_name_list:
         node = wn.get_node(name)
@@ -73,9 +75,9 @@ def _prepare_features(
         if elev is None:
             elev = 0.0
 
-        feats.append(
-            [demand, pressures.get(name, 0.0), chlorine.get(name, 0.0), elev]
-        )
+        base = [demand, pressures.get(name, 0.0), chlorine.get(name, 0.0), elev]
+        base.extend(pump_controls.tolist())
+        feats.append(base)
     return torch.tensor(feats, dtype=torch.float32)
 
 
@@ -98,11 +100,14 @@ def validate_surrogate(
         for res in test_results:
             pressures_df = res.node["pressure"]
             chlorine_df = res.node["quality"]
+            pump_df = res.link["status"][wn.pump_name_list]
             times = pressures_df.index
+            pump_array = pump_df.values
             for i in range(len(times) - 1):
                 p = pressures_df.iloc[i].to_dict()
                 c = chlorine_df.iloc[i].to_dict()
-                x = _prepare_features(wn, p, c).to(device)
+                controls = pump_array[i]
+                x = _prepare_features(wn, p, c, controls).to(device)
                 pred = model(x, edge_index)
                 y_true_p = pressures_df.iloc[i + 1].to_numpy()
                 y_true_c = chlorine_df.iloc[i + 1].to_numpy()
