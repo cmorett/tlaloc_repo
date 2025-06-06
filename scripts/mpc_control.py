@@ -70,11 +70,14 @@ def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate
     GNNSurrogate
         Loaded surrogate model set to eval mode.
     """
-    if not os.path.exists(path):
+    # Resolve the path relative to the repository root so the script can be
+    # executed from any working directory.
+    full_path = os.path.join(REPO_ROOT, path)
+    if not os.path.exists(full_path):
         raise FileNotFoundError(
-            f"{path} not found. Run train_gnn.py to generate the surrogate weights."
+            f"{full_path} not found. Run train_gnn.py to generate the surrogate weights."
         )
-    state = torch.load(path, map_location=device)
+    state = torch.load(full_path, map_location=device)
     weight_key = "conv1.weight" if "conv1.weight" in state else "conv1.lin.weight"
     in_dim = state[weight_key].shape[1]
     model = GNNSurrogate(in_dim=in_dim, hidden_dim=64, out_dim=2).to(device)
@@ -257,12 +260,25 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    wn, node_to_index, pump_names, edge_index = load_network("CTown.inp")
+    inp_path = os.path.join(REPO_ROOT, "CTown.inp")
+    wn, node_to_index, pump_names, edge_index = load_network(inp_path)
     edge_index = edge_index.to(device)
     try:
         model = load_surrogate_model(device)
     except FileNotFoundError as e:
         print(e)
+        return
+
+    expected_in_dim = 4 + len(pump_names)
+    if model.conv1.in_channels != expected_in_dim:
+        print(
+            f"Loaded surrogate expects {model.conv1.in_channels} input features "
+            f"but the network requires {expected_in_dim}."
+        )
+        print(
+            "The provided model was likely trained without pump control inputs.\n"
+            "Re-train the surrogate using data generated with pump features."
+        )
         return
 
     simulate_closed_loop(

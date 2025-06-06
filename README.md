@@ -47,4 +47,10 @@ python scripts/mpc_control.py --horizon 6 --iterations 50
 This executes a 24‑hour closed loop simulation where pump actions are
 optimized at each hour.  Results are written to `data/mpc_history.csv`.
 
+**Important:** the surrogate must be trained on datasets that include pump
+control inputs (the additional features appended by `scripts/data_generation.py`).
+If a model trained with only four features (demand, pressure, chlorine and
+elevation) is loaded, `mpc_control.py` will exit early because pump actions would
+have no effect on the predictions.
+
 I'll complete the README Later
