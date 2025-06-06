@@ -11,6 +11,9 @@ from torch_geometric.nn import GCNConv
 import wntr
 
 
+DATA_DIR = "data"
+
+
 class GNNSurrogate(torch.nn.Module):
     """Two-layer GCN surrogate used for one-hour pressure/quality prediction."""
 
@@ -218,7 +221,8 @@ def simulate_closed_loop(
             f"Hour {hour}: minP={min_p:.2f}, minC={min_c:.3f}, energy={energy:.2f}, runtime={end-start:.2f}s"
         )
     df = pd.DataFrame(log)
-    df.to_csv("mpc_history.csv", index=False)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    df.to_csv(os.path.join(DATA_DIR, "mpc_history.csv"), index=False)
     return df
 
 
