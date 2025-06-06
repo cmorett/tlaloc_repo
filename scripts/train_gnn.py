@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -79,8 +80,11 @@ def train(model, loader, optimizer, device):
         total_loss += loss.item() * batch.num_graphs
     return total_loss / len(loader.dataset)
 
-DATA_DIR = "data"
-MODELS_DIR = "models"
+# Resolve important directories relative to the repository root so that training
+# can be launched from any location.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = REPO_ROOT / "data"
+MODELS_DIR = REPO_ROOT / "models"
 
 
 def main(args: argparse.Namespace):
