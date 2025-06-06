@@ -74,8 +74,9 @@ def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate
         raise FileNotFoundError(
             f"{path} not found. Run train_gnn.py to generate the surrogate weights."
         )
-    model = GNNSurrogate(in_dim=4, hidden_dim=64, out_dim=2).to(device)
     state = torch.load(path, map_location=device)
+    in_dim = state["conv1.weight"].shape[1]
+    model = GNNSurrogate(in_dim=in_dim, hidden_dim=64, out_dim=2).to(device)
     model.load_state_dict(state)
     model.eval()
     return model
@@ -90,18 +91,11 @@ def prepare_node_features(
     pump_names: List[str],
     device: torch.device,
 ) -> torch.Tensor:
-    """Build node features for the surrogate model.
+    """Build node features for the surrogate model including pump controls."""
 
-    The original training data only contained four features per node
-    (base demand, current pressure, chlorine and elevation).  Including
-    pump control values here therefore leads to a mismatch with the
-    surrogate model loaded from disk which expects exactly four input
-    channels.  To avoid runtime errors we ignore ``pump_controls`` and
-    construct feature vectors with the same four-dimensional layout used
-    during training.
-    """
     num_nodes = len(wn.node_name_list)
-    feats = np.zeros((num_nodes, 4), dtype=np.float32)
+    num_pumps = len(pump_names)
+    feats = np.zeros((num_nodes, 4 + num_pumps), dtype=np.float32)
     for name, idx in node_to_index.items():
         node = wn.get_node(name)
         if name in wn.junction_name_list:
@@ -112,11 +106,10 @@ def prepare_node_features(
             elev = node.elevation
         else:
             elev = node.head
-        feats[idx, 0] = demand
-        feats[idx, 1] = pressures.get(name, 0.0)
-        feats[idx, 2] = chlorine.get(name, 0.0)
-        feats[idx, 3] = elev
-    # ``pump_controls`` is ignored since the model was trained without it.
+        base = [demand, pressures.get(name, 0.0), chlorine.get(name, 0.0), elev]
+        base.extend(pump_controls.tolist())
+        feats[idx] = np.array(base, dtype=np.float32)
+
     return torch.tensor(feats, dtype=torch.float32, device=device)
 
 
