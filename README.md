@@ -17,11 +17,14 @@ The script automatically detects which format is provided and loads the data
 accordingly. When using the matrix format, supply the path to the shared
 ``edge_index`` file via ``--edge-index-path`` (defaults to ``edge_index.npy``).
 
+Training performs node-wise regression with mean squared error. Use
+``--output-dim`` to specify how many continuous targets are predicted per node.
+
 Example usage:
 
 ```bash
 python scripts/train_gnn.py --x-path X_train.npy --y-path y_train.npy \
-    --epochs 100 --batch-size 16 --hidden-dim 32 --num-classes 2 \
+    --epochs 100 --batch-size 16 --hidden-dim 32 --output-dim 2 \
     --edge-index-path edge_index.npy
 ```
 
