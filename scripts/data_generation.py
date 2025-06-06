@@ -30,19 +30,19 @@ def run_scenarios(inp_file: str, num_scenarios: int) -> List[wntr.sim.results.Si
 
         # Open all pumps and then randomly close ~30%
         for pn in wn.pump_name_list:
-            wn.get_link(pn).status = LinkStatus.Open
+            wn.get_link(pn).initial_status = LinkStatus.Open
         pumps_to_off = random.sample(
             wn.pump_name_list, max(1, int(0.3 * len(wn.pump_name_list)))
         )
         for pn in pumps_to_off:
-            wn.get_link(pn).status = LinkStatus.Closed
+            wn.get_link(pn).initial_status = LinkStatus.Closed
 
         sim = wntr.sim.EpanetSimulator(wn)
         results.append(sim.run_sim())
 
         # Ensure pumps are reopened (requirement 2)
         for pn in wn.pump_name_list:
-            wn.get_link(pn).status = LinkStatus.Open
+            wn.get_link(pn).initial_status = LinkStatus.Open
 
     return results
 
