@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import numpy as np
 import torch
@@ -78,6 +79,10 @@ def train(model, loader, optimizer, device):
         total_loss += loss.item() * batch.num_graphs
     return total_loss / len(loader.dataset)
 
+DATA_DIR = "data"
+MODELS_DIR = "models"
+
+
 def main(args: argparse.Namespace):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     data_list = load_dataset(args.x_path, args.y_path, args.edge_index_path)
@@ -97,6 +102,7 @@ def main(args: argparse.Namespace):
         if (epoch + 1) % args.log_every == 0:
             print(f"Epoch {epoch+1:03d} \t Loss: {loss:.4f}")
 
+    os.makedirs(os.path.dirname(args.output), exist_ok=True)
     torch.save(model.state_dict(), args.output)
     print(f"Model saved to {args.output}")
 
@@ -105,17 +111,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a simple GCN model")
     parser.add_argument(
         "--x-path",
-        default="X_train.npy",
+        default=os.path.join(DATA_DIR, "X_train.npy"),
         help="Path to graph feature file",
     )
     parser.add_argument(
         "--y-path",
-        default="y_train.npy",
+        default=os.path.join(DATA_DIR, "Y_train.npy"),
         help="Path to label file",
     )
     parser.add_argument(
         "--edge-index-path",
-        default="edge_index.npy",
+        default=os.path.join(DATA_DIR, "edge_index.npy"),
         help="Path to edge index file (used with matrix-format datasets)",
     )
     parser.add_argument(
@@ -156,7 +162,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output",
-        default="model.pt",
+        default=os.path.join(MODELS_DIR, "gnn_surrogate.pth"),
         help="Output model file",
     )
     args = parser.parse_args()

@@ -17,6 +17,8 @@ import pandas as pd
 import torch
 import wntr
 
+DATA_DIR = "data"
+
 from mpc_control import (
     load_network,
     load_surrogate_model,
@@ -125,7 +127,8 @@ def run_all_pumps_on(
             }
         )
     df = pd.DataFrame(log)
-    df.to_csv("baseline_all_pumps_on.csv", index=False)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    df.to_csv(os.path.join(DATA_DIR, "baseline_all_pumps_on.csv"), index=False)
     return df
 
 
@@ -169,7 +172,8 @@ def run_heuristic_baseline(
             }
         )
     df = pd.DataFrame(log)
-    df.to_csv("baseline_heuristic.csv", index=False)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    df.to_csv(os.path.join(DATA_DIR, "baseline_heuristic.csv"), index=False)
     return df
 
 
@@ -177,7 +181,8 @@ def aggregate_and_plot(results: Dict[str, pd.DataFrame]) -> None:
     """Save combined CSV and generate simple plots."""
 
     combined = pd.concat(results, names=["method", None])
-    combined.to_csv("all_results.csv")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    combined.to_csv(os.path.join(DATA_DIR, "all_results.csv"))
 
     plt.figure(figsize=(10, 4))
     for name, df in results.items():
@@ -186,7 +191,7 @@ def aggregate_and_plot(results: Dict[str, pd.DataFrame]) -> None:
     plt.ylabel("Minimum Pressure")
     plt.legend()
     plt.tight_layout()
-    plt.savefig("pressure_comparison.png")
+    plt.savefig(os.path.join(DATA_DIR, "pressure_comparison.png"))
     plt.close()
 
     plt.figure(figsize=(10, 4))
@@ -196,7 +201,7 @@ def aggregate_and_plot(results: Dict[str, pd.DataFrame]) -> None:
     plt.ylabel("Minimum Chlorine")
     plt.legend()
     plt.tight_layout()
-    plt.savefig("chlorine_comparison.png")
+    plt.savefig(os.path.join(DATA_DIR, "chlorine_comparison.png"))
     plt.close()
 
 
@@ -210,7 +215,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--test-pkl",
-        default="test_results_list.pkl",
+        default=os.path.join(DATA_DIR, "test_results_list.pkl"),
         help="Pickle file with test scenarios",
     )
     parser.add_argument("--horizon", type=int, default=6, help="MPC horizon")
