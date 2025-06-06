@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import pickle
+from pathlib import Path
 from typing import Dict, List
 
 import matplotlib.pyplot as plt
@@ -17,7 +18,11 @@ import pandas as pd
 import torch
 import wntr
 
-DATA_DIR = "data"
+# Compute absolute path to the repository's data directory so that results are
+# always written inside the project regardless of the current working
+# directory.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = REPO_ROOT / "data"
 
 from mpc_control import (
     load_network,
