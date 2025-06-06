@@ -1,5 +1,6 @@
 import random
 import pickle
+import os
 from typing import List, Tuple
 
 import numpy as np
@@ -127,6 +128,9 @@ def build_edge_index(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
     return edge_index
 
 
+DATA_DIR = "data"
+
+
 def main() -> None:
     inp_file = "CTown.inp"
     N = 10
@@ -141,19 +145,21 @@ def main() -> None:
 
     edge_index = build_edge_index(wn_template)
 
-    np.save("X_train.npy", X_train)
-    np.save("Y_train.npy", Y_train)
-    np.save("X_val.npy", X_val)
-    np.save("Y_val.npy", Y_val)
-    np.save("X_test.npy", X_test)
-    np.save("Y_test.npy", Y_test)
-    np.save("edge_index.npy", edge_index)
+    os.makedirs(DATA_DIR, exist_ok=True)
 
-    with open("train_results_list.pkl", "wb") as f:
+    np.save(os.path.join(DATA_DIR, "X_train.npy"), X_train)
+    np.save(os.path.join(DATA_DIR, "Y_train.npy"), Y_train)
+    np.save(os.path.join(DATA_DIR, "X_val.npy"), X_val)
+    np.save(os.path.join(DATA_DIR, "Y_val.npy"), Y_val)
+    np.save(os.path.join(DATA_DIR, "X_test.npy"), X_test)
+    np.save(os.path.join(DATA_DIR, "Y_test.npy"), Y_test)
+    np.save(os.path.join(DATA_DIR, "edge_index.npy"), edge_index)
+
+    with open(os.path.join(DATA_DIR, "train_results_list.pkl"), "wb") as f:
         pickle.dump(train_res, f)
-    with open("val_results_list.pkl", "wb") as f:
+    with open(os.path.join(DATA_DIR, "val_results_list.pkl"), "wb") as f:
         pickle.dump(val_res, f)
-    with open("test_results_list.pkl", "wb") as f:
+    with open(os.path.join(DATA_DIR, "test_results_list.pkl"), "wb") as f:
         pickle.dump(test_res, f)
 
 
