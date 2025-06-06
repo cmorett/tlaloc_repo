@@ -91,8 +91,15 @@ def prepare_node_features(
     node_to_index: Dict[str, int],
     pump_names: List[str],
     device: torch.device,
+    in_dim: int,
 ) -> torch.Tensor:
-    """Build node features for the surrogate model including pump controls."""
+    """Build node features for the surrogate model.
+
+    The function always constructs the full set of features, including pump
+    control inputs.  However, the loaded surrogate model might have been trained
+    without pump controls.  To accomodate both cases, the returned tensor is
+    truncated to ``in_dim`` columns.
+    """
 
     num_nodes = len(wn.node_name_list)
     num_pumps = len(pump_names)
@@ -111,7 +118,7 @@ def prepare_node_features(
         base.extend(pump_controls.tolist())
         feats[idx] = np.array(base, dtype=np.float32)
 
-    return torch.tensor(feats, dtype=torch.float32, device=device)
+    return torch.tensor(feats[:, :in_dim], dtype=torch.float32, device=device)
 
 
 def run_mpc_step(
@@ -138,7 +145,14 @@ def run_mpc_step(
         total_cost = torch.tensor(0.0, device=device)
         for t in range(horizon):
             x = prepare_node_features(
-                wn, cur_p, cur_c, u[t], node_to_index, pump_names, device
+                wn,
+                cur_p,
+                cur_c,
+                u[t],
+                node_to_index,
+                pump_names,
+                device,
+                model.conv1.in_channels,
             )
             pred = model(x, edge_index)
             pred_p = pred[:, 0]
