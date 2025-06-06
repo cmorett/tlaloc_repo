@@ -19,7 +19,8 @@ class SimpleGCN(nn.Module):
         x = self.conv1(x, edge_index)
         x = F.relu(x)
         x = self.conv2(x, edge_index)
-        return F.log_softmax(x, dim=1)
+        # Regression output (pressure, chlorine), no activation
+        return x
 
 
 def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.npy"):
@@ -71,7 +72,7 @@ def train(model, loader, optimizer, device):
         batch = batch.to(device)
         optimizer.zero_grad()
         out = model(batch)
-        loss = F.nll_loss(out.squeeze(), batch.y.long())
+        loss = F.mse_loss(out, batch.y.float())
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * batch.num_graphs
@@ -86,7 +87,7 @@ def main(args: argparse.Namespace):
     model = SimpleGCN(
         in_channels=sample.num_node_features,
         hidden_channels=args.hidden_dim,
-        out_channels=args.num_classes,
+        out_channels=args.output_dim,
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -136,10 +137,10 @@ if __name__ == "__main__":
         help="Hidden dimension",
     )
     parser.add_argument(
-        "--num-classes",
+        "--output-dim",
         type=int,
         default=2,
-        help="Number of output classes",
+        help="Dimension of the regression target",
     )
     parser.add_argument(
         "--lr",
