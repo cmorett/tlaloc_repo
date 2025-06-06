@@ -199,10 +199,14 @@ def simulate_closed_loop(
         for i, pump in enumerate(pump_names):
             link = wn.get_link(pump)
             if controls[i].item() < 0.5:
-                link.status = 0
+                # ``link.status`` is read-only in wntr.  The user must update
+                # ``initial_status`` before each simulation step instead.
+                link.initial_status = wntr.network.base.LinkStatus.Closed
             else:
-                link.status = 1
-                link.speed = float(controls[i].item())
+                link.initial_status = wntr.network.base.LinkStatus.Open
+                # update pump speed via ``base_speed`` which controls the
+                # speed timeseries base multiplier
+                link.base_speed = float(controls[i].item())
         sim = wntr.sim.EpanetSimulator(wn)
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
