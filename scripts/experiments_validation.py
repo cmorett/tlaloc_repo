@@ -54,11 +54,23 @@ def _prepare_features(
             demand = node.demand_timeseries_list[0].base_value
         else:
             demand = 0.0
+
         if name in wn.junction_name_list or name in wn.tank_name_list:
             elev = node.elevation
+        elif name in wn.reservoir_name_list:
+            # ``Reservoir`` objects store their hydraulic head in ``base_head``
+            # and expose ``head`` as ``None`` which previously caused a
+            # ``TypeError`` when converting features to a tensor.
+            elev = node.base_head
         else:
             elev = node.head
-        feats.append([demand, pressures.get(name, 0.0), chlorine.get(name, 0.0), elev])
+
+        if elev is None:
+            elev = 0.0
+
+        feats.append(
+            [demand, pressures.get(name, 0.0), chlorine.get(name, 0.0), elev]
+        )
     return torch.tensor(feats, dtype=torch.float32)
 
 
