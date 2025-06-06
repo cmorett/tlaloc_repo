@@ -75,7 +75,8 @@ def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate
             f"{path} not found. Run train_gnn.py to generate the surrogate weights."
         )
     state = torch.load(path, map_location=device)
-    in_dim = state["conv1.weight"].shape[1]
+    weight_key = "conv1.weight" if "conv1.weight" in state else "conv1.lin.weight"
+    in_dim = state[weight_key].shape[1]
     model = GNNSurrogate(in_dim=in_dim, hidden_dim=64, out_dim=2).to(device)
     model.load_state_dict(state)
     model.eval()
