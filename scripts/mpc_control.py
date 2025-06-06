@@ -2,6 +2,7 @@ import argparse
 import time
 from typing import Dict, List
 import os
+from pathlib import Path
 
 
 import numpy as np
@@ -11,7 +12,11 @@ from torch_geometric.nn import GCNConv
 import wntr
 
 
-DATA_DIR = "data"
+# Resolve the repository root so files are written relative to the project
+# instead of the current working directory.  This avoids permission errors
+# when the script is executed from another location.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = REPO_ROOT / "data"
 
 
 class GNNSurrogate(torch.nn.Module):

@@ -1,6 +1,7 @@
 import random
 import pickle
 import os
+from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
@@ -128,7 +129,11 @@ def build_edge_index(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
     return edge_index
 
 
-DATA_DIR = "data"
+# Use a fixed data directory inside the repository so generated files are
+# written in a predictable location regardless of where the script is launched
+# from.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = REPO_ROOT / "data"
 
 
 def main() -> None:
