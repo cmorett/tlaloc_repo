@@ -190,6 +190,47 @@ def run_mpc_step(
     return u.detach()
 
 
+def propagate_with_surrogate(
+    wn: wntr.network.WaterNetworkModel,
+    model: GNNSurrogate,
+    edge_index: torch.Tensor,
+    pressures: Dict[str, float],
+    chlorine: Dict[str, float],
+    control_seq: torch.Tensor,
+    node_to_index: Dict[str, int],
+    pump_names: List[str],
+    device: torch.device,
+) -> tuple[Dict[str, float], Dict[str, float]]:
+    """Propagate the network state using the surrogate model.
+
+    The current state ``pressures``/``chlorine`` is advanced through the
+    sequence of pump controls ``control_seq`` without running EPANET.  The
+    function returns dictionaries for the next pressures and chlorine levels
+    after applying the entire sequence.
+    """
+
+    cur_p = dict(pressures)
+    cur_c = dict(chlorine)
+    with torch.no_grad():
+        for u in control_seq:
+            x = prepare_node_features(
+                wn,
+                cur_p,
+                cur_c,
+                u,
+                node_to_index,
+                pump_names,
+                device,
+                model.conv1.in_channels,
+            )
+            pred = model(x, edge_index)
+            pred_p = pred[:, 0].tolist()
+            pred_c = pred[:, 1].tolist()
+            cur_p = {n: float(pred_p[i]) for i, n in enumerate(wn.node_name_list)}
+            cur_c = {n: float(pred_c[i]) for i, n in enumerate(wn.node_name_list)}
+    return cur_p, cur_c
+
+
 def simulate_closed_loop(
     wn: wntr.network.WaterNetworkModel,
     model: GNNSurrogate,
@@ -201,8 +242,15 @@ def simulate_closed_loop(
     device: torch.device,
     Pmin: float,
     Cmin: float,
+    feedback_interval: int = 24,
 ) -> pd.DataFrame:
-    """Run 24-hour closed-loop simulation applying MPC controls each hour."""
+    """Run 24-hour closed-loop MPC using the surrogate for fast updates.
+
+    EPANET is invoked only every ``feedback_interval`` hours (default once per
+    day) to obtain ground-truth measurements.  All intermediate steps update the
+    pressures and chlorine levels using the GNN surrogate which allows the loop
+    to run nearly instantly.
+    """
     log = []
     # obtain hydraulic state at time zero
     wn.options.time.duration = 0
@@ -236,14 +284,16 @@ def simulate_closed_loop(
             prev_u,
         )
         prev_u = u_opt.detach()
-        controls = u_opt[0]
+
+        # apply control to network object for consistency
+        first_controls = u_opt[0]
         for i, pump in enumerate(pump_names):
             link = wn.get_link(pump)
-            if controls[i].item() < 0.5:
+            if first_controls[i].item() < 0.5:
                 link.initial_status = wntr.network.base.LinkStatus.Closed
             else:
                 link.initial_status = wntr.network.base.LinkStatus.Open
-                link.base_speed = float(controls[i].item())
+                link.base_speed = float(first_controls[i].item())
 
         # update demands based on patterns and random variation
         t = hour * 3600
@@ -256,31 +306,32 @@ def simulate_closed_loop(
             noise = np.random.normal(1.0, 0.05)
             junc.demand_timeseries_list[0].base_value = base_demands[j] * mult * noise
 
-        wn.options.time.start_clocktime = t
-        wn.options.time.duration = 3600
-        wn.options.time.report_timestep = 3600
-        sim = wntr.sim.EpanetSimulator(wn)
-        results = sim.run_sim()
-        end = time.time()
-        pressures = results.node["pressure"].iloc[-1].to_dict()
-        chlorine = results.node["quality"].iloc[-1].to_dict()
-        heads = results.node["head"].iloc[-1].to_dict()
-
-        # update network state for next iteration
-        for name in wn.tank_name_list:
-            tank = wn.get_node(name)
-            tank.init_level = heads[name] - tank.elevation
-            tank.initial_quality = chlorine[name]
-        for name in wn.reservoir_name_list:
-            res = wn.get_node(name)
-            res.base_head = heads[name]
-            res.initial_quality = chlorine[name]
-        for name in wn.junction_name_list:
-            wn.get_node(name).initial_quality = chlorine[name]
-
-        flows = results.link["flowrate"].iloc[-1]
-        headloss = results.link["headloss"].iloc[-1]
-        energy = float(sum(9.81 * abs(headloss[p]) * flows[p] for p in pump_names))
+        if feedback_interval > 0 and hour % feedback_interval == 0 and hour != 0:
+            # Periodic ground truth synchronization using EPANET
+            wn.options.time.start_clocktime = t
+            wn.options.time.duration = 3600
+            wn.options.time.report_timestep = 3600
+            sim = wntr.sim.EpanetSimulator(wn)
+            results = sim.run_sim()
+            pressures = results.node["pressure"].iloc[-1].to_dict()
+            chlorine = results.node["quality"].iloc[-1].to_dict()
+            end = time.time()
+            energy = float('nan')
+        else:
+            # Fast surrogate-based propagation
+            pressures, chlorine = propagate_with_surrogate(
+                wn,
+                model,
+                edge_index,
+                pressures,
+                chlorine,
+                u_opt,
+                node_to_index,
+                pump_names,
+                device,
+            )
+            end = time.time()
+            energy = float('nan')
         min_p = min(
             pressures[n] for n in wn.junction_name_list + wn.tank_name_list
         )
@@ -313,6 +364,12 @@ def main():
     )
     parser.add_argument("--Pmin", type=float, default=20.0, help="Pressure threshold")
     parser.add_argument("--Cmin", type=float, default=0.2, help="Chlorine threshold")
+    parser.add_argument(
+        "--feedback-interval",
+        type=int,
+        default=24,
+        help="Hours between EPANET synchronizations",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -348,6 +405,7 @@ def main():
         device,
         args.Pmin,
         args.Cmin,
+        args.feedback_interval,
     )
 
 
