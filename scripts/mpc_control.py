@@ -1,6 +1,6 @@
 import argparse
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 import os
 from pathlib import Path
 
@@ -135,10 +135,23 @@ def run_mpc_step(
     node_to_index: Dict[str, int],
     pump_names: List[str],
     device: torch.device,
+    Pmin: float,
+    Cmin: float,
+    u_warm: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Optimize pump controls for one hour using gradient-based MPC."""
+    """Optimize pump controls for one hour using gradient-based MPC.
+
+    Parameters
+    ----------
+    u_warm : torch.Tensor, optional
+        Previous control sequence to warm start the optimization.
+    """
     num_pumps = len(pump_names)
-    u = torch.ones(horizon, num_pumps, device=device, requires_grad=True)
+    if u_warm is not None and u_warm.shape[0] >= horizon:
+        init = torch.cat([u_warm[1:horizon], u_warm[horizon - 1 : horizon]], dim=0)
+    else:
+        init = torch.ones(horizon, num_pumps, device=device)
+    u = init.clone().to(device).requires_grad_()
     optimizer = torch.optim.Adam([u], lr=0.05)
 
     for _ in range(iterations):
@@ -160,7 +173,6 @@ def run_mpc_step(
             pred = model(x, edge_index)
             pred_p = pred[:, 0]
             pred_c = pred[:, 1]
-            Pmin, Cmin = 20.0, 0.2
             w_p, w_c, w_e = 1.0, 1.0, 0.1
             psf = torch.clamp(Pmin - pred_p, min=0.0)
             csf = torch.clamp(Cmin - pred_c, min=0.0)
@@ -187,15 +199,24 @@ def simulate_closed_loop(
     node_to_index: Dict[str, int],
     pump_names: List[str],
     device: torch.device,
+    Pmin: float,
+    Cmin: float,
 ) -> pd.DataFrame:
     """Run 24-hour closed-loop simulation applying MPC controls each hour."""
     log = []
+    # obtain hydraulic state at time zero
+    wn.options.time.duration = 0
+    wn.options.time.report_timestep = 0
     sim = wntr.sim.EpanetSimulator(wn)
-    wn.options.time.duration = 3600
-    wn.options.time.report_timestep = 3600
     results = sim.run_sim()
-    pressures = results.node["pressure"].iloc[-1].to_dict()
-    chlorine = results.node["quality"].iloc[-1].to_dict()
+    pressures = results.node["pressure"].iloc[0].to_dict()
+    chlorine = results.node["quality"].iloc[0].to_dict()
+
+    base_demands = {
+        j: wn.get_node(j).demand_timeseries_list[0].base_value
+        for j in wn.junction_name_list
+    }
+    prev_u: Optional[torch.Tensor] = None
 
     for hour in range(24):
         start = time.time()
@@ -210,29 +231,58 @@ def simulate_closed_loop(
             node_to_index,
             pump_names,
             device,
+            Pmin,
+            Cmin,
+            prev_u,
         )
+        prev_u = u_opt.detach()
         controls = u_opt[0]
         for i, pump in enumerate(pump_names):
             link = wn.get_link(pump)
             if controls[i].item() < 0.5:
-                # ``link.status`` is read-only in wntr.  The user must update
-                # ``initial_status`` before each simulation step instead.
-                link.initial_status = wntr.network.base.LinkStatus.Closed
+                link.status = wntr.network.base.LinkStatus.Closed
             else:
-                link.initial_status = wntr.network.base.LinkStatus.Open
-                # update pump speed via ``base_speed`` which controls the
-                # speed timeseries base multiplier
+                link.status = wntr.network.base.LinkStatus.Open
                 link.base_speed = float(controls[i].item())
-        sim = wntr.sim.EpanetSimulator(wn)
+
+        # update demands based on patterns and random variation
+        t = hour * 3600
+        for j in wn.junction_name_list:
+            junc = wn.get_node(j)
+            mult = 1.0
+            pat_name = junc.demand_timeseries_list[0].pattern_name
+            if pat_name:
+                mult = wn.get_pattern(pat_name).at(t)
+            noise = np.random.normal(1.0, 0.05)
+            junc.demand_timeseries_list[0].base_value = base_demands[j] * mult * noise
+
+        wn.options.time.start_time = t
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
+        sim = wntr.sim.EpanetSimulator(wn)
         results = sim.run_sim()
         end = time.time()
         pressures = results.node["pressure"].iloc[-1].to_dict()
         chlorine = results.node["quality"].iloc[-1].to_dict()
+        heads = results.node["head"].iloc[-1].to_dict()
+
+        # update network state for next iteration
+        for name in wn.tank_name_list:
+            tank = wn.get_node(name)
+            tank.init_level = heads[name] - tank.elevation
+            tank.initial_quality = chlorine[name]
+        for name in wn.reservoir_name_list:
+            res = wn.get_node(name)
+            res.base_head = heads[name]
+            res.initial_quality = chlorine[name]
+        for name in wn.junction_name_list:
+            wn.get_node(name).initial_quality = chlorine[name]
+
+        flows = results.link["flowrate"].iloc[-1]
+        headloss = results.link["headloss"].iloc[-1]
+        energy = float(sum(9.81 * abs(headloss[p]) * flows[p] for p in pump_names))
         min_p = min(pressures.values())
         min_c = min(chlorine.values())
-        energy = float(torch.sum(controls ** 2).item())
         log.append(
             {
                 "time": hour,
@@ -257,6 +307,8 @@ def main():
     parser.add_argument(
         "--iterations", type=int, default=50, help="Gradient descent iterations"
     )
+    parser.add_argument("--Pmin", type=float, default=20.0, help="Pressure threshold")
+    parser.add_argument("--Cmin", type=float, default=0.2, help="Chlorine threshold")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -282,7 +334,16 @@ def main():
         return
 
     simulate_closed_loop(
-        wn, model, edge_index, args.horizon, args.iterations, node_to_index, pump_names, device
+        wn,
+        model,
+        edge_index,
+        args.horizon,
+        args.iterations,
+        node_to_index,
+        pump_names,
+        device,
+        args.Pmin,
+        args.Cmin,
     )
 
 
