@@ -1,6 +1,7 @@
 import random
 import pickle
 import os
+import argparse
 from pathlib import Path
 from typing import List, Tuple
 
@@ -142,8 +143,17 @@ DATA_DIR = REPO_ROOT / "data"
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--num-scenarios", type=int, default=10, help="Number of random scenarios to simulate")
+    parser.add_argument(
+        "--output-dir",
+        default=DATA_DIR,
+        help="Directory to store generated datasets",
+    )
+    args = parser.parse_args()
+
     inp_file = "CTown.inp"
-    N = 10
+    N = args.num_scenarios
 
     results = run_scenarios(inp_file, N)
     train_res, val_res, test_res = split_results(results)
@@ -155,21 +165,22 @@ def main() -> None:
 
     edge_index = build_edge_index(wn_template)
 
-    os.makedirs(DATA_DIR, exist_ok=True)
+    out_dir = Path(args.output_dir)
+    os.makedirs(out_dir, exist_ok=True)
 
-    np.save(os.path.join(DATA_DIR, "X_train.npy"), X_train)
-    np.save(os.path.join(DATA_DIR, "Y_train.npy"), Y_train)
-    np.save(os.path.join(DATA_DIR, "X_val.npy"), X_val)
-    np.save(os.path.join(DATA_DIR, "Y_val.npy"), Y_val)
-    np.save(os.path.join(DATA_DIR, "X_test.npy"), X_test)
-    np.save(os.path.join(DATA_DIR, "Y_test.npy"), Y_test)
-    np.save(os.path.join(DATA_DIR, "edge_index.npy"), edge_index)
+    np.save(os.path.join(out_dir, "X_train.npy"), X_train)
+    np.save(os.path.join(out_dir, "Y_train.npy"), Y_train)
+    np.save(os.path.join(out_dir, "X_val.npy"), X_val)
+    np.save(os.path.join(out_dir, "Y_val.npy"), Y_val)
+    np.save(os.path.join(out_dir, "X_test.npy"), X_test)
+    np.save(os.path.join(out_dir, "Y_test.npy"), Y_test)
+    np.save(os.path.join(out_dir, "edge_index.npy"), edge_index)
 
-    with open(os.path.join(DATA_DIR, "train_results_list.pkl"), "wb") as f:
+    with open(os.path.join(out_dir, "train_results_list.pkl"), "wb") as f:
         pickle.dump(train_res, f)
-    with open(os.path.join(DATA_DIR, "val_results_list.pkl"), "wb") as f:
+    with open(os.path.join(out_dir, "val_results_list.pkl"), "wb") as f:
         pickle.dump(val_res, f)
-    with open(os.path.join(DATA_DIR, "test_results_list.pkl"), "wb") as f:
+    with open(os.path.join(out_dir, "test_results_list.pkl"), "wb") as f:
         pickle.dump(test_res, f)
 
 

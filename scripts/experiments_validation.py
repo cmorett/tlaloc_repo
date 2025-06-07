@@ -242,6 +242,14 @@ def main() -> None:
     )
     parser.add_argument("--horizon", type=int, default=6, help="MPC horizon")
     parser.add_argument("--iterations", type=int, default=50, help="GD iterations")
+    parser.add_argument("--Pmin", type=float, default=20.0, help="Pressure threshold")
+    parser.add_argument("--Cmin", type=float, default=0.2, help="Chlorine threshold")
+    parser.add_argument(
+        "--feedback-interval",
+        type=int,
+        default=24,
+        help="Hours between EPANET synchronizations",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -269,6 +277,9 @@ def main() -> None:
         node_to_index,
         pump_names,
         device,
+        args.Pmin,
+        args.Cmin,
+        args.feedback_interval,
     )
 
     heur_df = run_heuristic_baseline(
