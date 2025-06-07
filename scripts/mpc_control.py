@@ -281,8 +281,12 @@ def simulate_closed_loop(
         flows = results.link["flowrate"].iloc[-1]
         headloss = results.link["headloss"].iloc[-1]
         energy = float(sum(9.81 * abs(headloss[p]) * flows[p] for p in pump_names))
-        min_p = min(pressures.values())
-        min_c = min(chlorine.values())
+        min_p = min(
+            pressures[n] for n in wn.junction_name_list + wn.tank_name_list
+        )
+        min_c = min(
+            chlorine[n] for n in wn.junction_name_list + wn.tank_name_list
+        )
         log.append(
             {
                 "time": hour,

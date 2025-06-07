@@ -1167,9 +1167,11 @@ LINK          PU11 CLOSED IF              NODE          T7            ABOVE     
 
 [QUALITY]
 ;Node            	InitQual
+R1 1.0
 
 [SOURCES]
 ;Node            	Type        	Quality     	Pattern
+R1 SETPOINT 1.0
 
 [REACTIONS]
 ;Type     	Pipe/Tank       	Coefficient
