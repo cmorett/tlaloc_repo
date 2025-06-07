@@ -240,9 +240,9 @@ def simulate_closed_loop(
         for i, pump in enumerate(pump_names):
             link = wn.get_link(pump)
             if controls[i].item() < 0.5:
-                link.status = wntr.network.base.LinkStatus.Closed
+                link.initial_status = wntr.network.base.LinkStatus.Closed
             else:
-                link.status = wntr.network.base.LinkStatus.Open
+                link.initial_status = wntr.network.base.LinkStatus.Open
                 link.base_speed = float(controls[i].item())
 
         # update demands based on patterns and random variation
