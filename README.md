@@ -22,15 +22,18 @@ The script automatically detects which format is provided and loads the data
 accordingly. When using the matrix format, supply the path to the shared
 ``edge_index`` file via ``--edge-index-path`` (defaults to ``data/edge_index.npy``).
 
-Training performs node-wise regression with mean squared error. Use
-``--output-dim`` to specify how many continuous targets are predicted per node.
+Training performs node-wise regression with mean squared error.  The script
+automatically checks that the provided features include pump control inputs by
+loading the EPANET network (``--inp-path``).  If the dimension does not match
+``4 + num_pumps`` an error is raised. Use ``--output-dim`` to specify how many
+continuous targets are predicted per node.
 
 Example usage:
 
 ```bash
 python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy \
     --epochs 100 --batch-size 16 --hidden-dim 32 --output-dim 2 \
-    --edge-index-path data/edge_index.npy
+    --edge-index-path data/edge_index.npy --inp-path CTown.inp
 ```
 
 The trained model weights are saved to `models/gnn_surrogate.pth` by default.

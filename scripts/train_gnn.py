@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch_geometric.data import Data, DataLoader
 from torch_geometric.nn import GCNConv
+import wntr
 
 
 class SimpleGCN(nn.Module):
@@ -92,7 +93,16 @@ def main(args: argparse.Namespace):
     data_list = load_dataset(args.x_path, args.y_path, args.edge_index_path)
     loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
 
+    wn = wntr.network.WaterNetworkModel(args.inp_path)
+    expected_in_dim = 4 + len(wn.pump_name_list)
+
     sample = data_list[0]
+    if sample.num_node_features != expected_in_dim:
+        raise ValueError(
+            f"Dataset provides {sample.num_node_features} features per node but the network "
+            f"defines {len(wn.pump_name_list)} pumps (expected {expected_in_dim}).\n"
+            "Re-generate the training data with pump control inputs using scripts/data_generation.py."
+        )
     model = SimpleGCN(
         in_channels=sample.num_node_features,
         hidden_channels=args.hidden_dim,
@@ -163,6 +173,11 @@ if __name__ == "__main__":
         type=int,
         default=10,
         help="Log every n epochs",
+    )
+    parser.add_argument(
+        "--inp-path",
+        default=os.path.join(REPO_ROOT, "CTown.inp"),
+        help="EPANET input file used to determine the number of pumps",
     )
     parser.add_argument(
         "--output",
