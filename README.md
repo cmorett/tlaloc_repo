@@ -38,22 +38,35 @@ python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy 
 
 The trained model weights are saved to `models/gnn_surrogate.pth` by default.
 
+To achieve good predictive accuracy the surrogate should be trained on a large
+collection of EPANET simulations.  The data generation script accepts a
+``--num-scenarios`` argument which controls how many randomized 24‑h simulations
+are performed:
+
+```bash
+python scripts/data_generation.py --num-scenarios 2000 --output-dir data/
+```
+
+Validate the resulting model with `scripts/experiments_validation.py` before
+running the MPC controller.
+
 ## Running MPC control
 
 Once the surrogate model is trained you can run gradient-based MPC using
 `scripts/mpc_control.py`:
 
 ```bash
-python scripts/mpc_control.py --horizon 6 --iterations 50
+python scripts/mpc_control.py --horizon 6 --iterations 50 --feedback-interval 24
 ```
 
-This executes a 24‑hour closed loop simulation where pump actions are
-optimized at each hour.  Results are written to `data/mpc_history.csv`.
+This executes a 24‑hour closed loop simulation where pump actions are optimized
+at each hour.  EPANET is only called every 24 hours (controlled by
+``--feedback-interval``) and all intermediate updates rely on the GNN surrogate
+running entirely on a CUDA device.  Results are written to
+`data/mpc_history.csv`.
 
 **Important:** the surrogate must be trained on datasets that include pump
 control inputs (the additional features appended by `scripts/data_generation.py`).
 If a model trained with only four features (demand, pressure, chlorine and
 elevation) is loaded, `mpc_control.py` will exit early because pump actions would
 have no effect on the predictions.
-
-I'll complete the README Later
