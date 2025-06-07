@@ -256,7 +256,7 @@ def simulate_closed_loop(
             noise = np.random.normal(1.0, 0.05)
             junc.demand_timeseries_list[0].base_value = base_demands[j] * mult * noise
 
-        wn.options.time.start_time = t
+        wn.options.time.start_clocktime = t
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
         sim = wntr.sim.EpanetSimulator(wn)
