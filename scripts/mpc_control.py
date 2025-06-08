@@ -324,8 +324,8 @@ def simulate_closed_loop(
             results = sim.run_sim()
             pressures = results.node["pressure"].iloc[-1].to_dict()
             chlorine = results.node["quality"].iloc[-1].to_dict()
+            energy = results.link["energy"][pump_names].iloc[-1].sum()
             end = time.time()
-            energy = float('nan')
         else:
             # Fast surrogate-based propagation
             pressures, chlorine = propagate_with_surrogate(
