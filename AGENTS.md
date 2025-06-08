@@ -15,6 +15,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
 - `models/` – storage location for trained weights (`gnn_surrogate.pth`).
 - `pytorchcheck.py` – quick script verifying that PyTorch Geometric runs on the configured GPU.
 - `data/` – ignored by git; used for generated datasets and simulation logs.
+- `tests/` – contains `test_clip.py` and `test_energy.py` verifying clipping behavior and pump energy calculations.
 
 ## Architecture Overview
 
@@ -37,22 +38,26 @@ The repository assumes a working Python environment with PyTorch, PyTorch Geomet
 
 ## Testing Protocols
 
-This project does not ship automated unit tests. The recommended workflow is:
+Basic unit tests live in the `tests/` directory. Run them with `pytest`. The recommended workflow is:
 
 1. Verify GPU and PyG installation using `python pytorchcheck.py`.
-2. Generate a small dataset with
+2. Run the unit tests:
+   ```bash
+   pytest
+   ```
+3. Generate a small dataset with
    ```bash
    python scripts/data_generation.py --num-scenarios 10 --output-dir data/
    ```
-3. Train the surrogate:
+4. Train the surrogate:
     ```bash
     python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy --edge-index-path data/edge_index.npy --inp-path CTown.inp
     ```
-4. Run the experiment suite which includes a surrogate validation step:
+5. Run the experiment suite which includes a surrogate validation step:
    ```bash
    python scripts/experiments_validation.py --model models/gnn_surrogate.pth --inp CTown.inp
    ```
-5. Optionally launch MPC control directly using `scripts/mpc_control.py`.
+6. Optionally launch MPC control directly using `scripts/mpc_control.py`.
 
 When adding new features or bug fixes, please create unit tests using `pytest` inside a `tests/` directory and run `pytest` before committing.
 
