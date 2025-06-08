@@ -48,7 +48,10 @@ python scripts/data_generation.py --num-scenarios 2000 --output-dir data/
 ```
 
 Validate the resulting model with `scripts/experiments_validation.py` before
-running the MPC controller.
+running the MPC controller.  The validation script executes a 24‑hour
+simulation with EPANET feedback applied every hour (``--feedback-interval`` is
+``1`` by default) which keeps predictions from the surrogate model from
+diverging over long horizons.
 
 ## Running MPC control
 
