@@ -125,14 +125,14 @@ def apply_normalization(data_list, x_mean, x_std, y_mean, y_std):
         d.y = (d.y - y_mean) / y_std
 
 
-def train(model, loader, optimizer, device):
+def train(model, loader, optimizer, device, check_negative=True):
     model.train()
     total_loss = 0
     for batch in loader:
         batch = batch.to(device)
         if torch.isnan(batch.x).any() or torch.isnan(batch.y).any():
             raise ValueError("NaN detected in training batch")
-        if (batch.x[:, 1] < 0).any() or (batch.y[:, 0] < 0).any():
+        if check_negative and ((batch.x[:, 1] < 0).any() or (batch.y[:, 0] < 0).any()):
             raise ValueError("Negative pressures encountered in training batch")
         optimizer.zero_grad()
         out = model(batch)
@@ -223,7 +223,7 @@ def main(args: argparse.Namespace):
         best_val = float("inf")
         patience = 0
         for epoch in range(args.epochs):
-            loss = train(model, loader, optimizer, device)
+            loss = train(model, loader, optimizer, device, check_negative=not args.normalize)
             if val_loader is not None:
                 val_loss = evaluate(model, val_loader, device)
             else:
