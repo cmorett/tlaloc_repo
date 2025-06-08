@@ -3,7 +3,7 @@ import pickle
 import os
 import argparse
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Tuple, Optional
 
 import numpy as np
 import wntr
@@ -12,7 +12,7 @@ from wntr.metrics.economic import pump_energy
 
 
 def run_scenarios(
-    inp_file: str, num_scenarios: int, seed: int | None = None
+    inp_file: str, num_scenarios: int, seed: Optional[int] = None
 ) -> List[Tuple[wntr.sim.results.SimulationResults, Dict[str, float]]]:
     """Run a collection of randomized scenarios and return each result along
     with the demand scaling applied to every junction."""
