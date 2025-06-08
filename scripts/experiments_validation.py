@@ -133,8 +133,8 @@ def run_all_pumps_on(
     for hour in range(24):
         for pn in pump_names:
             link = wn.get_link(pn)
-            link.status = 1
-            link.speed = 1.0
+            link.initial_status = wntr.network.base.LinkStatus.Open
+            link.base_speed = 1.0
         sim = wntr.sim.EpanetSimulator(wn)
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
@@ -173,13 +173,13 @@ def run_heuristic_baseline(
 
     for hour in range(24):
         if min(pressures.values()) < threshold_p or min(chlorine.values()) < threshold_c:
-            status = 1
+            status = wntr.network.base.LinkStatus.Open
         else:
-            status = 0
+            status = wntr.network.base.LinkStatus.Closed
         for pn in pump_names:
             link = wn.get_link(pn)
-            link.status = status
-            link.speed = 1.0
+            link.initial_status = status
+            link.base_speed = 1.0
         sim = wntr.sim.EpanetSimulator(wn)
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
@@ -248,7 +248,7 @@ def main() -> None:
     parser.add_argument(
         "--feedback-interval",
         type=int,
-        default=24,
+        default=1,
         help="Hours between EPANET synchronizations",
     )
     args = parser.parse_args()
