@@ -1,6 +1,7 @@
 import argparse
 import os
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -10,20 +11,51 @@ from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv
 import wntr
+import matplotlib.pyplot as plt
 
 
-class SimpleGCN(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels):
+class GCNEncoder(nn.Module):
+    """Flexible GCN architecture used for surrogate training."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        out_channels: int,
+        num_layers: int = 2,
+        dropout: float = 0.0,
+        activation: str = "relu",
+        residual: bool = False,
+    ) -> None:
         super().__init__()
-        self.conv1 = GCNConv(in_channels, hidden_channels)
-        self.conv2 = GCNConv(hidden_channels, out_channels)
 
-    def forward(self, data):
+        self.layers = nn.ModuleList()
+        if num_layers == 1:
+            self.layers.append(GCNConv(in_channels, out_channels))
+        else:
+            self.layers.append(GCNConv(in_channels, hidden_channels))
+            for _ in range(num_layers - 2):
+                self.layers.append(GCNConv(hidden_channels, hidden_channels))
+            self.layers.append(GCNConv(hidden_channels, out_channels))
+
+        # Expose first/last conv for backward compatibility with existing code
+        self.conv1 = self.layers[0]
+        self.conv2 = self.layers[-1]
+        self.dropout = dropout
+        self.residual = residual
+        self.act_fn = getattr(F, activation)
+
+    def forward(self, data: Data) -> torch.Tensor:
         x, edge_index = data.x, data.edge_index
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = self.conv2(x, edge_index)
-        # Regression output (pressure, chlorine), no activation
+        for i, conv in enumerate(self.layers):
+            residual = x
+            x = conv(x, edge_index)
+            if i < len(self.layers) - 1:
+                x = self.act_fn(x)
+                if self.dropout > 0:
+                    x = F.dropout(x, p=self.dropout, training=self.training)
+                if self.residual:
+                    x = x + residual
         return x
 
 
@@ -76,11 +108,32 @@ def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.np
     return data_list
 
 
+def compute_norm_stats(data_list):
+    """Compute mean and std per feature/target dimension from ``data_list``."""
+    all_x = torch.cat([d.x for d in data_list], dim=0)
+    all_y = torch.cat([d.y for d in data_list], dim=0)
+    x_mean = all_x.mean(dim=0)
+    x_std = all_x.std(dim=0) + 1e-8
+    y_mean = all_y.mean(dim=0)
+    y_std = all_y.std(dim=0) + 1e-8
+    return x_mean, x_std, y_mean, y_std
+
+
+def apply_normalization(data_list, x_mean, x_std, y_mean, y_std):
+    for d in data_list:
+        d.x = (d.x - x_mean) / x_std
+        d.y = (d.y - y_mean) / y_std
+
+
 def train(model, loader, optimizer, device):
     model.train()
     total_loss = 0
     for batch in loader:
         batch = batch.to(device)
+        if torch.isnan(batch.x).any() or torch.isnan(batch.y).any():
+            raise ValueError("NaN detected in training batch")
+        if (batch.x[:, 1] < 0).any() or (batch.y[:, 0] < 0).any():
+            raise ValueError("Negative pressures encountered in training batch")
         optimizer.zero_grad()
         out = model(batch)
         loss = F.mse_loss(out, batch.y.float())
@@ -92,6 +145,18 @@ def train(model, loader, optimizer, device):
         total_loss += loss.item() * batch.num_graphs
     return total_loss / len(loader.dataset)
 
+
+def evaluate(model, loader, device):
+    model.eval()
+    total_loss = 0
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device)
+            out = model(batch)
+            loss = F.mse_loss(out, batch.y.float())
+            total_loss += loss.item() * batch.num_graphs
+    return total_loss / len(loader.dataset)
+
 # Resolve important directories relative to the repository root so that training
 # can be launched from any location.
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -100,9 +165,26 @@ MODELS_DIR = REPO_ROOT / "models"
 
 
 def main(args: argparse.Namespace):
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     data_list = load_dataset(args.x_path, args.y_path, args.edge_index_path)
     loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
+
+    if args.x_val_path and os.path.exists(args.x_val_path):
+        val_list = load_dataset(args.x_val_path, args.y_val_path, args.edge_index_path)
+        val_loader = DataLoader(val_list, batch_size=args.batch_size)
+    else:
+        val_list = []
+        val_loader = None
+
+    if args.normalize:
+        x_mean, x_std, y_mean, y_std = compute_norm_stats(data_list)
+        apply_normalization(data_list, x_mean, x_std, y_mean, y_std)
+        if val_list:
+            apply_normalization(val_list, x_mean, x_std, y_mean, y_std)
+    else:
+        x_mean = x_std = y_mean = y_std = None
 
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     expected_in_dim = 4 + len(wn.pump_name_list)
@@ -114,26 +196,71 @@ def main(args: argparse.Namespace):
             f"defines {len(wn.pump_name_list)} pumps (expected {expected_in_dim}).\n"
             "Re-generate the training data with pump control inputs using scripts/data_generation.py."
         )
-    model = SimpleGCN(
+    model = GCNEncoder(
         in_channels=sample.num_node_features,
         hidden_channels=args.hidden_dim,
         out_channels=args.output_dim,
+        num_layers=args.num_layers,
+        dropout=args.dropout,
+        activation=args.activation,
+        residual=args.residual,
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    for epoch in range(args.epochs):
-        loss = train(model, loader, optimizer, device)
-        if (epoch + 1) % args.log_every == 0:
-            print(f"Epoch {epoch+1:03d} \t Loss: {loss:.4f}")
+    # prepare logging
+    run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
+    base, ext = os.path.splitext(args.output)
+    model_path = f"{base}_{run_name}{ext}"
+    norm_path = f"{base}_{run_name}_norm.npz"
+    log_path = os.path.join(DATA_DIR, f"training_{run_name}.log")
+    losses = []
+    with open(log_path, "w") as f:
+        f.write(f"timestamp: {datetime.now().isoformat()}\n")
+        f.write(f"args: {vars(args)}\n")
+        f.write(f"seed: {args.seed}\n")
+        f.write(f"device: {device}\n")
+        best_val = float("inf")
+        patience = 0
+        for epoch in range(args.epochs):
+            loss = train(model, loader, optimizer, device)
+            if val_loader is not None:
+                val_loss = evaluate(model, val_loader, device)
+            else:
+                val_loss = loss
+            losses.append((loss, val_loss))
+            f.write(f"{epoch},{loss:.6f},{val_loss:.6f}\n")
+            if val_loss < best_val - 1e-6:
+                best_val = val_loss
+                patience = 0
+                os.makedirs(os.path.dirname(model_path), exist_ok=True)
+                torch.save(model.state_dict(), model_path)
+                if x_mean is not None:
+                    np.savez(norm_path, x_mean=x_mean.numpy(), x_std=x_std.numpy(), y_mean=y_mean.numpy(), y_std=y_std.numpy())
+            else:
+                patience += 1
+            if patience >= args.early_stop_patience:
+                break
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    torch.save(model.state_dict(), args.output)
-    print(f"Model saved to {args.output}")
+    # plot loss curve
+    if losses:
+        tr = [l[0] for l in losses]
+        vl = [l[1] for l in losses]
+        plt.figure()
+        plt.plot(tr, label="train")
+        plt.plot(vl, label="val")
+        plt.legend()
+        plt.xlabel("epoch")
+        plt.ylabel("loss")
+        plt.tight_layout()
+        plt.savefig(os.path.join(DATA_DIR, f"training_loss_{run_name}.png"))
+        plt.close()
+
+    print(f"Best model saved to {model_path}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train a simple GCN model")
+    parser = argparse.ArgumentParser(description="Train a GCN surrogate model")
     parser.add_argument(
         "--x-path",
         default=os.path.join(DATA_DIR, "X_train.npy"),
@@ -148,6 +275,16 @@ if __name__ == "__main__":
         "--edge-index-path",
         default=os.path.join(DATA_DIR, "edge_index.npy"),
         help="Path to edge index file (used with matrix-format datasets)",
+    )
+    parser.add_argument(
+        "--x-val-path",
+        default=os.path.join(DATA_DIR, "X_val.npy"),
+        help="Validation features",
+    )
+    parser.add_argument(
+        "--y-val-path",
+        default=os.path.join(DATA_DIR, "Y_val.npy"),
+        help="Validation labels",
     )
     parser.add_argument(
         "--epochs",
@@ -166,6 +303,18 @@ if __name__ == "__main__":
         type=int,
         default=64,
         help="Hidden dimension",
+    )
+    parser.add_argument("--num-layers", type=int, default=2, help="GCN layers")
+    parser.add_argument("--dropout", type=float, default=0.0, help="Dropout")
+    parser.add_argument(
+        "--activation",
+        default="relu",
+        help="Activation function (relu, gelu, etc.)",
+    )
+    parser.add_argument(
+        "--residual",
+        action="store_true",
+        help="Use residual connections",
     )
     parser.add_argument(
         "--output-dim",
@@ -186,6 +335,15 @@ if __name__ == "__main__":
         help="Log every n epochs",
     )
     parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=10,
+        help="Early stopping patience",
+    )
+    parser.add_argument("--normalize", action="store_true", help="Normalize data")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--run-name", default="", help="Optional run name")
+    parser.add_argument(
         "--inp-path",
         default=os.path.join(REPO_ROOT, "CTown.inp"),
         help="EPANET input file used to determine the number of pumps",
@@ -193,7 +351,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output",
         default=os.path.join(MODELS_DIR, "gnn_surrogate.pth"),
-        help="Output model file",
+        help="Output model file base path",
     )
     args = parser.parse_args()
     main(args)

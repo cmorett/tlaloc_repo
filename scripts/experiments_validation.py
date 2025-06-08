@@ -38,6 +38,7 @@ def _prepare_features(
     pressures: Dict[str, float],
     chlorine: Dict[str, float],
     pump_controls: np.ndarray,
+    model: torch.nn.Module,
 ) -> torch.Tensor:
     """Build node features including pump controls.
 
@@ -80,7 +81,10 @@ def _prepare_features(
         base = [demand, pressures.get(name, 0.0), chlorine.get(name, 0.0), elev]
         base.extend(pump_controls.tolist())
         feats.append(base)
-    return torch.tensor(feats, dtype=torch.float32)
+    feats = torch.tensor(feats, dtype=torch.float32)
+    if hasattr(model, "x_mean") and model.x_mean is not None:
+        feats = (feats - model.x_mean.cpu()) / model.x_std.cpu()
+    return feats
 
 
 def validate_surrogate(
@@ -109,8 +113,10 @@ def validate_surrogate(
                 p = pressures_df.iloc[i].to_dict()
                 c = chlorine_df.iloc[i].to_dict()
                 controls = pump_array[i]
-                x = _prepare_features(wn, p, c, controls).to(device)
+                x = _prepare_features(wn, p, c, controls, model).to(device)
                 pred = model(x, edge_index)
+                if hasattr(model, "y_mean") and model.y_mean is not None:
+                    pred = pred * model.y_std + model.y_mean
                 y_true_p = pressures_df.iloc[i + 1].to_numpy()
                 y_true_c = chlorine_df.iloc[i + 1].to_numpy()
                 diff_p = pred[:, 0].cpu().numpy() - y_true_p

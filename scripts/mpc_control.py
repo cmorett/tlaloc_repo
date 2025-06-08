@@ -21,17 +21,19 @@ DATA_DIR = REPO_ROOT / "data"
 
 
 class GNNSurrogate(torch.nn.Module):
-    """Two-layer GCN surrogate used for one-hour pressure/quality prediction."""
+    """Flexible GCN used by the MPC controller."""
 
-    def __init__(self, in_dim: int, hidden_dim: int = 64, out_dim: int = 2):
+    def __init__(self, conv_layers: List[GCNConv]):
         super().__init__()
-        self.conv1 = GCNConv(in_dim, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, out_dim)
+        self.layers = nn.ModuleList(conv_layers)
+        self.conv1 = self.layers[0]
+        self.conv2 = self.layers[-1]
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        x = self.conv1(x, edge_index)
-        x = torch.relu(x)
-        x = self.conv2(x, edge_index)
+        for i, conv in enumerate(self.layers):
+            x = conv(x, edge_index)
+            if i < len(self.layers) - 1:
+                x = torch.relu(x)
         return x
 
 
@@ -80,18 +82,36 @@ def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate
         )
     state = torch.load(full_path, map_location=device)
 
-    weight_key = "conv1.weight" if "conv1.weight" in state else "conv1.lin.weight"
-    hidden_key = weight_key  # same tensor stores the hidden dim
-    out_key = "conv2.weight" if "conv2.weight" in state else "conv2.lin.weight"
+    if any(k.startswith("layers.") and k.endswith("weight") for k in state):
+        indices = sorted({int(k.split(".")[1]) for k in state if k.startswith("layers.") and k.endswith("weight")})
+        conv_layers = []
+        for i in indices:
+            w = state[f"layers.{i}.weight"]
+            in_dim = w.shape[1]
+            out_dim = w.shape[0]
+            conv_layers.append(GCNConv(in_dim, out_dim))
+    else:
+        weight_key = "conv1.weight" if "conv1.weight" in state else "conv1.lin.weight"
+        hidden_key = weight_key
+        out_key = "conv2.weight" if "conv2.weight" in state else "conv2.lin.weight"
+        in_dim = state[weight_key].shape[1]
+        hidden_dim = state[hidden_key].shape[0]
+        out_dim = state[out_key].shape[0]
+        conv_layers = [GCNConv(in_dim, hidden_dim), GCNConv(hidden_dim, out_dim)]
 
-    in_dim = state[weight_key].shape[1]
-    hidden_dim = state[hidden_key].shape[0]
-    out_dim = state[out_key].shape[0]
-
-    model = GNNSurrogate(
-        in_dim=in_dim, hidden_dim=hidden_dim, out_dim=out_dim
-    ).to(device)
+    model = GNNSurrogate(conv_layers).to(device)
     model.load_state_dict(state)
+
+    norm_path = os.path.splitext(full_path)[0] + "_norm.npz"
+    if os.path.exists(norm_path):
+        arr = np.load(norm_path)
+        model.x_mean = torch.tensor(arr["x_mean"], dtype=torch.float32, device=device)
+        model.x_std = torch.tensor(arr["x_std"], dtype=torch.float32, device=device)
+        model.y_mean = torch.tensor(arr["y_mean"], dtype=torch.float32, device=device)
+        model.y_std = torch.tensor(arr["y_std"], dtype=torch.float32, device=device)
+    else:
+        model.x_mean = model.x_std = model.y_mean = model.y_std = None
+
     model.eval()
     return model
 
@@ -104,7 +124,7 @@ def prepare_node_features(
     node_to_index: Dict[str, int],
     pump_names: List[str],
     device: torch.device,
-    in_dim: int,
+    model: GNNSurrogate,
 ) -> torch.Tensor:
     """Build node features for the surrogate model.
 
@@ -131,7 +151,10 @@ def prepare_node_features(
         base.extend(pump_controls.tolist())
         feats[idx] = np.array(base, dtype=np.float32)
 
-    return torch.tensor(feats[:, :in_dim], dtype=torch.float32, device=device)
+    feats = torch.tensor(feats[:, : model.conv1.in_channels], dtype=torch.float32, device=device)
+    if getattr(model, "x_mean", None) is not None:
+        feats = (feats - model.x_mean) / model.x_std
+    return feats
 
 
 def run_mpc_step(
@@ -178,9 +201,12 @@ def run_mpc_step(
                 node_to_index,
                 pump_names,
                 device,
-                model.conv1.in_channels,
+                model,
             )
             pred = model(x, edge_index)
+            if getattr(model, "y_mean", None) is not None:
+                pred = pred * model.y_std + model.y_mean
+            assert not torch.isnan(pred).any(), "NaN prediction"
             pred_p = pred[:, 0]
             pred_c = pred[:, 1]
             w_p, w_c, w_e = 1.0, 1.0, 0.1
@@ -231,9 +257,12 @@ def propagate_with_surrogate(
                 node_to_index,
                 pump_names,
                 device,
-                model.conv1.in_channels,
+                model,
             )
             pred = model(x, edge_index)
+            if getattr(model, "y_mean", None) is not None:
+                pred = pred * model.y_std + model.y_mean
+            assert not torch.isnan(pred).any(), "NaN prediction"
             pred_p = pred[:, 0].tolist()
             pred_c = pred[:, 1].tolist()
             cur_p = {n: float(pred_p[i]) for i, n in enumerate(wn.node_name_list)}
@@ -329,6 +358,7 @@ def simulate_closed_loop(
                 results.link["flowrate"][pump_names], results.node["head"], wn
             )
             energy = energy_df[pump_names].iloc[-1].sum()
+            assert not np.isnan(energy), "NaN energy calculation"
             end = time.time()
         else:
             # Fast surrogate-based propagation

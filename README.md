@@ -32,11 +32,16 @@ Example usage:
 
 ```bash
 python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy \
-    --epochs 100 --batch-size 16 --hidden-dim 32 --output-dim 2 \
-    --edge-index-path data/edge_index.npy --inp-path CTown.inp
+    --x-val-path data/X_val.npy --y-val-path data/Y_val.npy \
+    --epochs 100 --batch-size 16 --hidden-dim 32 --num-layers 3 \
+    --normalize --early-stop-patience 5 --edge-index-path data/edge_index.npy \
+    --inp-path CTown.inp
 ```
 
-The trained model weights are saved to `models/gnn_surrogate.pth` by default.
+The trained model now supports validation loss tracking, early stopping and
+optional feature normalization.  Each run is stored with a unique timestamp to
+avoid overwriting previous checkpoints.  Normalization statistics are saved
+alongside the weights and automatically applied by the inference scripts.
 
 To achieve good predictive accuracy the surrogate should be trained on a large
 collection of EPANET simulations.  The data generation script accepts a
