@@ -98,8 +98,17 @@ def build_dataset(
 
                 if node in wn_template.junction_name_list or node in wn_template.tank_name_list:
                     elev = wn_template.get_node(node).elevation
+                elif node in wn_template.reservoir_name_list:
+                    # ``Reservoir`` objects expose ``head`` as ``None`` and store
+                    # the hydraulic head in ``base_head``. Using ``head`` directly
+                    # produced ``NaN`` values in the dataset which later led to
+                    # ``NaN`` training loss.
+                    elev = wn_template.get_node(node).base_head
                 else:
                     elev = wn_template.get_node(node).head
+
+                if elev is None:
+                    elev = 0.0
 
                 feat = [base_d, p_t, c_t, elev]
                 feat.extend(controls.tolist())
