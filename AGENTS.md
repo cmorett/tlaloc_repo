@@ -1,6 +1,7 @@
 # AGENTS Guide for tlaloc_repo
 
-This repository implements a graph neural network (GNN) surrogate and gradient-based model predictive control (MPC) for EPANET water distribution models. The main example network is `CTown.inp`.
+This repository implements a graph neural network (GNN) surrogate and gradient-based model predictive control (MPC) 
+for EPANET water distribution models. The main example network is `CTown.inp`.
 
 ## Project Layout
 
@@ -17,13 +18,22 @@ This repository implements a graph neural network (GNN) surrogate and gradient-b
 
 ## Architecture Overview
 
-+1. **Data Generation** – `scripts/data_generation.py` executes multiple EPANET simulations with randomized pump states and scaled base demands. It writes
-node feature matrices, labels for the next hour pressure and chlorine, and the graph `edge_index` to the `data/` directory.
-2. **Surrogate Training** – `scripts/train_gnn.py` loads the generated data, builds `torch_geometric.data.Data` objects and trains a simple two-layer GCN. NaNs in the features are replaced with zero to avoid invalid losses. Gradients are clipped to keep the training stable.
-3. **MPC Controller** – `scripts/mpc_control.py` loads the trained surrogate (`GNNSurrogate`) and repeatedly optimizes pump speeds via gradient descent. The controller can either propagate the network state entirely through the surrogate or periodically synchronize with EPANET for ground truth. Simulation history is written to `data/mpc_history.csv`.
-4. **Experiment Validation** – `scripts/experiments_validation.py` evaluates the surrogate on prerecorded EPANET scenarios and compares the MPC controller against two baselines. Results are aggregated into CSV files and simple plots under `data/`.
+1. **Data Generation** – `scripts/data_generation.py` executes multiple EPANET simulations with randomized pump 
+    states and scaled base demands. It writes node feature matrices, labels for the next hour pressure and chlorine, 
+    and the graph `edge_index` to the `data/` directory.
 
-+The repository assumes a working Python environment with PyTorch, PyTorch Geometric and `wntr` installed. A small virtual environment with these dependencies is provided in `.venv/`.
+2. **Surrogate Training** – `scripts/train_gnn.py` loads the generated data, builds `torch_geometric.data.Data` objects 
+    and trains a simple two-layer GCN. NaNs in the features are   replaced with zero to avoid invalid losses. Gradients 
+    are clipped to keep the training stable.
+
+3. **MPC Controller** – `scripts/mpc_control.py` loads the trained surrogate (`GNNSurrogate`) and repeatedly optimizes 
+    pump speeds via gradient descent. The controller can either propagate the network state entirely through the surrogate 
+    or periodically synchronize with EPANET for ground truth. Simulation history is written to `data/mpc_history.csv`.
+
+4. **Experiment Validation** – `scripts/experiments_validation.py` evaluates the surrogate on prerecorded EPANET scenarios 
+    and compares the MPC controller against two baselines. Results are aggregated into CSV files and simple plots under `data/`.
+
+The repository assumes a working Python environment with PyTorch, PyTorch Geometric and `wntr` installed. A small virtual environment with these dependencies is provided in `.venv/`.
 
 ## Testing Protocols
 
