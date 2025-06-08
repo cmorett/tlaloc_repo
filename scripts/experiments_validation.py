@@ -91,10 +91,16 @@ def validate_surrogate(
     model: torch.nn.Module,
     edge_index: torch.Tensor,
     wn: wntr.network.WaterNetworkModel,
-    test_results: List[wntr.network.model.NetworkResults],
+    test_results: List,
     device: torch.device,
 ) -> Dict[str, float]:
-    """Compute RMSE of surrogate predictions against EPANET results."""
+    """Compute RMSE of surrogate predictions.
+
+    ``test_results`` may either contain ``wntr`` ``NetworkResults`` objects or
+    tuples of ``(NetworkResults, demand_scale)`` produced by
+    ``data_generation.py``.  Only the results object is needed here, so tuples
+    are automatically unpacked.
+    """
 
     rmse_p = 0.0
     rmse_c = 0.0
@@ -104,6 +110,12 @@ def validate_surrogate(
 
     with torch.no_grad():
         for res in test_results:
+            # ``data_generation.py`` stores tuples of ``(results, demand_scale)``.
+            # Older pickle files may therefore provide the result object as the
+            # first element of a tuple.  Support both formats here.
+            if isinstance(res, tuple):
+                res = res[0]
+
             pressures_df = res.node["pressure"]
             chlorine_df = res.node["quality"]
             pump_df = res.link["status"][wn.pump_name_list]
