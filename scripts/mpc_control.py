@@ -83,11 +83,22 @@ def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate
         )
     state = torch.load(full_path, map_location=device)
 
-    if any(k.startswith("layers.") and k.endswith("weight") for k in state):
-        indices = sorted({int(k.split(".")[1]) for k in state if k.startswith("layers.") and k.endswith("weight")})
+    layer_keys = [
+        k
+        for k in state
+        if k.startswith("layers.")
+        and (k.endswith("weight") or k.endswith("lin.weight"))
+    ]
+    if layer_keys:
+        indices = sorted({int(k.split(".")[1]) for k in layer_keys})
         conv_layers = []
         for i in indices:
-            w = state[f"layers.{i}.weight"]
+            w_key = (
+                f"layers.{i}.weight"
+                if f"layers.{i}.weight" in state
+                else f"layers.{i}.lin.weight"
+            )
+            w = state[w_key]
             in_dim = w.shape[1]
             out_dim = w.shape[0]
             conv_layers.append(GCNConv(in_dim, out_dim))
