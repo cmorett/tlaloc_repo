@@ -3,16 +3,24 @@ import pickle
 import os
 import argparse
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 import wntr
 from wntr.network.base import LinkStatus
+from wntr.metrics.economic import pump_energy
 
 
-def run_scenarios(inp_file: str, num_scenarios: int) -> List[wntr.sim.results.SimulationResults]:
-    """Run a collection of randomized scenarios and return the results."""
-    results = []
+def run_scenarios(
+    inp_file: str, num_scenarios: int, seed: int | None = None
+) -> List[Tuple[wntr.sim.results.SimulationResults, Dict[str, float]]]:
+    """Run a collection of randomized scenarios and return each result along
+    with the demand scaling applied to every junction."""
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
+    results: List[Tuple[wntr.sim.results.SimulationResults, Dict[str, float]]] = []
 
     for _ in range(num_scenarios):
         # Create a fresh copy of the water network for each scenario
@@ -26,10 +34,12 @@ def run_scenarios(inp_file: str, num_scenarios: int) -> List[wntr.sim.results.Si
         wn.options.quality.parameter = "CHEMICAL"
 
         # Randomly scale base demand at each junction
+        scale_dict: Dict[str, float] = {}
         for jname in wn.junction_name_list:
             base = wn.get_node(jname).demand_timeseries_list[0].base_value
             scale = random.uniform(0.5, 1.5)
             wn.get_node(jname).demand_timeseries_list[0].base_value = base * scale
+            scale_dict[jname] = scale
 
         # Open all pumps and then randomly close ~30%
         for pn in wn.pump_name_list:
@@ -41,7 +51,16 @@ def run_scenarios(inp_file: str, num_scenarios: int) -> List[wntr.sim.results.Si
             wn.get_link(pn).initial_status = LinkStatus.Closed
 
         sim = wntr.sim.EpanetSimulator(wn)
-        results.append(sim.run_sim())
+        sim_result = sim.run_sim()
+        # Verify energy calculation does not produce NaNs
+        energy = pump_energy(
+            sim_result.link["flowrate"][wn.pump_name_list],
+            sim_result.node["head"],
+            wn,
+        )
+        if energy[wn.pump_name_list].isna().any().any():
+            raise ValueError("pump energy contains NaN")
+        results.append((sim_result, scale_dict))
 
         # Ensure pumps are reopened (requirement 2)
         for pn in wn.pump_name_list:
@@ -50,7 +69,9 @@ def run_scenarios(inp_file: str, num_scenarios: int) -> List[wntr.sim.results.Si
     return results
 
 
-def split_results(results: List[wntr.sim.results.SimulationResults]) -> Tuple[List, List, List]:
+def split_results(
+    results: List[Tuple[wntr.sim.results.SimulationResults, Dict[str, float]]]
+) -> Tuple[List, List, List]:
     num_total = len(results)
     indices = np.random.permutation(num_total)
     n_train = int(0.7 * num_total)
@@ -66,13 +87,13 @@ def split_results(results: List[wntr.sim.results.SimulationResults]) -> Tuple[Li
 
 
 def build_dataset(
-    results: List[wntr.sim.results.SimulationResults],
+    results: Iterable[Tuple[wntr.sim.results.SimulationResults, Dict[str, float]]],
     wn_template: wntr.network.WaterNetworkModel,
 ) -> Tuple[np.ndarray, np.ndarray]:
     X_list: List[np.ndarray] = []
     Y_list: List[np.ndarray] = []
 
-    for sim_results in results:
+    for sim_results, demand_scale in results:
         pressures = sim_results.node["pressure"]
         quality = sim_results.node["quality"]
         pressure_array = pressures.values
@@ -97,9 +118,9 @@ def build_dataset(
                     c_t = 0.0
 
                 if node in wn_template.junction_name_list:
-                    base_d = (
-                        wn_template.get_node(node).demand_timeseries_list[0].base_value
-                    )
+                    base_base = wn_template.get_node(node).demand_timeseries_list[0].base_value
+                    scale = demand_scale.get(node, 1.0)
+                    base_d = base_base * scale
                 else:
                     base_d = 0.0
 
@@ -165,7 +186,13 @@ DATA_DIR = REPO_ROOT / "data"
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num-scenarios", type=int, default=10, help="Number of random scenarios to simulate")
+    parser.add_argument(
+        "--num-scenarios",
+        type=int,
+        default=10,
+        help="Number of random scenarios to simulate",
+    )
+    parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument(
         "--output-dir",
         default=DATA_DIR,
@@ -176,7 +203,7 @@ def main() -> None:
     inp_file = "CTown.inp"
     N = args.num_scenarios
 
-    results = run_scenarios(inp_file, N)
+    results = run_scenarios(inp_file, N, seed=args.seed)
     train_res, val_res, test_res = split_results(results)
 
     wn_template = wntr.network.WaterNetworkModel(inp_file)
