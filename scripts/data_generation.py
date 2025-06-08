@@ -88,6 +88,13 @@ def build_dataset(
                 idx = pressures.columns.get_loc(node)
                 p_t = pressure_array[i, idx]
                 c_t = quality_array[i, idx]
+                # clip negative values which arise from unrealistic scenarios
+                # (e.g., pumps being disabled). Negative pressures are not
+                # physically meaningful and would cause training to fail.
+                if p_t < 0:
+                    p_t = 0.0
+                if c_t < 0:
+                    c_t = 0.0
 
                 if node in wn_template.junction_name_list:
                     base_d = (
@@ -121,6 +128,11 @@ def build_dataset(
                 idx = pressures.columns.get_loc(node)
                 p_next = pressure_array[i + 1, idx]
                 c_next = quality_array[i + 1, idx]
+                # apply the same clipping to the labels
+                if p_next < 0:
+                    p_next = 0.0
+                if c_next < 0:
+                    c_next = 0.0
                 out_nodes.append([p_next, c_next])
             Y_sample = np.array(out_nodes, dtype=np.float64)
             Y_list.append(Y_sample)
