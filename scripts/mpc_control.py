@@ -10,6 +10,7 @@ import pandas as pd
 import torch
 from torch_geometric.nn import GCNConv
 import wntr
+from wntr.metrics.economic import pump_energy
 
 
 # Resolve the repository root so files are written relative to the project
@@ -324,7 +325,10 @@ def simulate_closed_loop(
             results = sim.run_sim()
             pressures = results.node["pressure"].iloc[-1].to_dict()
             chlorine = results.node["quality"].iloc[-1].to_dict()
-            energy = results.link["energy"][pump_names].iloc[-1].sum()
+            energy_df = pump_energy(
+                results.link["flowrate"][pump_names], results.node["head"], wn
+            )
+            energy = energy_df[pump_names].iloc[-1].sum()
             end = time.time()
         else:
             # Fast surrogate-based propagation
@@ -341,11 +345,13 @@ def simulate_closed_loop(
             )
             end = time.time()
             energy = float('nan')
-        min_p = min(
-            pressures[n] for n in wn.junction_name_list + wn.tank_name_list
+        min_p = max(
+            min(pressures[n] for n in wn.junction_name_list + wn.tank_name_list),
+            0.0,
         )
-        min_c = min(
-            chlorine[n] for n in wn.junction_name_list + wn.tank_name_list
+        min_c = max(
+            min(chlorine[n] for n in wn.junction_name_list + wn.tank_name_list),
+            0.0,
         )
         log.append(
             {
