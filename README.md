@@ -49,7 +49,7 @@ collection of EPANET simulations.  The data generation script accepts a
 are performed:
 
 ```bash
-python scripts/data_generation.py --num-scenarios 2000 --output-dir data/
+python scripts/data_generation.py --num-scenarios 2000 --output-dir data/ --seed 42
 ```
 
 Validate the resulting model with `scripts/experiments_validation.py` before
