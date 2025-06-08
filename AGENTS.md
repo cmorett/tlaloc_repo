@@ -15,7 +15,8 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
 - `models/` – storage location for trained weights (`gnn_surrogate.pth`).
 - `pytorchcheck.py` – quick script verifying that PyTorch Geometric runs on the configured GPU.
 - `data/` – ignored by git; used for generated datasets and simulation logs.
-- `tests/` – contains `test_clip.py` and `test_energy.py` verifying clipping behavior and pump energy calculations.
+- `tests/` – contains `test_clip.py` and `test_energy.py` verifying clipping behavior and pump energy    calculations, early stopping, NaN detection and feature normalization (`test_clip.py`,
+`test_energy.py`, `test_early_stop.py`, `test_nan_check.py`, `test_normalization.py`).
 
 ## Architecture Overview
 
