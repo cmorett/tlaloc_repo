@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from torch_geometric.nn import GCNConv
 import wntr
 from wntr.metrics.economic import pump_energy
