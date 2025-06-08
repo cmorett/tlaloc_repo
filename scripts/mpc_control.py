@@ -83,6 +83,24 @@ def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate
         )
     state = torch.load(full_path, map_location=device)
 
+    # Support both the current ``layers.X`` style parameter names as well as
+    # older checkpoints that used ``conv1``/``conv2``.  If the latter is
+    # detected, rename the keys so ``load_state_dict`` can succeed.
+    if any(k.startswith("conv1") for k in state) and not any(k.startswith("layers.0") for k in state):
+        renamed = {}
+        mapping = {
+            "conv1.bias": "layers.0.bias",
+            "conv1.weight": "layers.0.weight",
+            "conv1.lin.weight": "layers.0.lin.weight",
+            "conv2.bias": "layers.1.bias",
+            "conv2.weight": "layers.1.weight",
+            "conv2.lin.weight": "layers.1.lin.weight",
+        }
+        for old, new in mapping.items():
+            if old in state:
+                renamed[new] = renamed[old] = state[old]
+        state = renamed
+
     layer_keys = [
         k
         for k in state
@@ -110,6 +128,12 @@ def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate
         hidden_dim = state[hidden_key].shape[0]
         out_dim = state[out_key].shape[0]
         conv_layers = [GCNConv(in_dim, hidden_dim), GCNConv(hidden_dim, out_dim)]
+
+    # Fail early if the checkpoint contains invalid values which would otherwise
+    # produce NaN predictions during MPC optimisation.
+    for k, v in state.items():
+        if torch.isnan(v).any():
+            raise ValueError(f"NaN detected in model weights ({k}) – re-train the surrogate.")
 
     model = GNNSurrogate(conv_layers).to(device)
     model.load_state_dict(state)
