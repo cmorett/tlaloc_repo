@@ -6,7 +6,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch_geometric.data import Data, DataLoader
+from torch_geometric.data import Data
+from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv
 import wntr
 
@@ -52,6 +53,11 @@ def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.np
             d = graph_dict if isinstance(graph_dict, dict) else graph_dict.item()
             edge_index = torch.tensor(d["edge_index"], dtype=torch.long)
             node_feat = torch.tensor(d["node_features"], dtype=torch.float32)
+            if torch.isnan(node_feat).any():
+                # Replace NaNs introduced during data generation (e.g., missing
+                # reservoir heads) with zeros so that training does not produce
+                # ``NaN`` losses.
+                node_feat = torch.nan_to_num(node_feat)
             data_list.append(
                 Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
             )
@@ -61,6 +67,8 @@ def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.np
         edge_index = torch.tensor(np.load(edge_index_path), dtype=torch.long)
         for node_feat, label in zip(X, y):
             node_feat = torch.tensor(node_feat, dtype=torch.float32)
+            if torch.isnan(node_feat).any():
+                node_feat = torch.nan_to_num(node_feat)
             data_list.append(
                 Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
             )
@@ -77,6 +85,9 @@ def train(model, loader, optimizer, device):
         out = model(batch)
         loss = F.mse_loss(out, batch.y.float())
         loss.backward()
+        # Clip gradients to mitigate exploding gradients that could otherwise
+        # result in ``NaN`` loss values when the optimizer updates the weights.
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         total_loss += loss.item() * batch.num_graphs
     return total_loss / len(loader.dataset)
