@@ -135,18 +135,20 @@ def run_all_pumps_on(
             link = wn.get_link(pn)
             link.initial_status = wntr.network.base.LinkStatus.Open
             link.base_speed = 1.0
-        sim = wntr.sim.EpanetSimulator(wn)
+        wn.options.time.start_clocktime = hour * 3600
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
+        sim = wntr.sim.EpanetSimulator(wn)
         results = sim.run_sim()
         pressures = results.node["pressure"].iloc[-1].to_dict()
         chlorine = results.node["quality"].iloc[-1].to_dict()
+        energy = results.link["energy"][pump_names].iloc[-1].sum()
         log.append(
             {
                 "time": hour,
                 "min_pressure": min(pressures.values()),
                 "min_chlorine": min(chlorine.values()),
-                "energy": float(len(pump_names)),
+                "energy": float(energy),
             }
         )
     df = pd.DataFrame(log)
@@ -164,9 +166,10 @@ def run_heuristic_baseline(
     """Simple rule-based control using pressure/quality thresholds."""
 
     log = []
-    sim = wntr.sim.EpanetSimulator(wn)
+    wn.options.time.start_clocktime = 0
     wn.options.time.duration = 3600
     wn.options.time.report_timestep = 3600
+    sim = wntr.sim.EpanetSimulator(wn)
     results = sim.run_sim()
     pressures = results.node["pressure"].iloc[-1].to_dict()
     chlorine = results.node["quality"].iloc[-1].to_dict()
@@ -180,18 +183,20 @@ def run_heuristic_baseline(
             link = wn.get_link(pn)
             link.initial_status = status
             link.base_speed = 1.0
-        sim = wntr.sim.EpanetSimulator(wn)
+        wn.options.time.start_clocktime = (hour + 1) * 3600
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
+        sim = wntr.sim.EpanetSimulator(wn)
         results = sim.run_sim()
         pressures = results.node["pressure"].iloc[-1].to_dict()
         chlorine = results.node["quality"].iloc[-1].to_dict()
+        energy = results.link["energy"][pump_names].iloc[-1].sum()
         log.append(
             {
                 "time": hour,
                 "min_pressure": min(pressures.values()),
                 "min_chlorine": min(chlorine.values()),
-                "energy": float(status * len(pump_names)),
+                "energy": float(energy),
             }
         )
     df = pd.DataFrame(log)
@@ -265,6 +270,9 @@ def main() -> None:
         print(
             f"Surrogate RMSE - Pressure: {rmse['pressure_rmse']:.2f}, "
             f"Chlorine: {rmse['chlorine_rmse']:.3f}"
+        )
+        pd.DataFrame([rmse]).to_csv(
+            os.path.join(DATA_DIR, "surrogate_validation.csv"), index=False
         )
     else:
         print(f"{args.test_pkl} not found. Skipping surrogate validation.")
