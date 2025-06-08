@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 import wntr
+from wntr.metrics.economic import pump_energy
 
 # Compute absolute path to the repository's data directory so that results are
 # always written inside the project regardless of the current working
@@ -142,12 +143,15 @@ def run_all_pumps_on(
         results = sim.run_sim()
         pressures = results.node["pressure"].iloc[-1].to_dict()
         chlorine = results.node["quality"].iloc[-1].to_dict()
-        energy = results.link["energy"][pump_names].iloc[-1].sum()
+        energy_df = pump_energy(
+            results.link["flowrate"][pump_names], results.node["head"], wn
+        )
+        energy = energy_df[pump_names].iloc[-1].sum()
         log.append(
             {
                 "time": hour,
-                "min_pressure": min(pressures.values()),
-                "min_chlorine": min(chlorine.values()),
+                "min_pressure": max(min(pressures.values()), 0.0),
+                "min_chlorine": max(min(chlorine.values()), 0.0),
                 "energy": float(energy),
             }
         )
@@ -190,12 +194,15 @@ def run_heuristic_baseline(
         results = sim.run_sim()
         pressures = results.node["pressure"].iloc[-1].to_dict()
         chlorine = results.node["quality"].iloc[-1].to_dict()
-        energy = results.link["energy"][pump_names].iloc[-1].sum()
+        energy_df = pump_energy(
+            results.link["flowrate"][pump_names], results.node["head"], wn
+        )
+        energy = energy_df[pump_names].iloc[-1].sum()
         log.append(
             {
                 "time": hour,
-                "min_pressure": min(pressures.values()),
-                "min_chlorine": min(chlorine.values()),
+                "min_pressure": max(min(pressures.values()), 0.0),
+                "min_chlorine": max(min(chlorine.values()), 0.0),
                 "energy": float(energy),
             }
         )
