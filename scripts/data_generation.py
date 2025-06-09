@@ -42,7 +42,7 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
     pump_controls: Dict[str, float] = {}
     for pn in wn.pump_name_list:
         link = wn.get_link(pn)
-        link.status = LinkStatus.Open
+        link.initial_status = LinkStatus.Open
         speed = random.uniform(0.0, 1.0)
         link.speed = speed
         pump_controls[pn] = speed
@@ -52,7 +52,7 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
     )
     for pn in pumps_to_off:
         link = wn.get_link(pn)
-        link.status = LinkStatus.Closed
+        link.initial_status = LinkStatus.Closed
         link.speed = 0.0
         pump_controls[pn] = 0.0
 
@@ -127,20 +127,18 @@ def build_dataset(
 
         pump_vector = np.array([pump_ctrl[p] for p in pumps], dtype=np.float64)
 
+        pressures = pressures.clip(lower=0.0)
+        quality = quality.clip(lower=0.0)
+        if demands is not None:
+            demands = demands.clip(lower=0.0)
+
         for i in range(len(times) - 1):
-            if (
-                pressures.iloc[i].min() < 0
-                or quality.iloc[i].min() < 0
-                or pressures.iloc[i + 1].min() < 0
-                or quality.iloc[i + 1].min() < 0
-            ):
-                continue
 
             feat_nodes = []
             for node in wn_template.node_name_list:
                 idx = pressures.columns.get_loc(node)
-                p_t = pressures.iat[i, idx]
-                c_t = quality.iat[i, idx]
+                p_t = max(pressures.iat[i, idx], 0.0)
+                c_t = max(quality.iat[i, idx], 0.0)
                 if demands is not None and node in wn_template.junction_name_list:
                     d_t = demands.iat[i, idx]
                 else:
@@ -164,8 +162,8 @@ def build_dataset(
             out_nodes = []
             for node in wn_template.node_name_list:
                 idx = pressures.columns.get_loc(node)
-                p_next = pressures.iat[i + 1, idx]
-                c_next = quality.iat[i + 1, idx]
+                p_next = max(pressures.iat[i + 1, idx], 0.0)
+                c_next = max(quality.iat[i + 1, idx], 0.0)
                 out_nodes.append([p_next, c_next])
             Y_list.append(np.array(out_nodes, dtype=np.float64))
 
