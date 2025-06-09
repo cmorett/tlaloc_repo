@@ -4,6 +4,7 @@ import os
 import argparse
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Optional
+from multiprocessing import Pool
 
 # Resolve repository paths so all files are created inside the repo
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -17,67 +18,71 @@ from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
 
 
-def run_scenarios(
-    inp_file: str, num_scenarios: int, seed: Optional[int] = None
-) -> List[Tuple[wntr.sim.results.SimulationResults, Dict[str, float]]]:
-    """Run a collection of randomized scenarios and return each result along
-    with the demand scaling applied to every junction."""
+def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, float], Dict[str, float]]:
+    """Helper executed in a separate process to run one scenario."""
+    idx, inp_file, seed = args
     if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
+        random.seed(seed + idx)
+        np.random.seed(seed + idx)
 
-    results: List[Tuple[wntr.sim.results.SimulationResults, Dict[str, float]]] = []
+    wn = wntr.network.WaterNetworkModel(inp_file)
+    wn.options.time.duration = 24 * 3600
+    wn.options.time.hydraulic_timestep = 3600
+    wn.options.time.quality_timestep = 3600
+    wn.options.time.report_timestep = 3600
+    wn.options.quality.parameter = "CHEMICAL"
 
-    for _ in range(num_scenarios):
-        # Create a fresh copy of the water network for each scenario
-        wn = wntr.network.WaterNetworkModel(inp_file)
+    scale_dict: Dict[str, float] = {}
+    for jname in wn.junction_name_list:
+        base = wn.get_node(jname).demand_timeseries_list[0].base_value
+        scale = random.uniform(0.5, 1.5)
+        wn.get_node(jname).demand_timeseries_list[0].base_value = base * scale
+        scale_dict[jname] = scale
 
-        # Configure simulation options
-        wn.options.time.duration = 24 * 3600
-        wn.options.time.hydraulic_timestep = 3600
-        wn.options.time.quality_timestep = 3600
-        wn.options.time.report_timestep = 3600
-        wn.options.quality.parameter = "CHEMICAL"
+    pump_controls: Dict[str, float] = {}
+    for pn in wn.pump_name_list:
+        link = wn.get_link(pn)
+        link.status = LinkStatus.Open
+        speed = random.uniform(0.0, 1.0)
+        link.speed = speed
+        pump_controls[pn] = speed
 
-        # Randomly scale base demand at each junction
-        scale_dict: Dict[str, float] = {}
-        for jname in wn.junction_name_list:
-            base = wn.get_node(jname).demand_timeseries_list[0].base_value
-            scale = random.uniform(0.5, 1.5)
-            wn.get_node(jname).demand_timeseries_list[0].base_value = base * scale
-            scale_dict[jname] = scale
+    pumps_to_off = random.sample(
+        wn.pump_name_list, max(1, int(0.3 * len(wn.pump_name_list)))
+    )
+    for pn in pumps_to_off:
+        link = wn.get_link(pn)
+        link.status = LinkStatus.Closed
+        link.speed = 0.0
+        pump_controls[pn] = 0.0
 
-        # Open all pumps and then randomly close ~30%
-        for pn in wn.pump_name_list:
-            link = wn.get_link(pn)
-            link.initial_status = LinkStatus.Open
-            # Sample a random pump speed in [0, 1] so the surrogate is trained
-            # on a wide range of control values rather than only binary
-            # open/closed states.
-            link.base_speed = random.uniform(0.0, 1.0)
-        pumps_to_off = random.sample(
-            wn.pump_name_list, max(1, int(0.3 * len(wn.pump_name_list)))
-        )
-        for pn in pumps_to_off:
-            link = wn.get_link(pn)
-            link.initial_status = LinkStatus.Closed
-            link.base_speed = 0.0
+    sim = wntr.sim.EpanetSimulator(wn)
+    sim_results = sim.run_sim()
 
-        sim = wntr.sim.EpanetSimulator(wn)
-        sim_result = sim.run_sim(str(TEMP_DIR / "temp"))
-        # Verify energy calculation does not produce NaNs
-        energy = pump_energy(
-            sim_result.link["flowrate"][wn.pump_name_list],
-            sim_result.node["head"],
-            wn,
-        )
-        if energy[wn.pump_name_list].isna().any().any():
-            raise ValueError("pump energy contains NaN")
-        results.append((sim_result, scale_dict))
+    flows = sim_results.link["flowrate"]
+    heads = sim_results.node["head"]
+    energy = pump_energy(flows, heads, wn)
+    if energy[wn.pump_name_list].isna().any().any():
+        raise ValueError("pump energy contains NaN")
 
-        # Ensure pumps are reopened (requirement 2)
-        for pn in wn.pump_name_list:
-            wn.get_link(pn).initial_status = LinkStatus.Open
+    for df in [flows, heads, sim_results.node["pressure"], sim_results.node["quality"]]:
+        if df.isna().any().any() or np.isinf(df.values).any():
+            raise ValueError("invalid values detected in simulation results")
+
+    return sim_results, scale_dict, pump_controls
+
+
+def run_scenarios(
+    inp_file: str, num_scenarios: int, seed: Optional[int] = None, n_jobs: int = 1
+) -> List[Tuple[wntr.sim.results.SimulationResults, Dict[str, float], Dict[str, float]]]:
+    """Run multiple randomized scenarios and return their results."""
+
+    args_list = [(i, inp_file, seed) for i in range(num_scenarios)]
+    if n_jobs > 1:
+        with Pool(processes=n_jobs) as pool:
+            results = pool.map(_run_single_scenario, args_list)
+    else:
+        results = [_run_single_scenario(a) for a in args_list]
 
     return results
 
@@ -100,79 +105,76 @@ def split_results(
 
 
 def build_dataset(
-    results: Iterable[Tuple[wntr.sim.results.SimulationResults, Dict[str, float]]],
+    results: Iterable[
+        Tuple[
+            wntr.sim.results.SimulationResults,
+            Dict[str, float],
+            Dict[str, float],
+        ]
+    ],
     wn_template: wntr.network.WaterNetworkModel,
 ) -> Tuple[np.ndarray, np.ndarray]:
     X_list: List[np.ndarray] = []
     Y_list: List[np.ndarray] = []
 
-    for sim_results, demand_scale in results:
+    pumps = wn_template.pump_name_list
+
+    for sim_results, _scale_dict, pump_ctrl in results:
         pressures = sim_results.node["pressure"]
         quality = sim_results.node["quality"]
-        pressure_array = pressures.values
-        quality_array = quality.values
+        demands = sim_results.node.get("demand")
         times = pressures.index
 
-        pump_status = sim_results.link["setting"][wn_template.pump_name_list].values
+        pump_vector = np.array([pump_ctrl[p] for p in pumps], dtype=np.float64)
 
         for i in range(len(times) - 1):
+            if (
+                pressures.iloc[i].min() < 0
+                or quality.iloc[i].min() < 0
+                or pressures.iloc[i + 1].min() < 0
+                or quality.iloc[i + 1].min() < 0
+            ):
+                continue
+
             feat_nodes = []
-            controls = pump_status[i]
             for node in wn_template.node_name_list:
                 idx = pressures.columns.get_loc(node)
-                p_t = pressure_array[i, idx]
-                c_t = quality_array[i, idx]
-                # clip negative values which arise from unrealistic scenarios
-                # (e.g., pumps being disabled). Negative pressures are not
-                # physically meaningful and would cause training to fail.
-                if p_t < 0:
-                    p_t = 0.0
-                if c_t < 0:
-                    c_t = 0.0
-
-                if node in wn_template.junction_name_list:
-                    base_base = wn_template.get_node(node).demand_timeseries_list[0].base_value
-                    scale = demand_scale.get(node, 1.0)
-                    base_d = base_base * scale
+                p_t = pressures.iat[i, idx]
+                c_t = quality.iat[i, idx]
+                if demands is not None and node in wn_template.junction_name_list:
+                    d_t = demands.iat[i, idx]
                 else:
-                    base_d = 0.0
+                    d_t = 0.0
 
                 if node in wn_template.junction_name_list or node in wn_template.tank_name_list:
                     elev = wn_template.get_node(node).elevation
                 elif node in wn_template.reservoir_name_list:
-                    # ``Reservoir`` objects expose ``head`` as ``None`` and store
-                    # the hydraulic head in ``base_head``. Using ``head`` directly
-                    # produced ``NaN`` values in the dataset which later led to
-                    # ``NaN`` training loss.
                     elev = wn_template.get_node(node).base_head
                 else:
-                    elev = wn_template.get_node(node).head
-
+                    n = wn_template.get_node(node)
+                    elev = getattr(n, "elevation", None) or getattr(n, "base_head", 0.0)
                 if elev is None:
                     elev = 0.0
 
-                feat = [base_d, p_t, c_t, elev]
-                feat.extend(controls.tolist())
+                feat = [d_t, p_t, c_t, elev]
+                feat.extend(pump_vector.tolist())
                 feat_nodes.append(feat)
-            X_sample = np.array(feat_nodes, dtype=np.float64)
-            X_list.append(X_sample)
+            X_list.append(np.array(feat_nodes, dtype=np.float64))
 
             out_nodes = []
             for node in wn_template.node_name_list:
                 idx = pressures.columns.get_loc(node)
-                p_next = pressure_array[i + 1, idx]
-                c_next = quality_array[i + 1, idx]
-                # apply the same clipping to the labels
-                if p_next < 0:
-                    p_next = 0.0
-                if c_next < 0:
-                    c_next = 0.0
+                p_next = pressures.iat[i + 1, idx]
+                c_next = quality.iat[i + 1, idx]
                 out_nodes.append([p_next, c_next])
-            Y_sample = np.array(out_nodes, dtype=np.float64)
-            Y_list.append(Y_sample)
+            Y_list.append(np.array(out_nodes, dtype=np.float64))
+
+    if not X_list:
+        return np.empty((0, 0), dtype=np.float32), np.empty((0, 0), dtype=np.float32)
 
     X = np.stack(X_list).astype(np.float32)
     Y = np.stack(Y_list).astype(np.float32)
+    Y = np.clip(Y, a_min=0.0, a_max=None)
     return X, Y
 
 
@@ -204,12 +206,18 @@ def main() -> None:
         default=DATA_DIR,
         help="Directory to store generated datasets",
     )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=1,
+        help="Number of parallel processes for scenario generation",
+    )
     args = parser.parse_args()
 
     inp_file = "CTown.inp"
     N = args.num_scenarios
 
-    results = run_scenarios(inp_file, N, seed=args.seed)
+    results = run_scenarios(inp_file, N, seed=args.seed, n_jobs=args.n_jobs)
     train_res, val_res, test_res = split_results(results)
 
     wn_template = wntr.network.WaterNetworkModel(inp_file)
