@@ -25,6 +25,8 @@ from wntr.metrics.economic import pump_energy
 # directory.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
+TEMP_DIR = DATA_DIR / "temp"
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 from mpc_control import (
     load_network,
@@ -158,7 +160,7 @@ def run_all_pumps_on(
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
         sim = wntr.sim.EpanetSimulator(wn)
-        results = sim.run_sim()
+        results = sim.run_sim(str(TEMP_DIR / "temp"))
         pressures = results.node["pressure"].iloc[-1].to_dict()
         chlorine = results.node["quality"].iloc[-1].to_dict()
         energy_df = pump_energy(
@@ -204,7 +206,7 @@ def run_heuristic_baseline(
     wn.options.time.duration = 3600
     wn.options.time.report_timestep = 3600
     sim = wntr.sim.EpanetSimulator(wn)
-    results = sim.run_sim()
+    results = sim.run_sim(str(TEMP_DIR / "temp"))
     pressures = results.node["pressure"].iloc[-1].to_dict()
     chlorine = results.node["quality"].iloc[-1].to_dict()
 
@@ -225,7 +227,7 @@ def run_heuristic_baseline(
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
         sim = wntr.sim.EpanetSimulator(wn)
-        results = sim.run_sim()
+        results = sim.run_sim(str(TEMP_DIR / "temp"))
         pressures = results.node["pressure"].iloc[-1].to_dict()
         chlorine = results.node["quality"].iloc[-1].to_dict()
         energy_df = pump_energy(

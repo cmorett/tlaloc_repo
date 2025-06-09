@@ -1,3 +1,4 @@
+import os
 import torch
 import wntr
 import sys
@@ -6,6 +7,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(REPO_ROOT))
 sys.path.append(str(REPO_ROOT / "scripts"))
+TEMP_DIR = REPO_ROOT / "data" / "temp"
+os.makedirs(TEMP_DIR, exist_ok=True)
 from scripts.mpc_control import load_network
 from scripts.experiments_validation import validate_surrogate
 
@@ -29,6 +32,6 @@ def test_validate_surrogate_accepts_tuple():
     wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
     sim = wntr.sim.EpanetSimulator(wn)
-    res = sim.run_sim()
+    res = sim.run_sim(str(TEMP_DIR / "temp"))
     model = DummyModel().to(device)
     validate_surrogate(model, edge_index, wn, [(res, {})], device)
