@@ -59,7 +59,7 @@ def load_network(inp_file: str):
 
 
 
-def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate.pth") -> GNNSurrogate:
+def load_surrogate_model(device: torch.device, path: str = "gnn_surrogate_20250608_141747.pth") -> GNNSurrogate:
     """Load trained GNN surrogate weights.
 
     Parameters
@@ -181,16 +181,8 @@ def prepare_node_features(
             demand = 0.0
         if name in wn.junction_name_list or name in wn.tank_name_list:
             elev = node.elevation
-        elif name in wn.reservoir_name_list:
-            # ``Reservoir`` objects store their head in ``base_head`` and expose
-            # ``head`` as ``None``.  Using ``head`` directly would introduce
-            # ``NaN`` values into the feature tensor which in turn leads to
-            # NaN predictions during MPC optimisation.
-            elev = node.base_head
         else:
             elev = node.head
-        if elev is None:
-            elev = 0.0
         base = [demand, pressures.get(name, 0.0), chlorine.get(name, 0.0), elev]
         base.extend(pump_controls.tolist())
         feats[idx] = np.array(base, dtype=np.float32)
