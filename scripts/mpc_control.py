@@ -59,29 +59,40 @@ def load_network(inp_file: str):
 
 
 
-def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate_20250608_141747.pth") -> GNNSurrogate:
+def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GNNSurrogate:
     """Load trained GNN surrogate weights.
 
     Parameters
     ----------
     device : torch.device
         Device to map the model to.
-    path : str, optional
-        Location of the saved state dict, by default ``models/gnn_surrogate.pth``.
+    path : Optional[str], optional
+        Location of the saved state dict.  If ``None`` the newest ``.pth`` file
+        in the ``models`` directory is loaded.
 
     Returns
     -------
     GNNSurrogate
         Loaded surrogate model set to eval mode.
     """
-    # Resolve the path relative to the repository root so the script can be
-    # executed from any working directory.
-    full_path = os.path.join(REPO_ROOT, path)
-    if not os.path.exists(full_path):
+    # Determine which checkpoint to load.  If ``path`` is ``None`` look for the
+    # most recently modified ``.pth`` file inside ``models``.
+    if path is None:
+        models_dir = REPO_ROOT / "models"
+        candidates = sorted(models_dir.glob("*.pth"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            raise FileNotFoundError(f"No model checkpoints found in {models_dir}")
+        full_path = candidates[0]
+    else:
+        full_path = Path(path)
+        if not full_path.is_absolute():
+            full_path = REPO_ROOT / full_path
+
+    if not full_path.exists():
         raise FileNotFoundError(
             f"{full_path} not found. Run train_gnn.py to generate the surrogate weights."
         )
-    state = torch.load(full_path, map_location=device)
+    state = torch.load(str(full_path), map_location=device)
 
     # Support both the current ``layers.X`` style parameter names as well as
     # older checkpoints that used ``conv1``/``conv2``.  If the latter is
@@ -138,7 +149,7 @@ def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate
     model = GNNSurrogate(conv_layers).to(device)
     model.load_state_dict(state)
 
-    norm_path = os.path.splitext(full_path)[0] + "_norm.npz"
+    norm_path = str(full_path.with_suffix("")) + "_norm.npz"
     if os.path.exists(norm_path):
         arr = np.load(norm_path)
         model.x_mean = torch.tensor(arr["x_mean"], dtype=torch.float32, device=device)
