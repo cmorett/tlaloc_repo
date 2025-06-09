@@ -5,6 +5,12 @@ import argparse
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Optional
 
+# Resolve repository paths so all files are created inside the repo
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = REPO_ROOT / "data"
+TEMP_DIR = DATA_DIR / "temp"
+os.makedirs(TEMP_DIR, exist_ok=True)
+
 import numpy as np
 import wntr
 from wntr.network.base import LinkStatus
@@ -58,7 +64,7 @@ def run_scenarios(
             link.base_speed = 0.0
 
         sim = wntr.sim.EpanetSimulator(wn)
-        sim_result = sim.run_sim()
+        sim_result = sim.run_sim(str(TEMP_DIR / "temp"))
         # Verify energy calculation does not produce NaNs
         energy = pump_energy(
             sim_result.link["flowrate"][wn.pump_name_list],
@@ -182,13 +188,6 @@ def build_edge_index(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
     edge_index = np.array(edge_index, dtype=np.int64).T
     assert edge_index.shape[0] == 2
     return edge_index
-
-
-# Use a fixed data directory inside the repository so generated files are
-# written in a predictable location regardless of where the script is launched
-# from.
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = REPO_ROOT / "data"
 
 
 def main() -> None:

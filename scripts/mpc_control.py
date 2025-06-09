@@ -19,6 +19,8 @@ from wntr.metrics.economic import pump_energy
 # when the script is executed from another location.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
+TEMP_DIR = DATA_DIR / "temp"
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 
 class GNNSurrogate(torch.nn.Module):
@@ -339,7 +341,7 @@ def simulate_closed_loop(
     wn.options.time.duration = 0
     wn.options.time.report_timestep = 0
     sim = wntr.sim.EpanetSimulator(wn)
-    results = sim.run_sim()
+    results = sim.run_sim(str(TEMP_DIR / "temp"))
     pressures = results.node["pressure"].iloc[0].to_dict()
     chlorine = results.node["quality"].iloc[0].to_dict()
 
@@ -395,7 +397,7 @@ def simulate_closed_loop(
             wn.options.time.duration = 3600
             wn.options.time.report_timestep = 3600
             sim = wntr.sim.EpanetSimulator(wn)
-            results = sim.run_sim()
+            results = sim.run_sim(str(TEMP_DIR / "temp"))
             pressures = results.node["pressure"].iloc[-1].to_dict()
             chlorine = results.node["quality"].iloc[-1].to_dict()
             energy_df = pump_energy(
