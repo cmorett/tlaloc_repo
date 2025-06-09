@@ -59,7 +59,7 @@ def load_network(inp_file: str):
 
 
 
-def load_surrogate_model(device: torch.device, path: str = "gnn_surrogate_20250608_141747.pth") -> GNNSurrogate:
+def load_surrogate_model(device: torch.device, path: str = "models/gnn_surrogate_20250608_141747.pth") -> GNNSurrogate:
     """Load trained GNN surrogate weights.
 
     Parameters
