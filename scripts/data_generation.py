@@ -43,12 +43,19 @@ def run_scenarios(
 
         # Open all pumps and then randomly close ~30%
         for pn in wn.pump_name_list:
-            wn.get_link(pn).initial_status = LinkStatus.Open
+            link = wn.get_link(pn)
+            link.initial_status = LinkStatus.Open
+            # Sample a random pump speed in [0, 1] so the surrogate is trained
+            # on a wide range of control values rather than only binary
+            # open/closed states.
+            link.base_speed = random.uniform(0.0, 1.0)
         pumps_to_off = random.sample(
             wn.pump_name_list, max(1, int(0.3 * len(wn.pump_name_list)))
         )
         for pn in pumps_to_off:
-            wn.get_link(pn).initial_status = LinkStatus.Closed
+            link = wn.get_link(pn)
+            link.initial_status = LinkStatus.Closed
+            link.base_speed = 0.0
 
         sim = wntr.sim.EpanetSimulator(wn)
         sim_result = sim.run_sim()
@@ -100,7 +107,7 @@ def build_dataset(
         quality_array = quality.values
         times = pressures.index
 
-        pump_status = sim_results.link["status"][wn_template.pump_name_list].values
+        pump_status = sim_results.link["setting"][wn_template.pump_name_list].values
 
         for i in range(len(times) - 1):
             feat_nodes = []
