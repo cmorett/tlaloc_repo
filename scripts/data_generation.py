@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Optional
 from multiprocessing import Pool
+import warnings
 
 # Resolve repository paths so all files are created inside the repo
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +20,7 @@ from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
 
 
-def _safe_remove(path: str, retries: int = 5, delay: float = 0.1) -> None:
+def _safe_remove(path: str, retries: int = 10, delay: float = 0.2) -> None:
     """Remove a file, retrying if a PermissionError occurs."""
     for _ in range(retries):
         try:
@@ -29,8 +30,10 @@ def _safe_remove(path: str, retries: int = 5, delay: float = 0.1) -> None:
             time.sleep(delay)
         except FileNotFoundError:
             return
-    # Final attempt will raise if it fails again
-    os.remove(path)
+    try:
+        os.remove(path)
+    except PermissionError:
+        warnings.warn(f"Could not remove file {path} after {retries} attempts")
 
 
 def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]:
