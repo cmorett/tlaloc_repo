@@ -18,7 +18,7 @@ from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
 
 
-def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, float], Dict[str, float]]:
+def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Helper executed in a separate process to run one scenario."""
     idx, inp_file, seed = args
     if seed is not None:
@@ -32,29 +32,40 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
     wn.options.time.report_timestep = 3600
     wn.options.quality.parameter = "CHEMICAL"
 
-    scale_dict: Dict[str, float] = {}
-    for jname in wn.junction_name_list:
-        base = wn.get_node(jname).demand_timeseries_list[0].base_value
-        scale = random.uniform(0.5, 1.5)
-        wn.get_node(jname).demand_timeseries_list[0].base_value = base * scale
-        scale_dict[jname] = scale
+    hours = int(wn.options.time.duration // wn.options.time.hydraulic_timestep)
 
-    pump_controls: Dict[str, float] = {}
+    scale_dict: Dict[str, np.ndarray] = {}
+    for jname in wn.junction_name_list:
+        node = wn.get_node(jname)
+        ts = node.demand_timeseries_list[0]
+        if ts.pattern is None:
+            base_mult = np.ones(hours, dtype=float)
+        else:
+            base_mult = np.array(ts.pattern.multipliers, dtype=float)
+        multipliers = base_mult.copy()
+        noise = 1.0 + np.random.normal(0.0, 0.05, size=len(multipliers))
+        multipliers = multipliers * noise
+        multipliers = np.clip(multipliers, a_min=0.0, a_max=None)
+        pat_name = f"{jname}_pat_{idx}"
+        wn.add_pattern(pat_name, wntr.network.elements.Pattern(pat_name, multipliers))
+        ts.pattern_name = pat_name
+        scale_dict[jname] = multipliers
+
+    pump_controls: Dict[str, List[float]] = {}
     for pn in wn.pump_name_list:
         link = wn.get_link(pn)
         link.initial_status = LinkStatus.Open
-        speed = random.uniform(0.0, 1.0)
-        link.speed = speed
-        pump_controls[pn] = speed
-
-    pumps_to_off = random.sample(
-        wn.pump_name_list, max(1, int(0.3 * len(wn.pump_name_list)))
-    )
-    for pn in pumps_to_off:
-        link = wn.get_link(pn)
-        link.initial_status = LinkStatus.Closed
-        link.speed = 0.0
-        pump_controls[pn] = 0.0
+        speeds = []
+        for _h in range(hours):
+            spd = random.uniform(0.0, 1.0)
+            if random.random() < 0.3:
+                spd = 0.0
+            speeds.append(spd)
+        pat_name = f"{pn}_pat_{idx}"
+        wn.add_pattern(pat_name, wntr.network.elements.Pattern(pat_name, speeds))
+        link.base_speed = 1.0
+        link.speed_pattern_name = pat_name
+        pump_controls[pn] = speeds
 
     sim = wntr.sim.EpanetSimulator(wn)
     prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}"
@@ -80,7 +91,7 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
 
 def run_scenarios(
     inp_file: str, num_scenarios: int, seed: Optional[int] = None, n_jobs: int = 1
-) -> List[Tuple[wntr.sim.results.SimulationResults, Dict[str, float], Dict[str, float]]]:
+) -> List[Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]]:
     """Run multiple randomized scenarios and return their results."""
 
     args_list = [(i, inp_file, seed) for i in range(num_scenarios)]
@@ -94,7 +105,13 @@ def run_scenarios(
 
 
 def split_results(
-    results: List[Tuple[wntr.sim.results.SimulationResults, Dict[str, float]]]
+    results: List[
+        Tuple[
+            wntr.sim.results.SimulationResults,
+            Dict[str, np.ndarray],
+            Dict[str, List[float]],
+        ]
+    ]
 ) -> Tuple[List, List, List]:
     num_total = len(results)
     indices = np.random.permutation(num_total)
@@ -114,8 +131,8 @@ def build_dataset(
     results: Iterable[
         Tuple[
             wntr.sim.results.SimulationResults,
-            Dict[str, float],
-            Dict[str, float],
+            Dict[str, np.ndarray],
+            Dict[str, List[float]],
         ]
     ],
     wn_template: wntr.network.WaterNetworkModel,
@@ -131,14 +148,13 @@ def build_dataset(
         demands = sim_results.node.get("demand")
         times = pressures.index
 
-        pump_vector = np.array([pump_ctrl[p] for p in pumps], dtype=np.float64)
-
         pressures = pressures.clip(lower=0.0)
         quality = quality.clip(lower=0.0)
         if demands is not None:
             demands = demands.clip(lower=0.0)
 
         for i in range(len(times) - 1):
+            pump_vector = np.array([pump_ctrl[p][i] for p in pumps], dtype=np.float64)
 
             feat_nodes = []
             for node in wn_template.node_name_list:
@@ -218,13 +234,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    inp_file = "CTown.inp"
+    inp_file = REPO_ROOT / "CTown.inp"
     N = args.num_scenarios
 
-    results = run_scenarios(inp_file, N, seed=args.seed, n_jobs=args.n_jobs)
+    results = run_scenarios(str(inp_file), N, seed=args.seed, n_jobs=args.n_jobs)
     train_res, val_res, test_res = split_results(results)
 
-    wn_template = wntr.network.WaterNetworkModel(inp_file)
+    wn_template = wntr.network.WaterNetworkModel(str(inp_file))
     X_train, Y_train = build_dataset(train_res, wn_template)
     X_val, Y_val = build_dataset(val_res, wn_template)
     X_test, Y_test = build_dataset(test_res, wn_template)
