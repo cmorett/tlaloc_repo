@@ -67,6 +67,9 @@ Once the surrogate model is trained you can run gradient-based MPC using
 python scripts/mpc_control.py --horizon 6 --iterations 50 --feedback-interval 24
 ```
 
+By default the controller loads the most recent ``.pth`` file found in the
+``models`` directory so retraining will automatically use the newest weights.
+
 This executes a 24‑hour closed loop simulation where pump actions are optimized
 at each hour.  EPANET is only called every 24 hours (controlled by
 ``--feedback-interval``) and all intermediate updates rely on the GNN surrogate
