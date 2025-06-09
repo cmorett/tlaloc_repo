@@ -181,8 +181,16 @@ def prepare_node_features(
             demand = 0.0
         if name in wn.junction_name_list or name in wn.tank_name_list:
             elev = node.elevation
+        elif name in wn.reservoir_name_list:
+            # ``Reservoir`` objects expose ``head`` as ``None`` and store the
+            # hydraulic head in ``base_head``. Using ``head`` directly would
+            # produce ``NaN`` feature values which later lead to ``NaN``
+            # predictions during MPC optimisation.
+            elev = node.base_head
         else:
             elev = node.head
+        if elev is None:
+            elev = 0.0
         base = [demand, pressures.get(name, 0.0), chlorine.get(name, 0.0), elev]
         base.extend(pump_controls.tolist())
         feats[idx] = np.array(base, dtype=np.float32)
