@@ -2,6 +2,7 @@ import random
 import pickle
 import os
 import argparse
+import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Optional
 from multiprocessing import Pool
@@ -16,6 +17,20 @@ import numpy as np
 import wntr
 from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
+
+
+def _safe_remove(path: str, retries: int = 5, delay: float = 0.1) -> None:
+    """Remove a file, retrying if a PermissionError occurs."""
+    for _ in range(retries):
+        try:
+            os.remove(path)
+            return
+        except PermissionError:
+            time.sleep(delay)
+        except FileNotFoundError:
+            return
+    # Final attempt will raise if it fails again
+    os.remove(path)
 
 
 def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]:
@@ -91,7 +106,7 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
     for ext in [".inp", ".rpt", ".bin", ".hyd", ".msx", ".msx-rpt", ".msx-bin", ".check.msx"]:
         f = f"{prefix}{ext}"
         if os.path.exists(f):
-            os.remove(f)
+            _safe_remove(f)
 
     flows = sim_results.link["flowrate"]
     heads = sim_results.node["head"]
