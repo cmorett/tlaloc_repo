@@ -168,8 +168,20 @@ def run_all_pumps_on(
         log.append(
             {
                 "time": hour,
-                "min_pressure": max(min(pressures.values()), 0.0),
-                "min_chlorine": max(min(chlorine.values()), 0.0),
+                "min_pressure": max(
+                    min(
+                        pressures[n]
+                        for n in wn.junction_name_list + wn.tank_name_list
+                    ),
+                    0.0,
+                ),
+                "min_chlorine": max(
+                    min(
+                        chlorine[n]
+                        for n in wn.junction_name_list + wn.tank_name_list
+                    ),
+                    0.0,
+                ),
                 "energy": float(energy),
             }
         )
@@ -197,7 +209,11 @@ def run_heuristic_baseline(
     chlorine = results.node["quality"].iloc[-1].to_dict()
 
     for hour in range(24):
-        if min(pressures.values()) < threshold_p or min(chlorine.values()) < threshold_c:
+        if min(
+            pressures[n] for n in wn.junction_name_list + wn.tank_name_list
+        ) < threshold_p or min(
+            chlorine[n] for n in wn.junction_name_list + wn.tank_name_list
+        ) < threshold_c:
             status = wntr.network.base.LinkStatus.Open
         else:
             status = wntr.network.base.LinkStatus.Closed
@@ -219,8 +235,20 @@ def run_heuristic_baseline(
         log.append(
             {
                 "time": hour,
-                "min_pressure": max(min(pressures.values()), 0.0),
-                "min_chlorine": max(min(chlorine.values()), 0.0),
+                "min_pressure": max(
+                    min(
+                        pressures[n]
+                        for n in wn.junction_name_list + wn.tank_name_list
+                    ),
+                    0.0,
+                ),
+                "min_chlorine": max(
+                    min(
+                        chlorine[n]
+                        for n in wn.junction_name_list + wn.tank_name_list
+                    ),
+                    0.0,
+                ),
                 "energy": float(energy),
             }
         )
