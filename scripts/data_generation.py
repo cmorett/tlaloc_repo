@@ -19,7 +19,12 @@ from wntr.metrics.economic import pump_energy
 
 
 def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]:
-    """Helper executed in a separate process to run one scenario."""
+    """Helper executed in a separate process to run one scenario.
+
+    EPANET occasionally fails to write results when the hydraulics
+    become infeasible. To make the data generation robust we retry a
+    few times before giving up.
+    """
     idx, inp_file, seed = args
     if seed is not None:
         random.seed(seed + idx)
@@ -67,9 +72,21 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
         link.speed_pattern_name = pat_name
         pump_controls[pn] = speeds
 
-    sim = wntr.sim.EpanetSimulator(wn)
     prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}"
-    sim_results = sim.run_sim(file_prefix=str(prefix))
+    sim_results = None
+    for attempt in range(3):
+        try:
+            sim = wntr.sim.EpanetSimulator(wn)
+            sim_results = sim.run_sim(file_prefix=str(prefix))
+            break
+        except wntr.epanet.exceptions.EpanetException:
+            # Retry with a new random seed if EPANET failed
+            if attempt < 2:
+                new_seed = (seed or 0) + idx + attempt + 1
+                random.seed(new_seed)
+                np.random.seed(new_seed)
+                continue
+            raise
 
     for ext in [".inp", ".rpt", ".bin", ".hyd", ".msx", ".msx-rpt", ".msx-bin", ".check.msx"]:
         f = f"{prefix}{ext}"
