@@ -57,7 +57,13 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
         pump_controls[pn] = 0.0
 
     sim = wntr.sim.EpanetSimulator(wn)
-    sim_results = sim.run_sim()
+    prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}"
+    sim_results = sim.run_sim(file_prefix=str(prefix))
+
+    for ext in [".inp", ".rpt", ".bin", ".hyd", ".msx", ".msx-rpt", ".msx-bin", ".check.msx"]:
+        f = f"{prefix}{ext}"
+        if os.path.exists(f):
+            os.remove(f)
 
     flows = sim_results.link["flowrate"]
     heads = sim_results.node["head"]
