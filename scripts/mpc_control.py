@@ -381,7 +381,7 @@ def simulate_closed_loop(
             noise = np.random.normal(1.0, 0.05)
             junc.demand_timeseries_list[0].base_value = base_demands[j] * mult * noise
 
-        if feedback_interval > 0 and hour % feedback_interval == 0 and hour != 0:
+        if feedback_interval > 0 and hour % feedback_interval == 0:
             # Periodic ground truth synchronization using EPANET
             wn.options.time.start_clocktime = t
             wn.options.time.duration = 3600
@@ -410,7 +410,7 @@ def simulate_closed_loop(
                 device,
             )
             end = time.time()
-            energy = float('nan')
+            energy = 0.0
         min_p = max(
             min(pressures[n] for n in wn.junction_name_list + wn.tank_name_list),
             0.0,
