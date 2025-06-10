@@ -214,6 +214,23 @@ def _run_single_scenario(
     return sim_results, scale_dict, pump_controls
 
 
+def extract_additional_targets(sim_results: wntr.sim.results.SimulationResults, wn: wntr.network.WaterNetworkModel) -> tuple[np.ndarray, np.ndarray]:
+    """Return arrays of pipe flow rates and pump energy consumption."""
+
+    flows_df = sim_results.link["flowrate"]
+    heads_df = sim_results.node["head"]
+    num_links = len(wn.link_name_list)
+    flows_dir = np.zeros((len(flows_df), num_links * 2), dtype=np.float64)
+    for idx, link_name in enumerate(wn.link_name_list):
+        col = flows_df[link_name].values.astype(np.float64)
+        flows_dir[:, idx * 2] = col
+        flows_dir[:, idx * 2 + 1] = -col
+    flow_rates = flows_dir
+    energy_df = pump_energy(flows_df[wn.pump_name_list], heads_df, wn)
+    pump_energy_arr = energy_df[wn.pump_name_list].values.astype(np.float64)
+    return flow_rates, pump_energy_arr
+
+
 def run_scenarios(
     inp_file: str,
     num_scenarios: int,
@@ -262,10 +279,10 @@ def build_sequence_dataset(
     wn_template: wntr.network.WaterNetworkModel,
     seq_len: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Construct a dataset of sequences from simulation results."""
+    """Construct a dataset of sequences from simulation results with multi-task targets."""
 
     X_list: List[np.ndarray] = []
-    Y_list: List[np.ndarray] = []
+    Y_list: List[dict] = []
     scenario_types: List[str] = []
 
     pumps = wn_template.pump_name_list
@@ -278,6 +295,7 @@ def build_sequence_dataset(
         if demands is not None:
             demands = demands.clip(lower=0.0, upper=demands.max() * 1.5)
         times = pressures.index
+        flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
 
         if len(times) <= seq_len:
             raise ValueError(
@@ -285,7 +303,9 @@ def build_sequence_dataset(
             )
 
         X_seq: List[np.ndarray] = []
-        Y_seq: List[np.ndarray] = []
+        node_out_seq: List[np.ndarray] = []
+        edge_out_seq: List[np.ndarray] = []
+        energy_seq: List[np.ndarray] = []
         for t in range(seq_len):
             pump_vector = np.array([pump_ctrl[p][t] for p in pumps], dtype=np.float64)
             feat_nodes = []
@@ -317,14 +337,20 @@ def build_sequence_dataset(
                 p_next = float(pressures.iat[t + 1, idx])
                 c_next = float(quality.iat[t + 1, idx])
                 out_nodes.append([max(p_next, 0.0), max(c_next, 0.0)])
-            Y_seq.append(np.array(out_nodes, dtype=np.float64))
+            node_out_seq.append(np.array(out_nodes, dtype=np.float64))
+
+            edge_out_seq.append(flows_arr[t + 1].astype(np.float64))
+            energy_seq.append(energy_arr[t + 1].astype(np.float64))
 
         X_list.append(np.stack(X_seq))
-        Y_list.append(np.stack(Y_seq))
+        Y_list.append({
+            "node_outputs": np.stack(node_out_seq).astype(np.float32),
+            "edge_outputs": np.stack(edge_out_seq).astype(np.float32),
+            "pump_energy": np.stack(energy_seq).astype(np.float32),
+        })
 
     X = np.stack(X_list).astype(np.float32)
-    Y = np.stack(Y_list).astype(np.float32)
-    Y = np.clip(Y, a_min=0.0, a_max=None)
+    Y = np.array(Y_list, dtype=object)
     return X, Y, np.array(scenario_types)
 
 def build_dataset(
@@ -338,7 +364,7 @@ def build_dataset(
     wn_template: wntr.network.WaterNetworkModel,
 ) -> Tuple[np.ndarray, np.ndarray]:
     X_list: List[np.ndarray] = []
-    Y_list: List[np.ndarray] = []
+    Y_list: List[dict] = []
 
     pumps = wn_template.pump_name_list
 
@@ -347,6 +373,7 @@ def build_dataset(
         quality = sim_results.node["quality"]
         demands = sim_results.node.get("demand")
         times = pressures.index
+        flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
 
         pressures = pressures.clip(lower=0.0)
         quality = quality.clip(lower=0.0, upper=5.0)
@@ -387,14 +414,17 @@ def build_dataset(
                 p_next = max(pressures.iat[i + 1, idx], 0.0)
                 c_next = max(quality.iat[i + 1, idx], 0.0)
                 out_nodes.append([p_next, c_next])
-            Y_list.append(np.array(out_nodes, dtype=np.float64))
+            Y_list.append({
+                "node_outputs": np.array(out_nodes, dtype=np.float32),
+                "edge_outputs": flows_arr[i + 1].astype(np.float32),
+                "pump_energy": energy_arr[i + 1].astype(np.float32),
+            })
 
     if not X_list:
         return np.empty((0, 0), dtype=np.float32), np.empty((0, 0), dtype=np.float32)
 
     X = np.stack(X_list).astype(np.float32)
-    Y = np.stack(Y_list).astype(np.float32)
-    Y = np.clip(Y, a_min=0.0, a_max=None)
+    Y = np.array(Y_list, dtype=object)
     return X, Y
 
 

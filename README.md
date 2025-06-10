@@ -28,6 +28,12 @@ loading the EPANET network (``--inp-path``).  If the dimension does not match
 ``4 + num_pumps`` an error is raised. Use ``--output-dim`` to specify how many
 continuous targets are predicted per node.
 
+When datasets were generated with ``scripts/data_generation.py`` after this
+update, each time step also stores pipe flow rates and pump energy
+consumption. ``train_gnn.py`` automatically detects such multi-task arrays and
+switches to a ``MultiTaskGNNSurrogate`` model which optimizes a weighted loss
+over all targets.
+
 Example usage:
 
 ```bash
