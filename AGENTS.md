@@ -68,3 +68,4 @@ When adding new features or bug fixes, please create unit tests using `pytest` i
 - Negative pressures or `NaN` values for energy are physically unrealistic and should be avoided. Ensure that simulated pressures remain non‑negative and that computed pump energy never becomes `NaN`.
 - Paths should be resolved relative to the repository root so scripts work when launched from any location.
 - Generated data and results should remain inside the `data/` folder.
+- Any changes that you do that influence the way the user is supposed to interact with the scripts should be accompanied with a corresponding change to the README.md file in which you declare how the new change is supposed to be used. 
