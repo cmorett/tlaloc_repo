@@ -247,6 +247,59 @@ def prepare_node_features(
     return feats
 
 
+def compute_mpc_cost(
+    u: torch.Tensor,
+    wn: wntr.network.WaterNetworkModel,
+    model: GNNSurrogate,
+    edge_index: torch.Tensor,
+    edge_attr: torch.Tensor,
+    pressures: Dict[str, float],
+    chlorine: Dict[str, float],
+    horizon: int,
+    node_to_index: Dict[str, int],
+    pump_names: List[str],
+    device: torch.device,
+    Pmin: float,
+    Cmin: float,
+) -> torch.Tensor:
+    """Return the MPC cost for a sequence of pump controls."""
+    cur_p = dict(pressures)
+    cur_c = dict(chlorine)
+    total_cost = torch.tensor(0.0, device=device)
+
+    for t in range(horizon):
+        x = prepare_node_features(
+            wn,
+            cur_p,
+            cur_c,
+            u[t],
+            node_to_index,
+            pump_names,
+            device,
+            model,
+        )
+        pred = model(x, edge_index, edge_attr)
+        if getattr(model, "y_mean", None) is not None:
+            pred = pred * model.y_std + model.y_mean
+        assert not torch.isnan(pred).any(), "NaN prediction"
+        pred_p = pred[:, 0]
+        pred_c = pred[:, 1]
+
+        w_p, w_c, w_e = 1.0, 1.0, 0.1
+        psf = torch.clamp(Pmin - pred_p, min=0.0)
+        csf = torch.clamp(Cmin - pred_c, min=0.0)
+        step_cost = w_p * torch.sum(psf ** 2) + w_c * torch.sum(csf ** 2)
+        step_cost = step_cost + w_e * torch.sum(u[t] ** 2)
+        total_cost = total_cost + step_cost
+
+        # update dictionaries for next step
+        for idx, name in enumerate(wn.node_name_list):
+            cur_p[name] = pred_p[idx].item()
+            cur_c[name] = pred_c[idx].item()
+
+    return total_cost
+
+
 def run_mpc_step(
     wn: wntr.network.WaterNetworkModel,
     model: GNNSurrogate,
@@ -265,6 +318,12 @@ def run_mpc_step(
 ) -> torch.Tensor:
     """Optimize pump controls for one hour using gradient-based MPC.
 
+    The optimization is performed in two phases: a short warm start with
+    Adam followed by refinement using L-BFGS. ``iterations`` controls the total
+    number of optimization steps, split approximately 20/80 between the two
+    phases. ``u`` is clamped to ``[0, 1]`` after each update to enforce valid
+    pump settings.
+
     Parameters
     ----------
     u_warm : torch.Tensor, optional
@@ -275,45 +334,64 @@ def run_mpc_step(
         init = torch.cat([u_warm[1:horizon], u_warm[horizon - 1 : horizon]], dim=0)
     else:
         init = torch.ones(horizon, num_pumps, device=device)
-    u = init.clone().to(device).requires_grad_()
-    optimizer = torch.optim.Adam([u], lr=0.05)
+    u = init.clone().detach().requires_grad_(True)
 
-    for _ in range(iterations):
-        optimizer.zero_grad()
-        cur_p = dict(pressures)
-        cur_c = dict(chlorine)
-        total_cost = torch.tensor(0.0, device=device)
-        for t in range(horizon):
-            x = prepare_node_features(
-                wn,
-                cur_p,
-                cur_c,
-                u[t],
-                node_to_index,
-                pump_names,
-                device,
-                model,
-            )
-            pred = model(x, edge_index, edge_attr)
-            if getattr(model, "y_mean", None) is not None:
-                pred = pred * model.y_std + model.y_mean
-            assert not torch.isnan(pred).any(), "NaN prediction"
-            pred_p = pred[:, 0]
-            pred_c = pred[:, 1]
-            w_p, w_c, w_e = 1.0, 1.0, 0.1
-            psf = torch.clamp(Pmin - pred_p, min=0.0)
-            csf = torch.clamp(Cmin - pred_c, min=0.0)
-            cost = w_p * torch.sum(psf ** 2) + w_c * torch.sum(csf ** 2)
-            cost = cost + w_e * torch.sum(u[t] ** 2)
-            total_cost = total_cost + cost
-            # update state dictionaries
-            for idx, name in enumerate(wn.node_name_list):
-                cur_p[name] = pred_p[idx].item()
-                cur_c[name] = pred_c[idx].item()
-        total_cost.backward()
-        optimizer.step()
+    # --- Phase 1: warm start with Adam -------------------------------------
+    adam_steps = max(1, min(10, iterations // 5))
+    adam_opt = torch.optim.Adam([u], lr=0.05)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(adam_opt, "min", patience=3, factor=0.5)
+
+    for _ in range(adam_steps):
+        adam_opt.zero_grad()
+        cost = compute_mpc_cost(
+            u,
+            wn,
+            model,
+            edge_index,
+            edge_attr,
+            pressures,
+            chlorine,
+            horizon,
+            node_to_index,
+            pump_names,
+            device,
+            Pmin,
+            Cmin,
+        )
+        cost.backward()
+        adam_opt.step()
         with torch.no_grad():
             u.data.clamp_(0.0, 1.0)
+        scheduler.step(cost.item())
+
+    # --- Phase 2: L-BFGS refinement --------------------------------------
+    lbfgs_steps = max(iterations - adam_steps, 1)
+    lbfgs_opt = torch.optim.LBFGS([u], max_iter=lbfgs_steps, line_search_fn="strong_wolfe")
+
+    def closure():
+        lbfgs_opt.zero_grad()
+        c = compute_mpc_cost(
+            u,
+            wn,
+            model,
+            edge_index,
+            edge_attr,
+            pressures,
+            chlorine,
+            horizon,
+            node_to_index,
+            pump_names,
+            device,
+            Pmin,
+            Cmin,
+        )
+        c.backward()
+        return c
+
+    lbfgs_opt.step(closure)
+    with torch.no_grad():
+        u.data.clamp_(0.0, 1.0)
+
     return u.detach()
 
 
