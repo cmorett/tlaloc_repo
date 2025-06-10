@@ -59,11 +59,17 @@ looks like:
 python scripts/data_generation.py --num-scenarios 2000 --output-dir data/ --seed 42
 ```
 
+Set ``--extreme-event-prob`` to inject rare scenarios such as fire flows,
+pump failures or source quality changes.  Scenario labels are stored alongside
+the sequence arrays when ``--sequence-length`` is greater than one.
+
 To create sequence datasets for the recurrent surrogate specify ``--sequence-length``:
 
 ```bash
 python scripts/data_generation.py --num-scenarios 200 --sequence-length 24 --output-dir data/
 ```
+This will also generate ``scenario_train.npy`` etc. recording the type of each
+scenario.
 
 The training script automatically detects such sequence files and will use the recurrent
 model. Adjust the recurrent hidden size via ``--rnn-hidden-dim`` if desired.
