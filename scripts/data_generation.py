@@ -5,6 +5,7 @@ import argparse
 import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Optional
+from sklearn.preprocessing import MinMaxScaler
 import warnings
 
 # Resolve repository paths so all files are created inside the repo
@@ -265,18 +266,35 @@ def build_dataset(
     return X, Y
 
 
-def build_edge_index(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
+def build_edge_index(
+    wn: wntr.network.WaterNetworkModel,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return directed edge index and normalized edge attributes."""
+
     node_index_map = {name: idx for idx, name in enumerate(wn.node_name_list)}
-    edge_index = []
+    edges: List[List[int]] = []
+    attrs: List[List[float]] = []
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
         i1 = node_index_map[link.start_node.name]
         i2 = node_index_map[link.end_node.name]
-        edge_index.append([i1, i2])
-        edge_index.append([i2, i1])
-    edge_index = np.array(edge_index, dtype=np.int64).T
+        edges.append([i1, i2])
+        edges.append([i2, i1])
+        length = getattr(link, "length", 0.0) or 0.0
+        diam = getattr(link, "diameter", 0.0) or 0.0
+        rough = getattr(link, "roughness", 0.0) or 0.0
+        attrs.append([length, diam, rough])
+        attrs.append([length, diam, rough])
+
+    edge_index = np.array(edges, dtype=np.int64).T
+    edge_attr = np.array(attrs, dtype=np.float32)
+    # log-normalize roughness then scale all features to [0,1]
+    edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
+    scaler = MinMaxScaler()
+    edge_attr = scaler.fit_transform(edge_attr)
+
     assert edge_index.shape[0] == 2
-    return edge_index
+    return edge_index, edge_attr
 
 
 def main() -> None:
@@ -306,7 +324,7 @@ def main() -> None:
     X_val, Y_val = build_dataset(val_res, wn_template)
     X_test, Y_test = build_dataset(test_res, wn_template)
 
-    edge_index = build_edge_index(wn_template)
+    edge_index, edge_attr = build_edge_index(wn_template)
 
     out_dir = Path(args.output_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -318,6 +336,7 @@ def main() -> None:
     np.save(os.path.join(out_dir, "X_test.npy"), X_test)
     np.save(os.path.join(out_dir, "Y_test.npy"), Y_test)
     np.save(os.path.join(out_dir, "edge_index.npy"), edge_index)
+    np.save(os.path.join(out_dir, "edge_attr.npy"), edge_attr)
 
     with open(os.path.join(out_dir, "train_results_list.pkl"), "wb") as f:
         pickle.dump(train_res, f)
