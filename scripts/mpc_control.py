@@ -262,10 +262,17 @@ def compute_mpc_cost(
     Pmin: float,
     Cmin: float,
 ) -> torch.Tensor:
-    """Return the MPC cost for a sequence of pump controls."""
+    """Return the MPC cost for a sequence of pump controls.
+
+    The cost combines pressure and chlorine constraint violations, pump
+    energy use and a smoothness term on control differences. Violations are
+    penalized cubically to strongly discourage operating below the specified
+    minimum thresholds.
+    """
     cur_p = dict(pressures)
     cur_c = dict(chlorine)
     total_cost = torch.tensor(0.0, device=device)
+    smoothness_penalty = torch.tensor(0.0, device=device)
 
     for t in range(horizon):
         x = prepare_node_features(
@@ -285,17 +292,42 @@ def compute_mpc_cost(
         pred_p = pred[:, 0]
         pred_c = pred[:, 1]
 
-        w_p, w_c, w_e = 1.0, 1.0, 0.1
+        # ------------------------------------------------------------------
+        # Cost terms
+        # ------------------------------------------------------------------
+        # We enforce pressure and chlorine constraints using a cubic penalty
+        # on the amount by which the prediction falls below the minimum
+        # thresholds.  Cubic growth penalizes larger violations more
+        # aggressively than a simple quadratic term.
+
+        w_p, w_c, w_e, w_s = 10.0, 5.0, 1.0, 0.01
+
         psf = torch.clamp(Pmin - pred_p, min=0.0)
         csf = torch.clamp(Cmin - pred_c, min=0.0)
-        step_cost = w_p * torch.sum(psf ** 2) + w_c * torch.sum(csf ** 2)
-        step_cost = step_cost + w_e * torch.sum(u[t] ** 2)
+        pressure_penalty = torch.sum(psf ** 3)
+        chlorine_penalty = torch.sum(csf ** 3)
+
+        energy_term = torch.sum(u[t] ** 2)
+
+        step_cost = (
+            w_p * pressure_penalty
+            + w_c * chlorine_penalty
+            + w_e * energy_term
+        )
+
         total_cost = total_cost + step_cost
+
+        if t > 0:
+            # small penalty on rapid pump switching to produce smoother
+            # control sequences
+            smoothness_penalty = smoothness_penalty + torch.sum((u[t] - u[t - 1]) ** 2)
 
         # update dictionaries for next step
         for idx, name in enumerate(wn.node_name_list):
             cur_p[name] = pred_p[idx].item()
             cur_c[name] = pred_c[idx].item()
+
+    total_cost = total_cost + w_s * smoothness_penalty
 
     return total_cost
 
