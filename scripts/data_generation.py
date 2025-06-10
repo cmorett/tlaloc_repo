@@ -58,21 +58,34 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
         ts.pattern_name = pat_name
         scale_dict[jname] = multipliers
 
-    pump_controls: Dict[str, List[float]] = {}
-    for pn in wn.pump_name_list:
-        link = wn.get_link(pn)
-        link.initial_status = LinkStatus.Open
-        speeds = []
-        for _h in range(hours):
+    pump_controls: Dict[str, List[float]] = {pn: [] for pn in wn.pump_name_list}
+
+    # Generate pump speeds hour by hour so we can ensure that at least one pump
+    # is active.  EPANET often fails to solve the hydraulic equations when all
+    # pumps are simultaneously shut off.  To avoid this, we randomly select one
+    # pump to remain on whenever an hour would otherwise have all pumps at speed
+    # 0.
+    for _h in range(hours):
+        for pn in wn.pump_name_list:
             spd = random.uniform(0.0, 1.0)
             if random.random() < 0.3:
                 spd = 0.0
-            speeds.append(spd)
+            pump_controls[pn].append(spd)
+
+        if all(pump_controls[pn][-1] == 0.0 for pn in wn.pump_name_list):
+            keep_on = random.choice(wn.pump_name_list)
+            pump_controls[keep_on][-1] = random.uniform(0.5, 1.0)
+
+    for pn in wn.pump_name_list:
+        link = wn.get_link(pn)
+        link.initial_status = LinkStatus.Open
         pat_name = f"{pn}_pat_{idx}"
-        wn.add_pattern(pat_name, wntr.network.elements.Pattern(pat_name, speeds))
+        wn.add_pattern(
+            pat_name,
+            wntr.network.elements.Pattern(pat_name, pump_controls[pn]),
+        )
         link.base_speed = 1.0
         link.speed_pattern_name = pat_name
-        pump_controls[pn] = speeds
 
     prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}"
     sim_results = None
