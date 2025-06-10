@@ -59,6 +59,15 @@ looks like:
 python scripts/data_generation.py --num-scenarios 2000 --output-dir data/ --seed 42
 ```
 
+To create sequence datasets for the recurrent surrogate specify ``--sequence-length``:
+
+```bash
+python scripts/data_generation.py --num-scenarios 200 --sequence-length 24 --output-dir data/
+```
+
+The training script automatically detects such sequence files and will use the recurrent
+model. Adjust the recurrent hidden size via ``--rnn-hidden-dim`` if desired.
+
 Validate the resulting model with `scripts/experiments_validation.py` before
 running the MPC controller.  The validation script executes a 24‑hour
 simulation with EPANET feedback applied every hour (``--feedback-interval`` is
