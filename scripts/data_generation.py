@@ -20,17 +20,8 @@ from wntr.metrics.economic import pump_energy
 
 
 
-def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]:
-    """Run a single randomized scenario.
-
-    EPANET occasionally fails to write results when the hydraulics
-    become infeasible. To make the data generation robust we retry a
-    few times before giving up.
-    """
-    idx, inp_file, seed = args
-    if seed is not None:
-        random.seed(seed + idx)
-        np.random.seed(seed + idx)
+def _build_randomized_network(inp_file: str, idx: int) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
+    """Create a network with randomized demand patterns and pump controls."""
 
     wn = wntr.network.WaterNetworkModel(inp_file)
     wn.options.time.duration = 24 * 3600
@@ -60,11 +51,6 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
 
     pump_controls: Dict[str, List[float]] = {pn: [] for pn in wn.pump_name_list}
 
-    # Generate pump speeds hour by hour so we can ensure that at least one pump
-    # is active.  EPANET often fails to solve the hydraulic equations when all
-    # pumps are simultaneously shut off.  To avoid this, we randomly select one
-    # pump to remain on whenever an hour would otherwise have all pumps at speed
-    # 0.
     for _h in range(hours):
         for pn in wn.pump_name_list:
             spd = random.uniform(0.0, 1.0)
@@ -80,28 +66,77 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
         link = wn.get_link(pn)
         link.initial_status = LinkStatus.Open
         pat_name = f"{pn}_pat_{idx}"
-        wn.add_pattern(
-            pat_name,
-            wntr.network.elements.Pattern(pat_name, pump_controls[pn]),
-        )
+        wn.add_pattern(pat_name, wntr.network.elements.Pattern(pat_name, pump_controls[pn]))
         link.base_speed = 1.0
         link.speed_pattern_name = pat_name
 
-    prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}"
-    sim_results = None
+    return wn, scale_dict, pump_controls
+
+
+def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]:
+    """Run a single randomized scenario.
+
+    EPANET occasionally fails to write results when the hydraulics become
+    infeasible. To make the data generation robust we retry a few times,
+    rebuilding the randomized scenario each time.
+    """
+
+    idx, inp_file, seed = args
+
     for attempt in range(3):
+        if seed is not None:
+            random.seed(seed + idx + attempt)
+            np.random.seed(seed + idx + attempt)
+
+        wn, scale_dict, pump_controls = _build_randomized_network(inp_file, idx)
+
+        prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}_{attempt}"
         try:
             sim = wntr.sim.EpanetSimulator(wn)
             sim_results = sim.run_sim(file_prefix=str(prefix))
             break
         except wntr.epanet.exceptions.EpanetException:
-            # Retry with a new random seed if EPANET failed
-            if attempt < 2:
-                new_seed = (seed or 0) + idx + attempt + 1
-                random.seed(new_seed)
-                np.random.seed(new_seed)
+            # Remove possible leftover files before retrying with a new
+            # randomized scenario.  If we ran out of attempts, re-raise.
+            for ext in [
+                ".inp",
+                ".rpt",
+                ".bin",
+                ".hyd",
+                ".msx",
+                ".msx-rpt",
+                ".msx-bin",
+                ".check.msx",
+            ]:
+                try:
+                    os.remove(f"{prefix}{ext}")
+                except FileNotFoundError:
+                    pass
+                except PermissionError:
+                    warnings.warn(f"Could not remove file {prefix}{ext}")
+            if attempt == 2:
+                raise
+            else:
                 continue
-            raise
+
+    # Clean up temp files from the successful attempt
+    for ext in [
+        ".inp",
+        ".rpt",
+        ".bin",
+        ".hyd",
+        ".msx",
+        ".msx-rpt",
+        ".msx-bin",
+        ".check.msx",
+    ]:
+        f = f"{prefix}{ext}"
+        try:
+            os.remove(f)
+        except FileNotFoundError:
+            pass
+        except PermissionError:
+            warnings.warn(f"Could not remove file {f}")
 
     for ext in [".inp", ".rpt", ".bin", ".hyd", ".msx", ".msx-rpt", ".msx-bin", ".check.msx"]:
         f = f"{prefix}{ext}"
