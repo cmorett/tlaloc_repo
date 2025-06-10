@@ -5,7 +5,6 @@ import argparse
 import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Optional
-from multiprocessing import Pool
 import warnings
 
 # Resolve repository paths so all files are created inside the repo
@@ -20,24 +19,9 @@ from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
 
 
-def _safe_remove(path: str, retries: int = 10, delay: float = 0.2) -> None:
-    """Remove a file, retrying if a PermissionError occurs."""
-    for _ in range(retries):
-        try:
-            os.remove(path)
-            return
-        except PermissionError:
-            time.sleep(delay)
-        except FileNotFoundError:
-            return
-    try:
-        os.remove(path)
-    except PermissionError:
-        warnings.warn(f"Could not remove file {path} after {retries} attempts")
-
 
 def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]:
-    """Helper executed in a separate process to run one scenario.
+    """Run a single randomized scenario.
 
     EPANET occasionally fails to write results when the hydraulics
     become infeasible. To make the data generation robust we retry a
@@ -108,8 +92,12 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
 
     for ext in [".inp", ".rpt", ".bin", ".hyd", ".msx", ".msx-rpt", ".msx-bin", ".check.msx"]:
         f = f"{prefix}{ext}"
-        if os.path.exists(f):
-            _safe_remove(f)
+        try:
+            os.remove(f)
+        except FileNotFoundError:
+            pass
+        except PermissionError:
+            warnings.warn(f"Could not remove file {f}")
 
     flows = sim_results.link["flowrate"]
     heads = sim_results.node["head"]
@@ -125,16 +113,12 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
 
 
 def run_scenarios(
-    inp_file: str, num_scenarios: int, seed: Optional[int] = None, n_jobs: int = 1
+    inp_file: str, num_scenarios: int, seed: Optional[int] = None
 ) -> List[Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]]:
     """Run multiple randomized scenarios and return their results."""
 
     args_list = [(i, inp_file, seed) for i in range(num_scenarios)]
-    if n_jobs > 1:
-        with Pool(processes=n_jobs) as pool:
-            results = pool.map(_run_single_scenario, args_list)
-    else:
-        results = [_run_single_scenario(a) for a in args_list]
+    results = [_run_single_scenario(a) for a in args_list]
 
     return results
 
@@ -261,18 +245,12 @@ def main() -> None:
         default=DATA_DIR,
         help="Directory to store generated datasets",
     )
-    parser.add_argument(
-        "--n-jobs",
-        type=int,
-        default=1,
-        help="Number of parallel processes for scenario generation",
-    )
     args = parser.parse_args()
 
     inp_file = REPO_ROOT / "CTown.inp"
     N = args.num_scenarios
 
-    results = run_scenarios(str(inp_file), N, seed=args.seed, n_jobs=args.n_jobs)
+    results = run_scenarios(str(inp_file), N, seed=args.seed)
     train_res, val_res, test_res = split_results(results)
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
