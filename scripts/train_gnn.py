@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GCNConv, MessagePassing
+from torch_geometric.nn import GCNConv, MessagePassing, GATConv, LayerNorm
 import wntr
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -39,8 +39,8 @@ class HydroConv(MessagePassing):
         return weight * (x_j - x_i)
 
 
-class GCNEncoder(nn.Module):
-    """Flexible GCN architecture used for surrogate training."""
+class EnhancedGNNEncoder(nn.Module):
+    """GNN encoder supporting attention and residual connections."""
 
     def __init__(
         self,
@@ -52,48 +52,69 @@ class GCNEncoder(nn.Module):
         activation: str = "relu",
         residual: bool = False,
         edge_dim: int | None = None,
+        use_attention: bool = False,
+        gat_heads: int = 4,
     ) -> None:
         super().__init__()
 
-        self.edge_dim = edge_dim
-        conv_cls = (
-            (lambda in_c, out_c: HydroConv(in_c, out_c, edge_dim))
-            if edge_dim is not None
-            else (lambda in_c, out_c: GCNConv(in_c, out_c))
-        )
-
-        self.layers = nn.ModuleList()
-        if num_layers == 1:
-            self.layers.append(conv_cls(in_channels, out_channels))
-        else:
-            self.layers.append(conv_cls(in_channels, hidden_channels))
-            for _ in range(num_layers - 2):
-                self.layers.append(conv_cls(hidden_channels, hidden_channels))
-            self.layers.append(conv_cls(hidden_channels, out_channels))
-
-        # Expose first/last conv for backward compatibility with existing code
-        self.conv1 = self.layers[0]
-        self.conv2 = self.layers[-1]
+        self.use_attention = use_attention
         self.dropout = dropout
         self.residual = residual
         self.act_fn = getattr(F, activation)
 
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+
+        if use_attention:
+            self.convs.append(
+                GATConv(in_channels, hidden_channels // gat_heads, heads=gat_heads, edge_dim=edge_dim)
+            )
+        else:
+            conv_cls = (
+                (lambda in_c, out_c: HydroConv(in_c, out_c, edge_dim))
+                if edge_dim is not None
+                else (lambda in_c, out_c: GCNConv(in_c, out_c))
+            )
+            self.convs.append(conv_cls(in_channels, hidden_channels))
+
+        self.norms.append(LayerNorm(hidden_channels))
+
+        for _ in range(num_layers - 1):
+            if use_attention:
+                self.convs.append(
+                    GATConv(hidden_channels, hidden_channels // gat_heads, heads=gat_heads, edge_dim=edge_dim)
+                )
+            else:
+                self.convs.append(conv_cls(hidden_channels, hidden_channels))
+            self.norms.append(LayerNorm(hidden_channels))
+
+        self.fc_out = nn.Linear(hidden_channels, out_channels)
+
+        self.conv1 = self.convs[0]
+        self.conv2 = self.convs[-1]
+
     def forward(self, data: Data) -> torch.Tensor:
         x, edge_index = data.x, data.edge_index
         edge_attr = getattr(data, "edge_attr", None)
-        for i, conv in enumerate(self.layers):
-            residual = x
-            if isinstance(conv, HydroConv):
-                x = conv(x, edge_index, edge_attr)
+        for conv, norm in zip(self.convs, self.norms):
+            identity = x
+            if isinstance(conv, HydroConv) or not self.use_attention:
+                if isinstance(conv, HydroConv):
+                    x = conv(x, edge_index, edge_attr)
+                else:
+                    x = conv(x, edge_index)
             else:
-                x = conv(x, edge_index)
-            if i < len(self.layers) - 1:
-                x = self.act_fn(x)
-                if self.dropout > 0:
-                    x = F.dropout(x, p=self.dropout, training=self.training)
-                if self.residual:
-                    x = x + residual
-        return x
+                x = conv(x, edge_index, edge_attr)
+            x = self.act_fn(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = norm(x)
+            if self.residual and identity.shape == x.shape:
+                x = x + identity
+        return self.fc_out(x)
+
+
+# Backwards compatibility for tests and older scripts
+GCNEncoder = EnhancedGNNEncoder
 
 
 def load_dataset(
@@ -280,6 +301,8 @@ def main(args: argparse.Namespace):
         activation=args.activation,
         residual=args.residual,
         edge_dim=edge_attr.shape[1],
+        use_attention=args.use_attention,
+        gat_heads=args.gat_heads,
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -384,8 +407,14 @@ if __name__ == "__main__":
         default=64,
         help="Hidden dimension",
     )
-    parser.add_argument("--num-layers", type=int, default=2, help="GCN layers")
-    parser.add_argument("--dropout", type=float, default=0.0, help="Dropout")
+    parser.add_argument("--use-attention", action="store_true",
+                        help="Use GATConv instead of HydroConv for graph convolution")
+    parser.add_argument("--gat-heads", type=int, default=4,
+                        help="Number of attention heads for GATConv (if attention is enabled)")
+    parser.add_argument("--dropout", type=float, default=0.1,
+                        help="Dropout rate applied after each GNN layer")
+    parser.add_argument("--num-layers", type=int, default=4,
+                        help="Number of convolutional layers in the GNN model")
     parser.add_argument(
         "--activation",
         default="relu",
