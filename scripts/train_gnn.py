@@ -9,10 +9,34 @@ import torch.nn.functional as F
 from torch import nn
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import GCNConv, MessagePassing
 import wntr
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+
+class HydroConv(MessagePassing):
+    """Mass-conserving convolution using edge attributes."""
+
+    def __init__(self, in_channels: int, out_channels: int, edge_dim: int):
+        super().__init__(aggr="add")
+        self.lin = nn.Linear(in_channels, out_channels)
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(edge_dim, 1),
+            nn.Softplus(),
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.lin(self.propagate(edge_index, x=x, edge_attr=edge_attr))
+
+    def message(self, x_i: torch.Tensor, x_j: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:
+        weight = self.edge_mlp(edge_attr).view(-1, 1)
+        return weight * (x_j - x_i)
 
 
 class GCNEncoder(nn.Module):
@@ -27,17 +51,25 @@ class GCNEncoder(nn.Module):
         dropout: float = 0.0,
         activation: str = "relu",
         residual: bool = False,
+        edge_dim: int | None = None,
     ) -> None:
         super().__init__()
 
+        self.edge_dim = edge_dim
+        conv_cls = (
+            (lambda in_c, out_c: HydroConv(in_c, out_c, edge_dim))
+            if edge_dim is not None
+            else (lambda in_c, out_c: GCNConv(in_c, out_c))
+        )
+
         self.layers = nn.ModuleList()
         if num_layers == 1:
-            self.layers.append(GCNConv(in_channels, out_channels))
+            self.layers.append(conv_cls(in_channels, out_channels))
         else:
-            self.layers.append(GCNConv(in_channels, hidden_channels))
+            self.layers.append(conv_cls(in_channels, hidden_channels))
             for _ in range(num_layers - 2):
-                self.layers.append(GCNConv(hidden_channels, hidden_channels))
-            self.layers.append(GCNConv(hidden_channels, out_channels))
+                self.layers.append(conv_cls(hidden_channels, hidden_channels))
+            self.layers.append(conv_cls(hidden_channels, out_channels))
 
         # Expose first/last conv for backward compatibility with existing code
         self.conv1 = self.layers[0]
@@ -48,9 +80,13 @@ class GCNEncoder(nn.Module):
 
     def forward(self, data: Data) -> torch.Tensor:
         x, edge_index = data.x, data.edge_index
+        edge_attr = getattr(data, "edge_attr", None)
         for i, conv in enumerate(self.layers):
             residual = x
-            x = conv(x, edge_index)
+            if isinstance(conv, HydroConv):
+                x = conv(x, edge_index, edge_attr)
+            else:
+                x = conv(x, edge_index)
             if i < len(self.layers) - 1:
                 x = self.act_fn(x)
                 if self.dropout > 0:
@@ -60,7 +96,12 @@ class GCNEncoder(nn.Module):
         return x
 
 
-def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.npy"):
+def load_dataset(
+    x_path: str,
+    y_path: str,
+    edge_index_path: str = "edge_index.npy",
+    edge_attr: np.ndarray | None = None,
+) -> list[Data]:
     """Load training data.
 
     The function supports two dataset layouts:
@@ -74,6 +115,9 @@ def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.np
     X = np.load(x_path, allow_pickle=True)
     y = np.load(y_path, allow_pickle=True)
     data_list = []
+    edge_attr_tensor = None
+    if edge_attr is not None:
+        edge_attr_tensor = torch.tensor(edge_attr, dtype=torch.float32)
 
     # Detect whether the first entry is a dictionary (object array) or a plain
     # matrix. ``np.ndarray`` with ``dtype=object`` will require calling
@@ -91,9 +135,10 @@ def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.np
                 # reservoir heads) with zeros so that training does not produce
                 # ``NaN`` losses.
                 node_feat = torch.nan_to_num(node_feat)
-            data_list.append(
-                Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
-            )
+            data = Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
+            if edge_attr_tensor is not None:
+                data.edge_attr = edge_attr_tensor
+            data_list.append(data)
     else:
         # ``X`` already contains node feature matrices. Load the shared
         # ``edge_index`` from ``edge_index_path``.
@@ -102,9 +147,10 @@ def load_dataset(x_path: str, y_path: str, edge_index_path: str = "edge_index.np
             node_feat = torch.tensor(node_feat, dtype=torch.float32)
             if torch.isnan(node_feat).any():
                 node_feat = torch.nan_to_num(node_feat)
-            data_list.append(
-                Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
-            )
+            data = Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
+            if edge_attr_tensor is not None:
+                data.edge_attr = edge_attr_tensor
+            data_list.append(data)
 
     return data_list
 
@@ -124,6 +170,25 @@ def apply_normalization(data_list, x_mean, x_std, y_mean, y_std):
     for d in data_list:
         d.x = (d.x - x_mean) / x_std
         d.y = (d.y - y_mean) / y_std
+
+
+def build_edge_attr(
+    wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
+) -> np.ndarray:
+    """Return edge attribute matrix [E,3] for given edge index."""
+    node_map = {n: i for i, n in enumerate(wn.node_name_list)}
+    attr_dict: dict[tuple[int, int], list[float]] = {}
+    for link_name in wn.link_name_list:
+        link = wn.get_link(link_name)
+        i = node_map[link.start_node.name]
+        j = node_map[link.end_node.name]
+        length = getattr(link, "length", 0.0) or 0.0
+        diam = getattr(link, "diameter", 0.0) or 0.0
+        rough = getattr(link, "roughness", 0.0) or 0.0
+        attr = [float(length), float(diam), float(rough)]
+        attr_dict[(i, j)] = attr
+        attr_dict[(j, i)] = attr
+    return np.array([attr_dict[(int(s), int(t))] for s, t in edge_index.T], dtype=np.float32)
 
 
 def train(model, loader, optimizer, device, check_negative=True):
@@ -169,11 +234,21 @@ def main(args: argparse.Namespace):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    data_list = load_dataset(args.x_path, args.y_path, args.edge_index_path)
+    edge_index_np = np.load(args.edge_index_path)
+    wn = wntr.network.WaterNetworkModel(args.inp_path)
+    edge_attr = build_edge_attr(wn, edge_index_np)
+    data_list = load_dataset(
+        args.x_path, args.y_path, args.edge_index_path, edge_attr=edge_attr
+    )
     loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
 
     if args.x_val_path and os.path.exists(args.x_val_path):
-        val_list = load_dataset(args.x_val_path, args.y_val_path, args.edge_index_path)
+        val_list = load_dataset(
+            args.x_val_path,
+            args.y_val_path,
+            args.edge_index_path,
+            edge_attr=edge_attr,
+        )
         val_loader = DataLoader(val_list, batch_size=args.batch_size)
     else:
         val_list = []
@@ -187,7 +262,6 @@ def main(args: argparse.Namespace):
     else:
         x_mean = x_std = y_mean = y_std = None
 
-    wn = wntr.network.WaterNetworkModel(args.inp_path)
     expected_in_dim = 4 + len(wn.pump_name_list)
 
     sample = data_list[0]
@@ -205,6 +279,7 @@ def main(args: argparse.Namespace):
         dropout=args.dropout,
         activation=args.activation,
         residual=args.residual,
+        edge_dim=edge_attr.shape[1],
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
