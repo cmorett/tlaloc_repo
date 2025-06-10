@@ -186,6 +186,68 @@ class RecurrentGNNSurrogate(nn.Module):
         return out
 
 
+class MultiTaskGNNSurrogate(nn.Module):
+    """Recurrent GNN surrogate predicting node and edge level targets."""
+
+    def __init__(self, in_channels: int, hidden_channels: int, edge_dim: int, node_output_dim: int, edge_output_dim: int, energy_output_dim: int, num_layers: int, use_attention: bool, gat_heads: int, dropout: float, residual: bool, rnn_hidden_dim: int) -> None:
+        super().__init__()
+        self.encoder = EnhancedGNNEncoder(
+            in_channels,
+            hidden_channels,
+            hidden_channels,
+            num_layers=num_layers,
+            dropout=dropout,
+            residual=residual,
+            edge_dim=edge_dim,
+            use_attention=use_attention,
+            gat_heads=gat_heads,
+        )
+        self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
+        self.node_decoder = nn.Linear(rnn_hidden_dim, node_output_dim)
+        self.edge_decoder = nn.Linear(rnn_hidden_dim * 2, edge_output_dim)
+        self.energy_decoder = nn.Linear(rnn_hidden_dim, energy_output_dim)
+
+    def forward(self, X_seq: torch.Tensor, edge_index: torch.Tensor, edge_attr: torch.Tensor):
+        batch_size, T, num_nodes, in_dim = X_seq.size()
+        device = X_seq.device
+        E = edge_index.size(1)
+        batch_edge_index = edge_index.repeat(1, batch_size) + (
+            torch.arange(batch_size, device=device).repeat_interleave(E) * num_nodes
+        )
+        edge_attr_rep = edge_attr.repeat(batch_size, 1) if edge_attr is not None else None
+
+        node_embeddings = []
+        for t in range(T):
+            x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
+            data = Data(x=x_t, edge_index=batch_edge_index)
+            if edge_attr_rep is not None:
+                data.edge_attr = edge_attr_rep
+            gnn_out = self.encoder(data)
+            gnn_out = gnn_out.view(batch_size, num_nodes, -1)
+            node_embeddings.append(gnn_out)
+
+        emb = torch.stack(node_embeddings, dim=1)
+        rnn_in = emb.permute(0, 2, 1, 3).reshape(batch_size * num_nodes, T, -1)
+        rnn_out, _ = self.rnn(rnn_in)
+        rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
+
+        node_pred = self.node_decoder(rnn_out)
+
+        src = edge_index[0]
+        tgt = edge_index[1]
+        h_src = rnn_out[:, :, src, :]
+        h_tgt = rnn_out[:, :, tgt, :]
+        edge_emb = torch.cat([h_src, h_tgt], dim=-1)
+        edge_pred = self.edge_decoder(edge_emb)
+        energy_pred = self.energy_decoder(rnn_out.mean(dim=2))
+
+        return {
+            "node_outputs": node_pred,
+            "edge_outputs": edge_pred,
+            "pump_energy": energy_pred,
+        }
+
+
 def load_dataset(
     x_path: str,
     y_path: str,
@@ -263,38 +325,73 @@ def apply_normalization(data_list, x_mean, x_std, y_mean, y_std):
 
 
 class SequenceDataset(Dataset):
-    """Simple ``Dataset`` for sequence data."""
+    """Simple ``Dataset`` for sequence data supporting multi-task labels."""
 
     def __init__(self, X: np.ndarray, Y: np.ndarray, edge_index: np.ndarray, edge_attr: np.ndarray | None):
         self.X = torch.tensor(X, dtype=torch.float32)
-        self.Y = torch.tensor(Y, dtype=torch.float32)
         self.edge_index = torch.tensor(edge_index, dtype=torch.long)
         self.edge_attr = None
         if edge_attr is not None:
             self.edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
 
+        first = Y[0]
+        if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
+            self.multi = True
+            self.Y = {
+                "node_outputs": torch.stack([torch.tensor(y["node_outputs"], dtype=torch.float32) for y in Y]),
+                "edge_outputs": torch.stack([torch.tensor(y["edge_outputs"], dtype=torch.float32) for y in Y]),
+                "pump_energy": torch.stack([torch.tensor(y["pump_energy"], dtype=torch.float32) for y in Y]),
+            }
+        else:
+            self.multi = False
+            self.Y = torch.tensor(Y, dtype=torch.float32)
+
     def __len__(self) -> int:  # type: ignore[override]
         return self.X.shape[0]
 
     def __getitem__(self, idx: int):  # type: ignore[override]
+        if self.multi:
+            return self.X[idx], {k: v[idx] for k, v in self.Y.items()}
         return self.X[idx], self.Y[idx]
 
 
-def compute_sequence_norm_stats(X: np.ndarray, Y: np.ndarray) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return mean and std for sequence arrays."""
+def compute_sequence_norm_stats(X: np.ndarray, Y: np.ndarray):
+    """Return mean and std for sequence arrays including multi-task targets."""
 
     x_flat = X.reshape(-1, X.shape[-1])
-    y_flat = Y.reshape(-1, Y.shape[-1])
     x_mean = torch.tensor(x_flat.mean(axis=0), dtype=torch.float32)
     x_std = torch.tensor(x_flat.std(axis=0) + 1e-8, dtype=torch.float32)
-    y_mean = torch.tensor(y_flat.mean(axis=0), dtype=torch.float32)
-    y_std = torch.tensor(y_flat.std(axis=0) + 1e-8, dtype=torch.float32)
+
+    first = Y[0]
+    if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
+        node = np.concatenate([y["node_outputs"].reshape(-1, y["node_outputs"].shape[-1]) for y in Y], axis=0)
+        edge = np.concatenate([y["edge_outputs"].reshape(-1, y["edge_outputs"].shape[-1]) for y in Y], axis=0)
+        energy = np.concatenate([y["pump_energy"].reshape(-1, y["pump_energy"].shape[-1]) for y in Y], axis=0)
+        y_mean = {
+            "node_outputs": torch.tensor(node.mean(axis=0), dtype=torch.float32),
+            "edge_outputs": torch.tensor(edge.mean(axis=0), dtype=torch.float32),
+            "pump_energy": torch.tensor(energy.mean(axis=0), dtype=torch.float32),
+        }
+        y_std = {
+            "node_outputs": torch.tensor(node.std(axis=0) + 1e-8, dtype=torch.float32),
+            "edge_outputs": torch.tensor(edge.std(axis=0) + 1e-8, dtype=torch.float32),
+            "pump_energy": torch.tensor(energy.std(axis=0) + 1e-8, dtype=torch.float32),
+        }
+    else:
+        y_flat = Y.reshape(-1, Y.shape[-1])
+        y_mean = torch.tensor(y_flat.mean(axis=0), dtype=torch.float32)
+        y_std = torch.tensor(y_flat.std(axis=0) + 1e-8, dtype=torch.float32)
+
     return x_mean, x_std, y_mean, y_std
 
 
-def apply_sequence_normalization(dataset: SequenceDataset, x_mean: torch.Tensor, x_std: torch.Tensor, y_mean: torch.Tensor, y_std: torch.Tensor) -> None:
+def apply_sequence_normalization(dataset: SequenceDataset, x_mean: torch.Tensor, x_std: torch.Tensor, y_mean, y_std) -> None:
     dataset.X = (dataset.X - x_mean) / x_std
-    dataset.Y = (dataset.Y - y_mean) / y_std
+    if dataset.multi:
+        for k in dataset.Y:
+            dataset.Y[k] = (dataset.Y[k] - y_mean[k]) / y_std[k]
+    else:
+        dataset.Y = (dataset.Y - y_mean) / y_std
 
 
 def build_edge_attr(
@@ -354,10 +451,16 @@ def train_sequence(model: nn.Module, loader: TorchLoader, edge_index: torch.Tens
     total_loss = 0.0
     for X_seq, Y_seq in loader:
         X_seq = X_seq.to(device)
-        Y_seq = Y_seq.to(device)
         optimizer.zero_grad()
-        out_seq = model(X_seq, edge_index.to(device), edge_attr.to(device))
-        loss = F.mse_loss(out_seq, Y_seq.float())
+        preds = model(X_seq, edge_index.to(device), edge_attr.to(device))
+        if isinstance(Y_seq, dict):
+            loss_node = F.mse_loss(preds['node_outputs'], Y_seq['node_outputs'].to(device))
+            loss_edge = F.mse_loss(preds['edge_outputs'], Y_seq['edge_outputs'].to(device))
+            loss_energy = F.mse_loss(preds['pump_energy'], Y_seq['pump_energy'].to(device))
+            loss = loss_node + 0.5 * loss_edge + 0.1 * loss_energy
+        else:
+            Y_seq = Y_seq.to(device)
+            loss = F.mse_loss(preds, Y_seq.float())
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -371,9 +474,15 @@ def evaluate_sequence(model: nn.Module, loader: TorchLoader, edge_index: torch.T
     with torch.no_grad():
         for X_seq, Y_seq in loader:
             X_seq = X_seq.to(device)
-            Y_seq = Y_seq.to(device)
-            out_seq = model(X_seq, edge_index.to(device), edge_attr.to(device))
-            loss = F.mse_loss(out_seq, Y_seq.float())
+            preds = model(X_seq, edge_index.to(device), edge_attr.to(device))
+            if isinstance(Y_seq, dict):
+                loss_node = F.mse_loss(preds['node_outputs'], Y_seq['node_outputs'].to(device))
+                loss_edge = F.mse_loss(preds['edge_outputs'], Y_seq['edge_outputs'].to(device))
+                loss_energy = F.mse_loss(preds['pump_energy'], Y_seq['pump_energy'].to(device))
+                loss = loss_node + 0.5 * loss_edge + 0.1 * loss_energy
+            else:
+                Y_seq = Y_seq.to(device)
+                loss = F.mse_loss(preds, Y_seq.float())
             total_loss += loss.item() * X_seq.size(0)
     return total_loss / len(loader.dataset)
 
@@ -426,7 +535,7 @@ def main(args: argparse.Namespace):
     if args.normalize:
         if seq_mode:
             x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
-                data_ds.X.numpy(), data_ds.Y.numpy()
+                X_raw, Y_raw
             )
             apply_sequence_normalization(data_ds, x_mean, x_std, y_mean, y_std)
             if isinstance(val_list, SequenceDataset):
@@ -449,18 +558,34 @@ def main(args: argparse.Namespace):
                 f"defines {len(wn.pump_name_list)} pumps (expected {expected_in_dim}).\n"
                 "Re-generate the training data with pump control inputs using scripts/data_generation.py."
             )
-        model = RecurrentGNNSurrogate(
-            in_channels=sample_dim,
-            hidden_channels=args.hidden_dim,
-            edge_dim=edge_attr.shape[1],
-            output_dim=args.output_dim,
-            num_layers=args.num_layers,
-            use_attention=args.use_attention,
-            gat_heads=args.gat_heads,
-            dropout=args.dropout,
-            residual=args.residual,
-            rnn_hidden_dim=args.rnn_hidden_dim,
-        ).to(device)
+        if getattr(data_ds, "multi", False):
+            model = MultiTaskGNNSurrogate(
+                in_channels=sample_dim,
+                hidden_channels=args.hidden_dim,
+                edge_dim=edge_attr.shape[1],
+                node_output_dim=2,
+                edge_output_dim=1,
+                energy_output_dim=len(wn.pump_name_list),
+                num_layers=args.num_layers,
+                use_attention=args.use_attention,
+                gat_heads=args.gat_heads,
+                dropout=args.dropout,
+                residual=args.residual,
+                rnn_hidden_dim=args.rnn_hidden_dim,
+            ).to(device)
+        else:
+            model = RecurrentGNNSurrogate(
+                in_channels=sample_dim,
+                hidden_channels=args.hidden_dim,
+                edge_dim=edge_attr.shape[1],
+                output_dim=args.output_dim,
+                num_layers=args.num_layers,
+                use_attention=args.use_attention,
+                gat_heads=args.gat_heads,
+                dropout=args.dropout,
+                residual=args.residual,
+                rnn_hidden_dim=args.rnn_hidden_dim,
+            ).to(device)
     else:
         sample = data_list[0]
         if sample.num_node_features != expected_in_dim:
@@ -523,7 +648,20 @@ def main(args: argparse.Namespace):
                 os.makedirs(os.path.dirname(model_path), exist_ok=True)
                 torch.save(model.state_dict(), model_path)
                 if x_mean is not None:
-                    np.savez(norm_path, x_mean=x_mean.numpy(), x_std=x_std.numpy(), y_mean=y_mean.numpy(), y_std=y_std.numpy())
+                    if isinstance(y_mean, dict):
+                        np.savez(
+                            norm_path,
+                            x_mean=x_mean.numpy(),
+                            x_std=x_std.numpy(),
+                            y_mean_node=y_mean["node_outputs"].numpy(),
+                            y_std_node=y_std["node_outputs"].numpy(),
+                            y_mean_edge=y_mean["edge_outputs"].numpy(),
+                            y_std_edge=y_std["edge_outputs"].numpy(),
+                            y_mean_energy=y_mean["pump_energy"].numpy(),
+                            y_std_energy=y_std["pump_energy"].numpy(),
+                        )
+                    else:
+                        np.savez(norm_path, x_mean=x_mean.numpy(), x_std=x_std.numpy(), y_mean=y_mean.numpy(), y_std=y_std.numpy())
             else:
                 patience += 1
             if patience >= args.early_stop_patience:
