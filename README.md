@@ -51,13 +51,12 @@ are performed:
 To achieve good predictive accuracy the surrogate should be trained on a large
 collection of EPANET simulations.  The data generation script automatically
 splits each run into training, validation and test sets (``X_train.npy``,
-``X_val.npy``, ``X_test.npy`` and corresponding ``Y`` arrays).  You can speed up
-scenario generation by running multiple processes with ``--n-jobs``.  The
+``X_val.npy``, ``X_test.npy`` and corresponding ``Y`` arrays).  The
 ``--output-dir`` option specifies where these arrays are stored.  A typical call
 looks like:
 
 ```bash
-python scripts/data_generation.py --num-scenarios 2000 --output-dir data/ --seed 42 --n-jobs 4
+python scripts/data_generation.py --num-scenarios 2000 --output-dir data/ --seed 42
 ```
 
 Validate the resulting model with `scripts/experiments_validation.py` before
