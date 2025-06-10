@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
+from torch.utils.data import Dataset, DataLoader as TorchLoader
 from torch_geometric.nn import GCNConv, MessagePassing, GATConv, LayerNorm
 import wntr
 import matplotlib.pyplot as plt
@@ -117,6 +118,74 @@ class EnhancedGNNEncoder(nn.Module):
 GCNEncoder = EnhancedGNNEncoder
 
 
+class RecurrentGNNSurrogate(nn.Module):
+    """GNN encoder followed by an LSTM for sequence prediction."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        edge_dim: int,
+        output_dim: int,
+        num_layers: int,
+        use_attention: bool,
+        gat_heads: int,
+        dropout: float,
+        residual: bool,
+        rnn_hidden_dim: int,
+    ) -> None:
+        super().__init__()
+        self.encoder = EnhancedGNNEncoder(
+            in_channels,
+            hidden_channels,
+            hidden_channels,
+            num_layers=num_layers,
+            dropout=dropout,
+            residual=residual,
+            edge_dim=edge_dim,
+            use_attention=use_attention,
+            gat_heads=gat_heads,
+        )
+        self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
+        self.decoder = nn.Linear(rnn_hidden_dim, output_dim)
+
+    def forward(
+        self,
+        X_seq: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size, T, num_nodes, in_dim = X_seq.size()
+        device = X_seq.device
+        E = edge_index.size(1)
+        # Expand edge index for ``batch_size`` separate graphs
+        batch_edge_index = edge_index.repeat(1, batch_size) + (
+            torch.arange(batch_size, device=device).repeat_interleave(E) * num_nodes
+        )
+        if edge_attr is not None:
+            edge_attr_rep = edge_attr.repeat(batch_size, 1)
+        else:
+            edge_attr_rep = None
+
+        node_embeddings = []
+        for t in range(T):
+            x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
+            data = Data(x=x_t, edge_index=batch_edge_index)
+            if edge_attr_rep is not None:
+                data.edge_attr = edge_attr_rep
+            gnn_out = self.encoder(data)  # [batch_size*num_nodes, hidden]
+            gnn_out = gnn_out.view(batch_size, num_nodes, -1)
+            node_embeddings.append(gnn_out)
+
+        emb = torch.stack(node_embeddings, dim=1)  # [B, T, N, H]
+        # reshape so each node has its own sequence in the batch dimension
+        rnn_in = emb.permute(0, 2, 1, 3).reshape(batch_size * num_nodes, T, -1)
+        rnn_out, _ = self.rnn(rnn_in)
+        rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
+        out = self.decoder(rnn_out)
+        return out
+
+
 def load_dataset(
     x_path: str,
     y_path: str,
@@ -193,6 +262,41 @@ def apply_normalization(data_list, x_mean, x_std, y_mean, y_std):
         d.y = (d.y - y_mean) / y_std
 
 
+class SequenceDataset(Dataset):
+    """Simple ``Dataset`` for sequence data."""
+
+    def __init__(self, X: np.ndarray, Y: np.ndarray, edge_index: np.ndarray, edge_attr: np.ndarray | None):
+        self.X = torch.tensor(X, dtype=torch.float32)
+        self.Y = torch.tensor(Y, dtype=torch.float32)
+        self.edge_index = torch.tensor(edge_index, dtype=torch.long)
+        self.edge_attr = None
+        if edge_attr is not None:
+            self.edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
+
+    def __len__(self) -> int:  # type: ignore[override]
+        return self.X.shape[0]
+
+    def __getitem__(self, idx: int):  # type: ignore[override]
+        return self.X[idx], self.Y[idx]
+
+
+def compute_sequence_norm_stats(X: np.ndarray, Y: np.ndarray) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return mean and std for sequence arrays."""
+
+    x_flat = X.reshape(-1, X.shape[-1])
+    y_flat = Y.reshape(-1, Y.shape[-1])
+    x_mean = torch.tensor(x_flat.mean(axis=0), dtype=torch.float32)
+    x_std = torch.tensor(x_flat.std(axis=0) + 1e-8, dtype=torch.float32)
+    y_mean = torch.tensor(y_flat.mean(axis=0), dtype=torch.float32)
+    y_std = torch.tensor(y_flat.std(axis=0) + 1e-8, dtype=torch.float32)
+    return x_mean, x_std, y_mean, y_std
+
+
+def apply_sequence_normalization(dataset: SequenceDataset, x_mean: torch.Tensor, x_std: torch.Tensor, y_mean: torch.Tensor, y_std: torch.Tensor) -> None:
+    dataset.X = (dataset.X - x_mean) / x_std
+    dataset.Y = (dataset.Y - y_mean) / y_std
+
+
 def build_edge_attr(
     wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
 ) -> np.ndarray:
@@ -244,6 +348,35 @@ def evaluate(model, loader, device):
             total_loss += loss.item() * batch.num_graphs
     return total_loss / len(loader.dataset)
 
+
+def train_sequence(model: nn.Module, loader: TorchLoader, edge_index: torch.Tensor, edge_attr: torch.Tensor, optimizer, device) -> float:
+    model.train()
+    total_loss = 0.0
+    for X_seq, Y_seq in loader:
+        X_seq = X_seq.to(device)
+        Y_seq = Y_seq.to(device)
+        optimizer.zero_grad()
+        out_seq = model(X_seq, edge_index.to(device), edge_attr.to(device))
+        loss = F.mse_loss(out_seq, Y_seq.float())
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        total_loss += loss.item() * X_seq.size(0)
+    return total_loss / len(loader.dataset)
+
+
+def evaluate_sequence(model: nn.Module, loader: TorchLoader, edge_index: torch.Tensor, edge_attr: torch.Tensor, device) -> float:
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for X_seq, Y_seq in loader:
+            X_seq = X_seq.to(device)
+            Y_seq = Y_seq.to(device)
+            out_seq = model(X_seq, edge_index.to(device), edge_attr.to(device))
+            loss = F.mse_loss(out_seq, Y_seq.float())
+            total_loss += loss.item() * X_seq.size(0)
+    return total_loss / len(loader.dataset)
+
 # Resolve important directories relative to the repository root so that training
 # can be launched from any location.
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -258,52 +391,96 @@ def main(args: argparse.Namespace):
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     edge_attr = build_edge_attr(wn, edge_index_np)
-    data_list = load_dataset(
-        args.x_path, args.y_path, args.edge_index_path, edge_attr=edge_attr
-    )
-    loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
+    X_raw = np.load(args.x_path, allow_pickle=True)
+    seq_mode = X_raw.ndim == 4
+    if seq_mode:
+        Y_raw = np.load(args.y_path, allow_pickle=True)
+        data_ds = SequenceDataset(X_raw, Y_raw, edge_index_np, edge_attr)
+        loader = TorchLoader(data_ds, batch_size=args.batch_size, shuffle=True)
+    else:
+        data_list = load_dataset(
+            args.x_path, args.y_path, args.edge_index_path, edge_attr=edge_attr
+        )
+        loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
+
 
     if args.x_val_path and os.path.exists(args.x_val_path):
-        val_list = load_dataset(
-            args.x_val_path,
-            args.y_val_path,
-            args.edge_index_path,
-            edge_attr=edge_attr,
-        )
-        val_loader = DataLoader(val_list, batch_size=args.batch_size)
+        if seq_mode:
+            Xv = np.load(args.x_val_path, allow_pickle=True)
+            Yv = np.load(args.y_val_path, allow_pickle=True)
+            val_ds = SequenceDataset(Xv, Yv, edge_index_np, edge_attr)
+            val_loader = TorchLoader(val_ds, batch_size=args.batch_size)
+            val_list = val_ds
+        else:
+            val_list = load_dataset(
+                args.x_val_path,
+                args.y_val_path,
+                args.edge_index_path,
+                edge_attr=edge_attr,
+            )
+            val_loader = DataLoader(val_list, batch_size=args.batch_size)
     else:
         val_list = []
         val_loader = None
 
     if args.normalize:
-        x_mean, x_std, y_mean, y_std = compute_norm_stats(data_list)
-        apply_normalization(data_list, x_mean, x_std, y_mean, y_std)
-        if val_list:
-            apply_normalization(val_list, x_mean, x_std, y_mean, y_std)
+        if seq_mode:
+            x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
+                data_ds.X.numpy(), data_ds.Y.numpy()
+            )
+            apply_sequence_normalization(data_ds, x_mean, x_std, y_mean, y_std)
+            if isinstance(val_list, SequenceDataset):
+                apply_sequence_normalization(val_list, x_mean, x_std, y_mean, y_std)
+        else:
+            x_mean, x_std, y_mean, y_std = compute_norm_stats(data_list)
+            apply_normalization(data_list, x_mean, x_std, y_mean, y_std)
+            if val_list:
+                apply_normalization(val_list, x_mean, x_std, y_mean, y_std)
     else:
         x_mean = x_std = y_mean = y_std = None
 
     expected_in_dim = 4 + len(wn.pump_name_list)
 
-    sample = data_list[0]
-    if sample.num_node_features != expected_in_dim:
-        raise ValueError(
-            f"Dataset provides {sample.num_node_features} features per node but the network "
-            f"defines {len(wn.pump_name_list)} pumps (expected {expected_in_dim}).\n"
-            "Re-generate the training data with pump control inputs using scripts/data_generation.py."
-        )
-    model = GCNEncoder(
-        in_channels=sample.num_node_features,
-        hidden_channels=args.hidden_dim,
-        out_channels=args.output_dim,
-        num_layers=args.num_layers,
-        dropout=args.dropout,
-        activation=args.activation,
-        residual=args.residual,
-        edge_dim=edge_attr.shape[1],
-        use_attention=args.use_attention,
-        gat_heads=args.gat_heads,
-    ).to(device)
+    if seq_mode:
+        sample_dim = data_ds.X.shape[-1]
+        if sample_dim != expected_in_dim:
+            raise ValueError(
+                f"Dataset provides {sample_dim} features per node but the network "
+                f"defines {len(wn.pump_name_list)} pumps (expected {expected_in_dim}).\n"
+                "Re-generate the training data with pump control inputs using scripts/data_generation.py."
+            )
+        model = RecurrentGNNSurrogate(
+            in_channels=sample_dim,
+            hidden_channels=args.hidden_dim,
+            edge_dim=edge_attr.shape[1],
+            output_dim=args.output_dim,
+            num_layers=args.num_layers,
+            use_attention=args.use_attention,
+            gat_heads=args.gat_heads,
+            dropout=args.dropout,
+            residual=args.residual,
+            rnn_hidden_dim=args.rnn_hidden_dim,
+        ).to(device)
+    else:
+        sample = data_list[0]
+        if sample.num_node_features != expected_in_dim:
+            raise ValueError(
+                f"Dataset provides {sample.num_node_features} features per node but the network "
+                f"defines {len(wn.pump_name_list)} pumps (expected {expected_in_dim}).\n"
+                "Re-generate the training data with pump control inputs using scripts/data_generation.py."
+            )
+        model = GCNEncoder(
+            in_channels=sample.num_node_features,
+            hidden_channels=args.hidden_dim,
+            out_channels=args.output_dim,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+            activation=args.activation,
+            residual=args.residual,
+            edge_dim=edge_attr.shape[1],
+            use_attention=args.use_attention,
+            gat_heads=args.gat_heads,
+        ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
@@ -324,11 +501,18 @@ def main(args: argparse.Namespace):
         best_val = float("inf")
         patience = 0
         for epoch in range(args.epochs):
-            loss = train(model, loader, optimizer, device, check_negative=not args.normalize)
-            if val_loader is not None:
-                val_loss = evaluate(model, val_loader, device)
+            if seq_mode:
+                loss = train_sequence(model, loader, data_ds.edge_index, data_ds.edge_attr, optimizer, device)
+                if val_loader is not None:
+                    val_loss = evaluate_sequence(model, val_loader, data_ds.edge_index, data_ds.edge_attr, device)
+                else:
+                    val_loss = loss
             else:
-                val_loss = loss
+                loss = train(model, loader, optimizer, device, check_negative=not args.normalize)
+                if val_loader is not None:
+                    val_loss = evaluate(model, val_loader, device)
+                else:
+                    val_loss = loss
             scheduler.step(val_loss)
             curr_lr = optimizer.param_groups[0]['lr']
             losses.append((loss, val_loss))
@@ -424,6 +608,12 @@ if __name__ == "__main__":
         "--residual",
         action="store_true",
         help="Use residual connections",
+    )
+    parser.add_argument(
+        "--rnn-hidden-dim",
+        type=int,
+        default=64,
+        help="Hidden dimension of the recurrent layer when sequence data is used",
     )
     parser.add_argument(
         "--output-dim",

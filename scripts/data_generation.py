@@ -195,6 +195,80 @@ def split_results(
     return train_results, val_results, test_results
 
 
+def build_sequence_dataset(
+    results: Iterable[
+        Tuple[
+            wntr.sim.results.SimulationResults,
+            Dict[str, np.ndarray],
+            Dict[str, List[float]],
+        ]
+    ],
+    wn_template: wntr.network.WaterNetworkModel,
+    seq_len: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Construct a dataset of sequences from simulation results."""
+
+    X_list: List[np.ndarray] = []
+    Y_list: List[np.ndarray] = []
+
+    pumps = wn_template.pump_name_list
+
+    for sim_results, _scale_dict, pump_ctrl in results:
+        pressures = sim_results.node["pressure"].clip(lower=0.0)
+        quality = sim_results.node["quality"].clip(lower=0.0)
+        demands = sim_results.node.get("demand")
+        if demands is not None:
+            demands = demands.clip(lower=0.0)
+        times = pressures.index
+
+        if len(times) <= seq_len:
+            raise ValueError(
+                f"Not enough timesteps ({len(times)}) for sequence length {seq_len}"
+            )
+
+        X_seq: List[np.ndarray] = []
+        Y_seq: List[np.ndarray] = []
+        for t in range(seq_len):
+            pump_vector = np.array([pump_ctrl[p][t] for p in pumps], dtype=np.float64)
+            feat_nodes = []
+            for node in wn_template.node_name_list:
+                idx = pressures.columns.get_loc(node)
+                p_t = float(pressures.iat[t, idx])
+                c_t = float(quality.iat[t, idx])
+                if demands is not None and node in wn_template.junction_name_list:
+                    d_t = float(demands.iat[t, idx])
+                else:
+                    d_t = 0.0
+                if node in wn_template.junction_name_list or node in wn_template.tank_name_list:
+                    elev = wn_template.get_node(node).elevation
+                elif node in wn_template.reservoir_name_list:
+                    elev = wn_template.get_node(node).base_head
+                else:
+                    n = wn_template.get_node(node)
+                    elev = getattr(n, "elevation", None) or getattr(n, "base_head", 0.0)
+                if elev is None:
+                    elev = 0.0
+                feat = [d_t, p_t, c_t, elev]
+                feat.extend(pump_vector.tolist())
+                feat_nodes.append(feat)
+            X_seq.append(np.array(feat_nodes, dtype=np.float64))
+
+            out_nodes = []
+            for node in wn_template.node_name_list:
+                idx = pressures.columns.get_loc(node)
+                p_next = float(pressures.iat[t + 1, idx])
+                c_next = float(quality.iat[t + 1, idx])
+                out_nodes.append([max(p_next, 0.0), max(c_next, 0.0)])
+            Y_seq.append(np.array(out_nodes, dtype=np.float64))
+
+        X_list.append(np.stack(X_seq))
+        Y_list.append(np.stack(Y_seq))
+
+    X = np.stack(X_list).astype(np.float32)
+    Y = np.stack(Y_list).astype(np.float32)
+    Y = np.clip(Y, a_min=0.0, a_max=None)
+    return X, Y
+
 def build_dataset(
     results: Iterable[
         Tuple[
@@ -311,6 +385,12 @@ def main() -> None:
         default=DATA_DIR,
         help="Directory to store generated datasets",
     )
+    parser.add_argument(
+        "--sequence-length",
+        type=int,
+        default=1,
+        help="Length of sequences to store in the dataset (1 for single-step)",
+    )
     args = parser.parse_args()
 
     inp_file = REPO_ROOT / "CTown.inp"
@@ -320,9 +400,20 @@ def main() -> None:
     train_res, val_res, test_res = split_results(results)
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
-    X_train, Y_train = build_dataset(train_res, wn_template)
-    X_val, Y_val = build_dataset(val_res, wn_template)
-    X_test, Y_test = build_dataset(test_res, wn_template)
+    if args.sequence_length > 1:
+        X_train, Y_train = build_sequence_dataset(
+            train_res, wn_template, args.sequence_length
+        )
+        X_val, Y_val = build_sequence_dataset(
+            val_res, wn_template, args.sequence_length
+        )
+        X_test, Y_test = build_sequence_dataset(
+            test_res, wn_template, args.sequence_length
+        )
+    else:
+        X_train, Y_train = build_dataset(train_res, wn_template)
+        X_val, Y_val = build_dataset(val_res, wn_template)
+        X_test, Y_test = build_dataset(test_res, wn_template)
 
     edge_index, edge_attr = build_edge_index(wn_template)
 
