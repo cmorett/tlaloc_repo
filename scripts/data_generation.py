@@ -20,9 +20,43 @@ from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
 
 
+def simulate_extreme_event(
+    wn: wntr.network.WaterNetworkModel,
+    pump_controls: Dict[str, List[float]],
+    idx: int,
+    event_type: str,
+) -> None:
+    """Apply an extreme event to the water network model in-place."""
 
-def _build_randomized_network(inp_file: str, idx: int) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
-    """Create a network with randomized demand patterns and pump controls."""
+    if event_type == "fire_flow":
+        node_id = random.choice(list(wn.junction_name_list))
+        pattern_name = f"{node_id}_pat_{idx}"
+        pattern = wn.get_pattern(pattern_name)
+        pattern.multipliers = [m * 10.0 for m in pattern.multipliers]
+    elif event_type == "pump_failure":
+        pump_id = random.choice(list(wn.pump_name_list))
+        for h in range(len(pump_controls[pump_id])):
+            pump_controls[pump_id][h] = 0.0
+        link = wn.get_link(pump_id)
+        link.initial_status = LinkStatus.Closed
+    elif event_type == "quality_variation":
+        for source in wn.source_name_list:
+            n = wn.get_node(source)
+            n.initial_quality *= random.uniform(0.5, 1.5)
+
+
+
+def _build_randomized_network(
+    inp_file: str,
+    idx: int,
+    event_type: Optional[str] = None,
+) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
+    """Create a network with randomized demand patterns and pump controls.
+
+    If ``event_type`` is not ``None`` an extreme scenario such as ``fire_flow``
+    or ``pump_failure`` is injected after the randomized controls are
+    created.
+    """
 
     wn = wntr.network.WaterNetworkModel(inp_file)
     wn.options.time.duration = 24 * 3600
@@ -67,14 +101,22 @@ def _build_randomized_network(inp_file: str, idx: int) -> Tuple[wntr.network.Wat
         link = wn.get_link(pn)
         link.initial_status = LinkStatus.Open
         pat_name = f"{pn}_pat_{idx}"
-        wn.add_pattern(pat_name, wntr.network.elements.Pattern(pat_name, pump_controls[pn]))
+        wn.add_pattern(
+            pat_name, wntr.network.elements.Pattern(pat_name, pump_controls[pn])
+        )
         link.base_speed = 1.0
         link.speed_pattern_name = pat_name
+
+    if event_type is not None:
+        simulate_extreme_event(wn, pump_controls, idx, event_type)
 
     return wn, scale_dict, pump_controls
 
 
-def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]:
+def _run_single_scenario(
+    args,
+    extreme_event_prob: float = 0.0,
+) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Run a single randomized scenario.
 
     EPANET occasionally fails to write results when the hydraulics become
@@ -84,17 +126,28 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
 
     idx, inp_file, seed = args
 
+    scenario_label = "normal"
+
     for attempt in range(3):
         if seed is not None:
             random.seed(seed + idx + attempt)
             np.random.seed(seed + idx + attempt)
 
-        wn, scale_dict, pump_controls = _build_randomized_network(inp_file, idx)
+        if random.random() < extreme_event_prob:
+            scenario_label = random.choice(
+                ["fire_flow", "pump_failure", "quality_variation"]
+            )
+            wn, scale_dict, pump_controls = _build_randomized_network(
+                inp_file, idx, scenario_label
+            )
+        else:
+            wn, scale_dict, pump_controls = _build_randomized_network(inp_file, idx)
 
         prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}_{attempt}"
         try:
             sim = wntr.sim.EpanetSimulator(wn)
             sim_results = sim.run_sim(file_prefix=str(prefix))
+            sim_results.scenario_type = scenario_label
             break
         except wntr.epanet.exceptions.EpanetException:
             # Remove possible leftover files before retrying with a new
@@ -162,12 +215,15 @@ def _run_single_scenario(args) -> Tuple[wntr.sim.results.SimulationResults, Dict
 
 
 def run_scenarios(
-    inp_file: str, num_scenarios: int, seed: Optional[int] = None
+    inp_file: str,
+    num_scenarios: int,
+    seed: Optional[int] = None,
+    extreme_event_prob: float = 0.0,
 ) -> List[Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]]:
     """Run multiple randomized scenarios and return their results."""
 
     args_list = [(i, inp_file, seed) for i in range(num_scenarios)]
-    results = [_run_single_scenario(a) for a in args_list]
+    results = [_run_single_scenario(a, extreme_event_prob) for a in args_list]
 
     return results
 
@@ -210,15 +266,17 @@ def build_sequence_dataset(
 
     X_list: List[np.ndarray] = []
     Y_list: List[np.ndarray] = []
+    scenario_types: List[str] = []
 
     pumps = wn_template.pump_name_list
 
     for sim_results, _scale_dict, pump_ctrl in results:
+        scenario_types.append(getattr(sim_results, "scenario_type", "normal"))
         pressures = sim_results.node["pressure"].clip(lower=0.0)
-        quality = sim_results.node["quality"].clip(lower=0.0)
+        quality = sim_results.node["quality"].clip(lower=0.0, upper=5.0)
         demands = sim_results.node.get("demand")
         if demands is not None:
-            demands = demands.clip(lower=0.0)
+            demands = demands.clip(lower=0.0, upper=demands.max() * 1.5)
         times = pressures.index
 
         if len(times) <= seq_len:
@@ -267,7 +325,7 @@ def build_sequence_dataset(
     X = np.stack(X_list).astype(np.float32)
     Y = np.stack(Y_list).astype(np.float32)
     Y = np.clip(Y, a_min=0.0, a_max=None)
-    return X, Y
+    return X, Y, np.array(scenario_types)
 
 def build_dataset(
     results: Iterable[
@@ -291,9 +349,9 @@ def build_dataset(
         times = pressures.index
 
         pressures = pressures.clip(lower=0.0)
-        quality = quality.clip(lower=0.0)
+        quality = quality.clip(lower=0.0, upper=5.0)
         if demands is not None:
-            demands = demands.clip(lower=0.0)
+            demands = demands.clip(lower=0.0, upper=demands.max() * 1.5)
 
         for i in range(len(times) - 1):
             pump_vector = np.array([pump_ctrl[p][i] for p in pumps], dtype=np.float64)
@@ -381,6 +439,12 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument(
+        "--extreme-event-prob",
+        type=float,
+        default=0.2,
+        help="Probability of injecting an extreme scenario in each run",
+    )
+    parser.add_argument(
         "--output-dir",
         default=DATA_DIR,
         help="Directory to store generated datasets",
@@ -396,18 +460,20 @@ def main() -> None:
     inp_file = REPO_ROOT / "CTown.inp"
     N = args.num_scenarios
 
-    results = run_scenarios(str(inp_file), N, seed=args.seed)
+    results = run_scenarios(
+        str(inp_file), N, seed=args.seed, extreme_event_prob=args.extreme_event_prob
+    )
     train_res, val_res, test_res = split_results(results)
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
     if args.sequence_length > 1:
-        X_train, Y_train = build_sequence_dataset(
+        X_train, Y_train, train_labels = build_sequence_dataset(
             train_res, wn_template, args.sequence_length
         )
-        X_val, Y_val = build_sequence_dataset(
+        X_val, Y_val, val_labels = build_sequence_dataset(
             val_res, wn_template, args.sequence_length
         )
-        X_test, Y_test = build_sequence_dataset(
+        X_test, Y_test, test_labels = build_sequence_dataset(
             test_res, wn_template, args.sequence_length
         )
     else:
@@ -426,6 +492,10 @@ def main() -> None:
     np.save(os.path.join(out_dir, "Y_val.npy"), Y_val)
     np.save(os.path.join(out_dir, "X_test.npy"), X_test)
     np.save(os.path.join(out_dir, "Y_test.npy"), Y_test)
+    if args.sequence_length > 1:
+        np.save(os.path.join(out_dir, "scenario_train.npy"), train_labels)
+        np.save(os.path.join(out_dir, "scenario_val.npy"), val_labels)
+        np.save(os.path.join(out_dir, "scenario_test.npy"), test_labels)
     np.save(os.path.join(out_dir, "edge_index.npy"), edge_index)
     np.save(os.path.join(out_dir, "edge_attr.npy"), edge_attr)
 
