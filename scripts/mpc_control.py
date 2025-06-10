@@ -10,6 +10,8 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch_geometric.nn import GCNConv
+from sklearn.preprocessing import MinMaxScaler
+from scripts.train_gnn import HydroConv
 import wntr
 from wntr.metrics.economic import pump_energy
 
@@ -26,22 +28,36 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 class GNNSurrogate(torch.nn.Module):
     """Flexible GCN used by the MPC controller."""
 
-    def __init__(self, conv_layers: List[GCNConv]):
+    def __init__(self, conv_layers: List[nn.Module]):
         super().__init__()
         self.layers = nn.ModuleList(conv_layers)
         self.conv1 = self.layers[0]
         self.conv2 = self.layers[-1]
 
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         for i, conv in enumerate(self.layers):
-            x = conv(x, edge_index)
+            if isinstance(conv, HydroConv):
+                x = conv(x, edge_index, edge_attr)
+            else:
+                x = conv(x, edge_index)
             if i < len(self.layers) - 1:
                 x = torch.relu(x)
         return x
 
 
-def load_network(inp_file: str):
-    """Load EPANET network and build edge index for PyG."""
+def load_network(inp_file: str, return_edge_attr: bool = False):
+    """Load EPANET network and build edge index for PyG.
+
+    Parameters
+    ----------
+    return_edge_attr : bool, optional
+        If ``True`` also return the normalized edge attributes.
+    """
     wn = wntr.network.WaterNetworkModel(inp_file)
     wn.options.quality.parameter = "CHEMICAL"
     wn.options.time.hydraulic_timestep = 3600
@@ -50,13 +66,26 @@ def load_network(inp_file: str):
 
     node_to_index = {n: i for i, n in enumerate(wn.node_name_list)}
     edges = []
+    attrs = []
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
         i = node_to_index[link.start_node.name]
         j = node_to_index[link.end_node.name]
         edges.append([i, j])
         edges.append([j, i])
+        length = getattr(link, "length", 0.0) or 0.0
+        diam = getattr(link, "diameter", 0.0) or 0.0
+        rough = getattr(link, "roughness", 0.0) or 0.0
+        attrs.append([length, diam, rough])
+        attrs.append([length, diam, rough])
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+    if return_edge_attr:
+        edge_attr = np.array(attrs, dtype=np.float32)
+        edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
+        scaler = MinMaxScaler()
+        edge_attr = scaler.fit_transform(edge_attr)
+        edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
+        return wn, node_to_index, wn.pump_name_list, edge_index, edge_attr
     return wn, node_to_index, wn.pump_name_list, edge_index
 
 
@@ -132,7 +161,11 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
             w = state[w_key]
             in_dim = w.shape[1]
             out_dim = w.shape[0]
-            conv_layers.append(GCNConv(in_dim, out_dim))
+            if f"layers.{i}.edge_mlp.0.weight" in state:
+                e_dim = state[f"layers.{i}.edge_mlp.0.weight"].shape[1]
+                conv_layers.append(HydroConv(in_dim, out_dim, e_dim))
+            else:
+                conv_layers.append(GCNConv(in_dim, out_dim))
     else:
         weight_key = "conv1.weight" if "conv1.weight" in state else "conv1.lin.weight"
         hidden_key = weight_key
@@ -218,6 +251,7 @@ def run_mpc_step(
     wn: wntr.network.WaterNetworkModel,
     model: GNNSurrogate,
     edge_index: torch.Tensor,
+    edge_attr: torch.Tensor,
     pressures: Dict[str, float],
     chlorine: Dict[str, float],
     horizon: int,
@@ -260,7 +294,7 @@ def run_mpc_step(
                 device,
                 model,
             )
-            pred = model(x, edge_index)
+            pred = model(x, edge_index, edge_attr)
             if getattr(model, "y_mean", None) is not None:
                 pred = pred * model.y_std + model.y_mean
             assert not torch.isnan(pred).any(), "NaN prediction"
@@ -287,6 +321,7 @@ def propagate_with_surrogate(
     wn: wntr.network.WaterNetworkModel,
     model: GNNSurrogate,
     edge_index: torch.Tensor,
+    edge_attr: torch.Tensor,
     pressures: Dict[str, float],
     chlorine: Dict[str, float],
     control_seq: torch.Tensor,
@@ -316,7 +351,7 @@ def propagate_with_surrogate(
                 device,
                 model,
             )
-            pred = model(x, edge_index)
+            pred = model(x, edge_index, edge_attr)
             if getattr(model, "y_mean", None) is not None:
                 pred = pred * model.y_std + model.y_mean
             assert not torch.isnan(pred).any(), "NaN prediction"
@@ -331,6 +366,7 @@ def simulate_closed_loop(
     wn: wntr.network.WaterNetworkModel,
     model: GNNSurrogate,
     edge_index: torch.Tensor,
+    edge_attr: torch.Tensor,
     horizon: int,
     iterations: int,
     node_to_index: Dict[str, int],
@@ -368,6 +404,7 @@ def simulate_closed_loop(
             wn,
             model,
             edge_index,
+            edge_attr,
             pressures,
             chlorine,
             horizon,
@@ -423,6 +460,7 @@ def simulate_closed_loop(
                 wn,
                 model,
                 edge_index,
+                edge_attr,
                 pressures,
                 chlorine,
                 u_opt,
@@ -476,8 +514,11 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     inp_path = os.path.join(REPO_ROOT, "CTown.inp")
-    wn, node_to_index, pump_names, edge_index = load_network(inp_path)
+    wn, node_to_index, pump_names, edge_index, edge_attr = load_network(
+        inp_path, return_edge_attr=True
+    )
     edge_index = edge_index.to(device)
+    edge_attr = edge_attr.to(device)
     try:
         model = load_surrogate_model(device)
     except FileNotFoundError as e:
@@ -500,6 +541,7 @@ def main():
         wn,
         model,
         edge_index,
+        edge_attr,
         args.horizon,
         args.iterations,
         node_to_index,

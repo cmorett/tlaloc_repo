@@ -10,6 +10,7 @@ from torch import nn
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv, MessagePassing
+from sklearn.preprocessing import MinMaxScaler
 import wntr
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -175,9 +176,11 @@ def apply_normalization(data_list, x_mean, x_std, y_mean, y_std):
 def build_edge_attr(
     wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
 ) -> np.ndarray:
-    """Return edge attribute matrix [E,3] for given edge index."""
+    """Return normalized edge attribute matrix ``[E, 3]`` for ``edge_index``."""
+
     node_map = {n: i for i, n in enumerate(wn.node_name_list)}
-    attr_dict: dict[tuple[int, int], list[float]] = {}
+    edges: List[Tuple[int, int]] = []
+    attrs: List[List[float]] = []
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
         i = node_map[link.start_node.name]
@@ -186,9 +189,19 @@ def build_edge_attr(
         diam = getattr(link, "diameter", 0.0) or 0.0
         rough = getattr(link, "roughness", 0.0) or 0.0
         attr = [float(length), float(diam), float(rough)]
-        attr_dict[(i, j)] = attr
-        attr_dict[(j, i)] = attr
-    return np.array([attr_dict[(int(s), int(t))] for s, t in edge_index.T], dtype=np.float32)
+        edges.append((i, j))
+        edges.append((j, i))
+        attrs.append(attr)
+        attrs.append(attr)
+
+    edge_attr = np.array(attrs, dtype=np.float32)
+    edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
+    scaler = MinMaxScaler()
+    edge_attr = scaler.fit_transform(edge_attr)
+
+    attr_dict = {(s, t): edge_attr[idx] for idx, (s, t) in enumerate(edges)}
+    ordered = [attr_dict[(int(s), int(t))] for s, t in edge_index.T]
+    return np.array(ordered, dtype=np.float32)
 
 
 def train(model, loader, optimizer, device, check_negative=True):
@@ -236,7 +249,10 @@ def main(args: argparse.Namespace):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
-    edge_attr = build_edge_attr(wn, edge_index_np)
+    if os.path.exists(args.edge_attr_path):
+        edge_attr = np.load(args.edge_attr_path)
+    else:
+        edge_attr = build_edge_attr(wn, edge_index_np)
     data_list = load_dataset(
         args.x_path, args.y_path, args.edge_index_path, edge_attr=edge_attr
     )
@@ -355,6 +371,11 @@ if __name__ == "__main__":
         "--edge-index-path",
         default=os.path.join(DATA_DIR, "edge_index.npy"),
         help="Path to edge index file (used with matrix-format datasets)",
+    )
+    parser.add_argument(
+        "--edge-attr-path",
+        default=os.path.join(DATA_DIR, "edge_attr.npy"),
+        help="Optional edge attribute file; if missing it is computed from the EPANET model",
     )
     parser.add_argument(
         "--x-val-path",
