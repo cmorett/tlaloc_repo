@@ -12,6 +12,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv
 import wntr
 import matplotlib.pyplot as plt
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 
 class GCNEncoder(nn.Module):
@@ -207,6 +208,7 @@ def main(args: argparse.Namespace):
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 
     # prepare logging
     run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -220,6 +222,7 @@ def main(args: argparse.Namespace):
         f.write(f"args: {vars(args)}\n")
         f.write(f"seed: {args.seed}\n")
         f.write(f"device: {device}\n")
+        f.write("epoch,train_loss,val_loss,lr\n")
         best_val = float("inf")
         patience = 0
         for epoch in range(args.epochs):
@@ -228,8 +231,10 @@ def main(args: argparse.Namespace):
                 val_loss = evaluate(model, val_loader, device)
             else:
                 val_loss = loss
+            scheduler.step(val_loss)
+            curr_lr = optimizer.param_groups[0]['lr']
             losses.append((loss, val_loss))
-            f.write(f"{epoch},{loss:.6f},{val_loss:.6f}\n")
+            f.write(f"{epoch},{loss:.6f},{val_loss:.6f},{curr_lr:.6e}\n")
             if val_loss < best_val - 1e-6:
                 best_val = val_loss
                 patience = 0
