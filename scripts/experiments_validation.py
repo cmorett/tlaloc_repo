@@ -12,7 +12,7 @@ import os
 import json
 import pickle
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -93,7 +93,7 @@ def _prepare_features(
 def validate_surrogate(
     model: torch.nn.Module,
     edge_index: torch.Tensor,
-    edge_attr: torch.Tensor | None,
+    edge_attr: Optional[torch.Tensor],
     wn: wntr.network.WaterNetworkModel,
     test_results: List,
     device: torch.device,
