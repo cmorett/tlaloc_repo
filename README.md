@@ -40,14 +40,15 @@ Example usage:
 python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy \
     --x-val-path data/X_val.npy --y-val-path data/Y_val.npy \
     --epochs 100 --batch-size 16 --hidden-dim 32 --num-layers 3 \
-    --normalize --early-stop-patience 5 --edge-index-path data/edge_index.npy \
+    --early-stop-patience 5 --edge-index-path data/edge_index.npy \
     --inp-path CTown.inp
 ```
 
-The trained model now supports validation loss tracking, early stopping and
-optional feature normalization.  Each run is stored with a unique timestamp to
-avoid overwriting previous checkpoints.  Normalization statistics are saved
-alongside the weights and automatically applied by the inference scripts.
+The trained model now supports validation loss tracking and early stopping.
+Normalization is applied automatically so the ``--normalize`` flag is optional.
+Each run is stored with a unique timestamp to avoid overwriting previous
+checkpoints.  Normalization statistics are saved alongside the weights and
+automatically applied by the inference scripts.
 
 To achieve good predictive accuracy the surrogate should be trained on a large
 collection of EPANET simulations.  The data generation script accepts a
@@ -64,6 +65,9 @@ looks like:
 ```bash
 python scripts/data_generation.py --num-scenarios 2000 --output-dir data/ --seed 42
 ```
+The generation step utilizes all available CPU cores by default. The value
+``2000`` matches the new default of ``--num-scenarios``. Use
+``--num-workers`` to override the number of parallel workers if needed.
 
 Set ``--extreme-event-prob`` to inject rare scenarios such as fire flows,
 pump failures or source quality changes.  Scenario labels are stored alongside

@@ -321,10 +321,27 @@ def compute_norm_stats(data_list):
     return x_mean, x_std, y_mean, y_std
 
 
-def apply_normalization(data_list, x_mean, x_std, y_mean, y_std):
+def compute_edge_attr_stats(edge_attr: np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return mean and std for edge attribute matrix."""
+    attr_mean = torch.tensor(edge_attr.mean(axis=0), dtype=torch.float32)
+    attr_std = torch.tensor(edge_attr.std(axis=0) + 1e-8, dtype=torch.float32)
+    return attr_mean, attr_std
+
+
+def apply_normalization(
+    data_list,
+    x_mean,
+    x_std,
+    y_mean,
+    y_std,
+    edge_attr_mean=None,
+    edge_attr_std=None,
+):
     for d in data_list:
         d.x = (d.x - x_mean) / x_std
         d.y = (d.y - y_mean) / y_std
+        if edge_attr_mean is not None and getattr(d, "edge_attr", None) is not None:
+            d.edge_attr = (d.edge_attr - edge_attr_mean) / edge_attr_std
 
 
 class SequenceDataset(Dataset):
@@ -388,13 +405,23 @@ def compute_sequence_norm_stats(X: np.ndarray, Y: np.ndarray):
     return x_mean, x_std, y_mean, y_std
 
 
-def apply_sequence_normalization(dataset: SequenceDataset, x_mean: torch.Tensor, x_std: torch.Tensor, y_mean, y_std) -> None:
+def apply_sequence_normalization(
+    dataset: SequenceDataset,
+    x_mean: torch.Tensor,
+    x_std: torch.Tensor,
+    y_mean,
+    y_std,
+    edge_attr_mean: torch.Tensor | None = None,
+    edge_attr_std: torch.Tensor | None = None,
+) -> None:
     dataset.X = (dataset.X - x_mean) / x_std
     if dataset.multi:
         for k in dataset.Y:
             dataset.Y[k] = (dataset.Y[k] - y_mean[k]) / y_std[k]
     else:
         dataset.Y = (dataset.Y - y_mean) / y_std
+    if edge_attr_mean is not None and dataset.edge_attr is not None:
+        dataset.edge_attr = (dataset.edge_attr - edge_attr_mean) / edge_attr_std
 
 
 def build_edge_attr(
@@ -518,6 +545,7 @@ def main(args: argparse.Namespace):
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     edge_attr = build_edge_attr(wn, edge_index_np)
+    edge_mean, edge_std = compute_edge_attr_stats(edge_attr)
     X_raw = np.load(args.x_path, allow_pickle=True)
     Y_raw = np.load(args.y_path, allow_pickle=True)
     seq_mode = X_raw.ndim == 4
@@ -570,14 +598,50 @@ def main(args: argparse.Namespace):
             x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
                 X_raw, Y_raw
             )
-            apply_sequence_normalization(data_ds, x_mean, x_std, y_mean, y_std)
+            apply_sequence_normalization(
+                data_ds,
+                x_mean,
+                x_std,
+                y_mean,
+                y_std,
+                edge_mean,
+                edge_std,
+            )
             if isinstance(val_list, SequenceDataset):
-                apply_sequence_normalization(val_list, x_mean, x_std, y_mean, y_std)
+                apply_sequence_normalization(
+                    val_list,
+                    x_mean,
+                    x_std,
+                    y_mean,
+                    y_std,
+                    edge_mean,
+                    edge_std,
+                )
         else:
             x_mean, x_std, y_mean, y_std = compute_norm_stats(data_list)
-            apply_normalization(data_list, x_mean, x_std, y_mean, y_std)
+            apply_normalization(
+                data_list, x_mean, x_std, y_mean, y_std, edge_mean, edge_std
+            )
             if val_list:
-                apply_normalization(val_list, x_mean, x_std, y_mean, y_std)
+                apply_normalization(
+                    val_list, x_mean, x_std, y_mean, y_std, edge_mean, edge_std
+                )
+        print("Target normalization stats:")
+        if isinstance(y_mean, dict):
+            print(
+                "Pressure mean/std:",
+                y_mean["node_outputs"][0].item(),
+                y_std["node_outputs"][0].item(),
+            )
+            print(
+                "Chlorine mean/std:",
+                y_mean["node_outputs"][1].item(),
+                y_std["node_outputs"][1].item(),
+            )
+        else:
+            if len(y_mean) >= 2:
+                print("Pressure mean/std:", y_mean[0].item(), y_std[0].item())
+                print("Chlorine mean/std:", y_mean[1].item(), y_std[1].item())
     else:
         x_mean = x_std = y_mean = y_std = None
 
@@ -692,9 +756,19 @@ def main(args: argparse.Namespace):
                             y_std_edge=y_std["edge_outputs"].numpy(),
                             y_mean_energy=y_mean["pump_energy"].numpy(),
                             y_std_energy=y_std["pump_energy"].numpy(),
+                            edge_mean=edge_mean.numpy(),
+                            edge_std=edge_std.numpy(),
                         )
                     else:
-                        np.savez(norm_path, x_mean=x_mean.numpy(), x_std=x_std.numpy(), y_mean=y_mean.numpy(), y_std=y_std.numpy())
+                        np.savez(
+                            norm_path,
+                            x_mean=x_mean.numpy(),
+                            x_std=x_std.numpy(),
+                            y_mean=y_mean.numpy(),
+                            y_std=y_std.numpy(),
+                            edge_mean=edge_mean.numpy(),
+                            edge_std=edge_std.numpy(),
+                        )
             else:
                 patience += 1
             if patience >= args.early_stop_patience:
@@ -810,7 +884,12 @@ if __name__ == "__main__":
         default=10,
         help="Early stopping patience",
     )
-    parser.add_argument("--normalize", action="store_true", help="Normalize data")
+    parser.add_argument(
+        "--normalize",
+        action="store_true",
+        default=True,
+        help="Apply normalization to features and targets",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--run-name", default="", help="Optional run name")
     parser.add_argument(

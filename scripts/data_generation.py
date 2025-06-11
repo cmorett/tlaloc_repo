@@ -236,16 +236,28 @@ def extract_additional_targets(sim_results: wntr.sim.results.SimulationResults, 
     return flow_rates, pump_energy_arr
 
 
+from functools import partial
+from multiprocessing import Pool, cpu_count
+
+
 def run_scenarios(
     inp_file: str,
     num_scenarios: int,
     seed: Optional[int] = None,
     extreme_event_prob: float = 0.0,
-) -> List[Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]]:
-    """Run multiple randomized scenarios and return their results."""
+    num_workers: int | None = None,
+) -> List[
+    Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
+]:
+    """Run multiple randomized scenarios in parallel and return their results."""
 
     args_list = [(i, inp_file, seed) for i in range(num_scenarios)]
-    results = [_run_single_scenario(a, extreme_event_prob) for a in args_list]
+    if num_workers is None:
+        num_workers = max(cpu_count() - 1, 1)
+
+    with Pool(processes=num_workers) as pool:
+        func = partial(_run_single_scenario, extreme_event_prob=extreme_event_prob)
+        results = pool.map(func, args_list)
 
     return results
 
@@ -294,8 +306,10 @@ def build_sequence_dataset(
 
     for sim_results, _scale_dict, pump_ctrl in results:
         scenario_types.append(getattr(sim_results, "scenario_type", "normal"))
-        pressures = sim_results.node["pressure"].clip(lower=0.0)
-        quality = sim_results.node["quality"].clip(lower=0.0, upper=5.0)
+        pressures = sim_results.node["pressure"].clip(lower=5.0, upper=80.0)
+        quality = np.log1p(
+            sim_results.node["quality"].clip(lower=0.0, upper=4.0)
+        )
         demands = sim_results.node.get("demand")
         if demands is not None:
             max_d = float(demands.max().max())
@@ -375,14 +389,15 @@ def build_dataset(
     pumps = wn_template.pump_name_list
 
     for sim_results, _scale_dict, pump_ctrl in results:
-        pressures = sim_results.node["pressure"]
-        quality = sim_results.node["quality"]
+        pressures = sim_results.node["pressure"].clip(lower=5.0, upper=80.0)
+        quality = np.log1p(
+            sim_results.node["quality"].clip(lower=0.0, upper=4.0)
+        )
         demands = sim_results.node.get("demand")
         times = pressures.index
         flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
 
-        pressures = pressures.clip(lower=0.0)
-        quality = quality.clip(lower=0.0, upper=5.0)
+
         if demands is not None:
             max_d = float(demands.max().max())
             demands = demands.clip(lower=0.0, upper=max_d * 1.5)
@@ -471,7 +486,7 @@ def main() -> None:
     parser.add_argument(
         "--num-scenarios",
         type=int,
-        default=10,
+        default=2000,
         help="Number of random scenarios to simulate",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
@@ -487,6 +502,12 @@ def main() -> None:
         help="Directory to store generated datasets",
     )
     parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Parallel workers for scenario generation (defaults to CPU count)",
+    )
+    parser.add_argument(
         "--sequence-length",
         type=int,
         default=1,
@@ -498,7 +519,11 @@ def main() -> None:
     N = args.num_scenarios
 
     results = run_scenarios(
-        str(inp_file), N, seed=args.seed, extreme_event_prob=args.extreme_event_prob
+        str(inp_file),
+        N,
+        seed=args.seed,
+        extreme_event_prob=args.extreme_event_prob,
+        num_workers=args.num_workers,
     )
     train_res, val_res, test_res = split_results(results)
 
