@@ -411,8 +411,8 @@ def apply_sequence_normalization(
     x_std: torch.Tensor,
     y_mean,
     y_std,
-    edge_attr_mean: torch.Tensor | None = None,
-    edge_attr_std: torch.Tensor | None = None,
+    edge_attr_mean: Optional[torch.Tensor] = None,
+    edge_attr_std: Optional[torch.Tensor] = None,
 ) -> None:
     dataset.X = (dataset.X - x_mean) / x_std
     if dataset.multi:
