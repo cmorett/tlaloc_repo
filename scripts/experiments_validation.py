@@ -92,6 +92,7 @@ def _prepare_features(
 def validate_surrogate(
     model: torch.nn.Module,
     edge_index: torch.Tensor,
+    edge_attr: torch.Tensor | None,
     wn: wntr.network.WaterNetworkModel,
     test_results: List,
     device: torch.device,
@@ -109,6 +110,8 @@ def validate_surrogate(
     count = 0
     model.eval()
     edge_index = edge_index.to(device)
+    if edge_attr is not None:
+        edge_attr = edge_attr.to(device)
 
     with torch.no_grad():
         for res in test_results:
@@ -128,7 +131,7 @@ def validate_surrogate(
                 c = chlorine_df.iloc[i].to_dict()
                 controls = pump_array[i]
                 x = _prepare_features(wn, p, c, controls, model).to(device)
-                pred = model(x, edge_index)
+                pred = model(x, edge_index, edge_attr)
                 if hasattr(model, "y_mean") and model.y_mean is not None:
                     pred = pred * model.y_std + model.y_mean
                 y_true_p = pressures_df.iloc[i + 1].to_numpy()
@@ -314,14 +317,17 @@ def main() -> None:
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    wn, node_to_index, pump_names, edge_index = load_network(args.inp)
+    wn, node_to_index, pump_names, edge_index, edge_attr = load_network(
+        args.inp, return_edge_attr=True
+    )
     edge_index = edge_index.to(device)
+    edge_attr = edge_attr.to(device)
     model = load_surrogate_model(device, path=args.model)
 
     if os.path.exists(args.test_pkl):
         with open(args.test_pkl, "rb") as f:
             test_res = pickle.load(f)
-        rmse = validate_surrogate(model, edge_index, wn, test_res, device)
+        rmse = validate_surrogate(model, edge_index, edge_attr, wn, test_res, device)
         print(
             f"Surrogate RMSE - Pressure: {rmse['pressure_rmse']:.2f}, "
             f"Chlorine: {rmse['chlorine_rmse']:.3f}"
@@ -336,6 +342,7 @@ def main() -> None:
         wntr.network.WaterNetworkModel(args.inp),
         model,
         edge_index,
+        edge_attr,
         args.horizon,
         args.iterations,
         node_to_index,

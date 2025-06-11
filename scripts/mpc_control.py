@@ -11,7 +11,18 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import GCNConv
 from sklearn.preprocessing import MinMaxScaler
-from scripts.train_gnn import HydroConv
+# Import ``HydroConv`` from the training module located in the same
+# directory.  Using a plain module import keeps the file executable both when
+# called directly (``python scripts/mpc_control.py``) and when loaded from
+# other scripts like ``experiments_validation.py`` where ``sys.path`` points to
+# the ``scripts`` folder.
+# ``mpc_control.py`` may be executed directly or imported as part of the
+# ``scripts`` package.  Support both usages by attempting a relative import
+# first and falling back to an absolute one when the module is run as a script.
+try:
+    from .train_gnn import HydroConv  # type: ignore
+except ImportError:  # pragma: no cover - executed when run as a script
+    from train_gnn import HydroConv
 import wntr
 from wntr.metrics.economic import pump_energy
 
@@ -141,6 +152,27 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
         for old, new in mapping.items():
             if old in state:
                 renamed[new] = renamed[old] = state[old]
+        state = renamed
+    elif any(k.startswith("encoder.convs") for k in state):
+        # Models trained with ``EnhancedGNNEncoder`` store convolution weights
+        # under ``encoder.convs.X``.  Convert these to ``layers.X`` and duplicate
+        # the first/last layer under ``conv1``/``conv2`` for backwards
+        # compatibility.
+        renamed = {}
+        indices = sorted({int(k.split(".")[2]) for k in state if k.startswith("encoder.convs")})
+        last_idx = max(indices)
+        for k, v in state.items():
+            if not k.startswith("encoder.convs"):
+                continue
+            parts = k.split(".")
+            idx = int(parts[2])
+            rest = ".".join(parts[3:])
+            base_key = f"layers.{idx}.{rest}"
+            renamed[base_key] = v
+            if idx == 0:
+                renamed[f"conv1.{rest}"] = v
+            if idx == last_idx:
+                renamed[f"conv2.{rest}"] = v
         state = renamed
 
     layer_keys = [

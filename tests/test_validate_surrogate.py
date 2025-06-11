@@ -21,7 +21,7 @@ class DummyModel(torch.nn.Module):
         self.y_mean = None
         self.y_std = torch.ones(1)
 
-    def forward(self, x, edge_index):
+    def forward(self, x, edge_index, edge_attr=None):
         return torch.zeros(x.size(0), self.out_dim, device=x.device)
 
 def test_validate_surrogate_accepts_tuple():
@@ -34,4 +34,4 @@ def test_validate_surrogate_accepts_tuple():
     sim = wntr.sim.EpanetSimulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp"))
     model = DummyModel().to(device)
-    validate_surrogate(model, edge_index, wn, [(res, {})], device)
+    validate_surrogate(model, edge_index, None, wn, [(res, {})], device)
