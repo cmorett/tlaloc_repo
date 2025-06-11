@@ -14,6 +14,7 @@ from torch_geometric.nn import GCNConv, MessagePassing, GATConv, LayerNorm
 import wntr
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from typing import Optional
 
 
 class HydroConv(MessagePassing):
@@ -52,7 +53,7 @@ class EnhancedGNNEncoder(nn.Module):
         dropout: float = 0.0,
         activation: str = "relu",
         residual: bool = False,
-        edge_dim: int | None = None,
+        edge_dim: Optional[int] = None,
         use_attention: bool = False,
         gat_heads: int = 4,
     ) -> None:
@@ -252,7 +253,7 @@ def load_dataset(
     x_path: str,
     y_path: str,
     edge_index_path: str = "edge_index.npy",
-    edge_attr: np.ndarray | None = None,
+    edge_attr: Optional[np.ndarray] = None,
 ) -> list[Data]:
     """Load training data.
 
@@ -327,7 +328,7 @@ def apply_normalization(data_list, x_mean, x_std, y_mean, y_std):
 class SequenceDataset(Dataset):
     """Simple ``Dataset`` for sequence data supporting multi-task labels."""
 
-    def __init__(self, X: np.ndarray, Y: np.ndarray, edge_index: np.ndarray, edge_attr: np.ndarray | None):
+    def __init__(self, X: np.ndarray, Y: np.ndarray, edge_index: np.ndarray, edge_attr: Optional[np.ndarray]):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.edge_index = torch.tensor(edge_index, dtype=torch.long)
         self.edge_attr = None
@@ -501,9 +502,21 @@ def main(args: argparse.Namespace):
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     edge_attr = build_edge_attr(wn, edge_index_np)
     X_raw = np.load(args.x_path, allow_pickle=True)
+    Y_raw = np.load(args.y_path, allow_pickle=True)
     seq_mode = X_raw.ndim == 4
+    if not seq_mode:
+        first_label = Y_raw[0]
+        if isinstance(first_label, dict) or (
+            isinstance(first_label, np.ndarray) and Y_raw.dtype == object
+        ):
+            # Treat single-step multi-task data as sequences of length one
+            X_raw = X_raw[:, None, ...]
+            Y_raw = np.array([
+                {k: v[None, ...] for k, v in y.items()} for y in Y_raw
+            ], dtype=object)
+            seq_mode = True
+
     if seq_mode:
-        Y_raw = np.load(args.y_path, allow_pickle=True)
         data_ds = SequenceDataset(X_raw, Y_raw, edge_index_np, edge_attr)
         loader = TorchLoader(data_ds, batch_size=args.batch_size, shuffle=True)
     else:
@@ -517,6 +530,9 @@ def main(args: argparse.Namespace):
         if seq_mode:
             Xv = np.load(args.x_val_path, allow_pickle=True)
             Yv = np.load(args.y_val_path, allow_pickle=True)
+            if Xv.ndim == 3:
+                Yv = np.array([{k: v[None, ...] for k, v in y.items()} for y in Yv], dtype=object)
+                Xv = Xv[:, None, ...]
             val_ds = SequenceDataset(Xv, Yv, edge_index_np, edge_attr)
             val_loader = TorchLoader(val_ds, batch_size=args.batch_size)
             val_list = val_ds
