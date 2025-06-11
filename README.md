@@ -72,6 +72,9 @@ python scripts/data_generation.py --num-scenarios 2000 --output-dir data/ --seed
 The generation step utilizes all available CPU cores by default. The value
 ``2000`` matches the new default of ``--num-scenarios``. Use
 ``--num-workers`` to override the number of parallel workers if needed.
+If a particular random configuration causes EPANET to fail to produce results,
+the script now skips it after a few retries so the actual number of generated
+scenarios may be slightly smaller than requested.
 
 Set ``--extreme-event-prob`` to inject rare scenarios such as fire flows,
 pump failures or source quality changes.  Scenario labels are stored alongside

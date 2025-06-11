@@ -123,12 +123,13 @@ def _build_randomized_network(
 def _run_single_scenario(
     args,
     extreme_event_prob: float = 0.0,
-) -> Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]:
+) -> Optional[Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]]:
     """Run a single randomized scenario.
 
     EPANET occasionally fails to write results when the hydraulics become
     infeasible. To make the data generation robust we retry a few times,
-    rebuilding the randomized scenario each time.
+    rebuilding the randomized scenario each time.  If all attempts fail
+    ``None`` is returned so the caller can skip this scenario.
     """
 
     idx, inp_file, seed = args
@@ -158,7 +159,9 @@ def _run_single_scenario(
             break
         except wntr.epanet.exceptions.EpanetException:
             # Remove possible leftover files before retrying with a new
-            # randomized scenario.  If we ran out of attempts, re-raise.
+            # randomized scenario.  If we ran out of attempts, return None so
+            # the caller can skip this scenario instead of failing the entire
+            # generation run.
             for ext in [
                 ".inp",
                 ".rpt",
@@ -176,7 +179,7 @@ def _run_single_scenario(
                 except PermissionError:
                     warnings.warn(f"Could not remove file {prefix}{ext}")
             if attempt == 2:
-                raise
+                return None
             else:
                 continue
 
@@ -247,7 +250,11 @@ def run_scenarios(
 ) -> List[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
 ]:
-    """Run multiple randomized scenarios in parallel and return their results."""
+    """Run multiple randomized scenarios in parallel and return their results.
+
+    Scenarios that remain infeasible after several retries are skipped, so the
+    returned list may contain fewer elements than ``num_scenarios``.
+    """
 
     args_list = [(i, inp_file, seed) for i in range(num_scenarios)]
     if num_workers is None:
@@ -255,7 +262,10 @@ def run_scenarios(
 
     with Pool(processes=num_workers) as pool:
         func = partial(_run_single_scenario, extreme_event_prob=extreme_event_prob)
-        results = pool.map(func, args_list)
+        raw_results = pool.map(func, args_list)
+
+    # Filter out failed scenarios returned as ``None``
+    results = [res for res in raw_results if res is not None]
 
     return results
 
