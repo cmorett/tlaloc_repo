@@ -455,8 +455,16 @@ def train_sequence(model: nn.Module, loader: TorchLoader, edge_index: torch.Tens
         optimizer.zero_grad()
         preds = model(X_seq, edge_index.to(device), edge_attr.to(device))
         if isinstance(Y_seq, dict):
-            loss_node = F.mse_loss(preds['node_outputs'], Y_seq['node_outputs'].to(device))
-            loss_edge = F.mse_loss(preds['edge_outputs'], Y_seq['edge_outputs'].to(device))
+            loss_node = F.mse_loss(
+                preds['node_outputs'],
+                Y_seq['node_outputs'].to(device)
+            )
+            # ``edge_outputs`` in ``SequenceDataset`` does not include the final
+            # feature dimension, whereas the model predicts ``[B, T, E, 1]``.
+            # Add the singleton dimension here so broadcasting does not occur
+            # during loss computation.
+            edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
+            loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
             loss_energy = F.mse_loss(preds['pump_energy'], Y_seq['pump_energy'].to(device))
             loss = loss_node + 0.5 * loss_edge + 0.1 * loss_energy
         else:
@@ -477,9 +485,16 @@ def evaluate_sequence(model: nn.Module, loader: TorchLoader, edge_index: torch.T
             X_seq = X_seq.to(device)
             preds = model(X_seq, edge_index.to(device), edge_attr.to(device))
             if isinstance(Y_seq, dict):
-                loss_node = F.mse_loss(preds['node_outputs'], Y_seq['node_outputs'].to(device))
-                loss_edge = F.mse_loss(preds['edge_outputs'], Y_seq['edge_outputs'].to(device))
-                loss_energy = F.mse_loss(preds['pump_energy'], Y_seq['pump_energy'].to(device))
+                loss_node = F.mse_loss(
+                    preds['node_outputs'],
+                    Y_seq['node_outputs'].to(device)
+                )
+                edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
+                loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
+                loss_energy = F.mse_loss(
+                    preds['pump_energy'],
+                    Y_seq['pump_energy'].to(device)
+                )
                 loss = loss_node + 0.5 * loss_edge + 0.1 * loss_energy
             else:
                 Y_seq = Y_seq.to(device)
