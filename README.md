@@ -88,7 +88,9 @@ Validate the resulting model with `scripts/experiments_validation.py` before
 running the MPC controller.  The validation script executes a 24‑hour
 simulation with EPANET feedback applied every hour (``--feedback-interval`` is
 ``1`` by default) which keeps predictions from the surrogate model from
-diverging over long horizons.
+diverging over long horizons.  It now also reports mean absolute error (MAE)
+and the maximum absolute error for pressure and chlorine.  All metrics are
+written to ``logs/surrogate_metrics.json`` for reproducibility.
 
 ## Running MPC control
 
@@ -106,7 +108,9 @@ This executes a 24‑hour closed loop simulation where pump actions are optimize
 at each hour.  EPANET is only called every 24 hours (controlled by
 ``--feedback-interval``) and all intermediate updates rely on the GNN surrogate
 running entirely on a CUDA device.  Results are written to
-`data/mpc_history.csv`.
+`data/mpc_history.csv`.  A summary listing constraint violations and total
+energy consumption is printed at the end of the run and saved to
+``logs/mpc_summary.json``.
 
 **Important:** the surrogate must be trained on datasets that include pump
 control inputs (the additional features appended by `scripts/data_generation.py`).

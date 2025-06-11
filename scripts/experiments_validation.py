@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import json
 import pickle
 from pathlib import Path
 from typing import Dict, List
@@ -107,6 +108,10 @@ def validate_surrogate(
 
     rmse_p = 0.0
     rmse_c = 0.0
+    mae_p = 0.0
+    mae_c = 0.0
+    max_err_p = 0.0
+    max_err_c = 0.0
     count = 0
     model.eval()
     edge_index = edge_index.to(device)
@@ -148,11 +153,38 @@ def validate_surrogate(
                 diff_c = pred[:, 1].cpu().numpy() - y_true_c
                 rmse_p += float((diff_p ** 2).sum())
                 rmse_c += float((diff_c ** 2).sum())
+                mae_p += float(np.abs(diff_p).sum())
+                mae_c += float(np.abs(diff_c).sum())
+                max_err_p = max(max_err_p, float(np.max(np.abs(diff_p))))
+                max_err_c = max(max_err_c, float(np.max(np.abs(diff_c))))
                 count += len(y_true_p)
 
     rmse_p = (rmse_p / count) ** 0.5
     rmse_c = (rmse_c / count) ** 0.5
-    return {"pressure_rmse": rmse_p, "chlorine_rmse": rmse_c}
+    mae_p = mae_p / count
+    mae_c = mae_c / count
+
+    print(
+        f"[Metrics] RMSE (Pressure): {rmse_p:.4f} | MAE: {mae_p:.4f} | Max Err: {max_err_p:.4f}"
+    )
+    print(
+        f"[Metrics] RMSE (Chlorine): {rmse_c:.4f} | MAE: {mae_c:.4f} | Max Err: {max_err_c:.4f}"
+    )
+
+    metrics = {
+        "pressure_rmse": rmse_p,
+        "chlorine_rmse": rmse_c,
+        "pressure_mae": mae_p,
+        "chlorine_mae": mae_c,
+        "pressure_max_error": max_err_p,
+        "chlorine_max_error": max_err_c,
+    }
+
+    os.makedirs(REPO_ROOT / "logs", exist_ok=True)
+    with open(REPO_ROOT / "logs" / "surrogate_metrics.json", "w") as f:
+        json.dump(metrics, f, indent=2)
+
+    return metrics
 
 
 def run_all_pumps_on(
@@ -335,12 +367,8 @@ def main() -> None:
     if os.path.exists(args.test_pkl):
         with open(args.test_pkl, "rb") as f:
             test_res = pickle.load(f)
-        rmse = validate_surrogate(model, edge_index, edge_attr, wn, test_res, device)
-        print(
-            f"Surrogate RMSE - Pressure: {rmse['pressure_rmse']:.2f}, "
-            f"Chlorine: {rmse['chlorine_rmse']:.3f}"
-        )
-        pd.DataFrame([rmse]).to_csv(
+        metrics = validate_surrogate(model, edge_index, edge_attr, wn, test_res, device)
+        pd.DataFrame([metrics]).to_csv(
             os.path.join(DATA_DIR, "surrogate_validation.csv"), index=False
         )
     else:

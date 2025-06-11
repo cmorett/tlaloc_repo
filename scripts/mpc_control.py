@@ -3,6 +3,7 @@ import time
 from typing import Dict, List, Optional
 import os
 from pathlib import Path
+import json
 
 
 import numpy as np
@@ -653,6 +654,9 @@ def simulate_closed_loop(
     to run nearly instantly.
     """
     log = []
+    pressure_violations = 0
+    chlorine_violations = 0
+    total_energy = 0.0
     # obtain hydraulic state at time zero
     wn.options.time.duration = 0
     wn.options.time.report_timestep = 0
@@ -747,6 +751,11 @@ def simulate_closed_loop(
             min(chlorine[n] for n in wn.junction_name_list + wn.tank_name_list),
             0.0,
         )
+        if min_p < Pmin:
+            pressure_violations += 1
+        if min_c < Cmin:
+            chlorine_violations += 1
+        total_energy += energy
         log.append(
             {
                 "time": hour,
@@ -762,6 +771,22 @@ def simulate_closed_loop(
     df = pd.DataFrame(log)
     os.makedirs(DATA_DIR, exist_ok=True)
     df.to_csv(os.path.join(DATA_DIR, "mpc_history.csv"), index=False)
+    summary = {
+        "pressure_violations": pressure_violations,
+        "chlorine_violations": chlorine_violations,
+        "total_energy": float(total_energy),
+        "hours": len(log),
+    }
+    print(
+        f"[MPC Summary] Pressure violations: {pressure_violations}/{len(log)}h"
+    )
+    print(
+        f"[MPC Summary] Chlorine violations: {chlorine_violations}/{len(log)}h"
+    )
+    print(f"[MPC Summary] Total pump energy used: {total_energy:.2f} kWh")
+    os.makedirs(REPO_ROOT / "logs", exist_ok=True)
+    with open(REPO_ROOT / "logs" / "mpc_summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
     return df
 
 
