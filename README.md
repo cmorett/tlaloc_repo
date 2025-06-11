@@ -44,6 +44,10 @@ python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy 
     --inp-path CTown.inp
 ```
 
+Use the ``--physics_loss`` flag to enable a physics-informed penalty that
+encourages mass conservation of predicted flows.  This adds a lightweight loss
+term based on Kirchhoff's law as described by Ashraf et al. (AAAI 2024).
+
 The trained model now supports validation loss tracking and early stopping.
 Normalization is applied automatically so the ``--normalize`` flag is optional.
 Each run is stored with a unique timestamp to avoid overwriting previous

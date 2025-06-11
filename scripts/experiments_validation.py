@@ -20,6 +20,7 @@ import pandas as pd
 import torch
 import wntr
 from wntr.metrics.economic import pump_energy
+from models.loss_utils import compute_mass_balance_loss
 
 # Compute absolute path to the repository's data directory so that results are
 # always written inside the project regardless of the current working
@@ -112,6 +113,8 @@ def validate_surrogate(
     mae_c = 0.0
     max_err_p = 0.0
     max_err_c = 0.0
+    mass_total = 0.0
+    mass_count = 0
     count = 0
     model.eval()
     edge_index = edge_index.to(device)
@@ -140,17 +143,25 @@ def validate_surrogate(
                     seq_in = x.unsqueeze(0).unsqueeze(0)
                     pred = model(seq_in, edge_index, edge_attr)
                     if isinstance(pred, dict):
-                        pred = pred.get("node_outputs")[0, 0]
+                        node_pred = pred.get("node_outputs")[0, 0]
+                        flow_pred = pred.get("edge_outputs")[0, 0].squeeze()
+                    else:
+                        node_pred = pred
+                        flow_pred = None
                 else:
                     pred = model(x, edge_index, edge_attr)
                     if isinstance(pred, dict):
-                        pred = pred.get("node_outputs")
+                        node_pred = pred.get("node_outputs")
+                        flow_pred = pred.get("edge_outputs").squeeze()
+                    else:
+                        node_pred = pred
+                        flow_pred = None
                 if hasattr(model, "y_mean") and model.y_mean is not None:
-                    pred = pred * model.y_std + model.y_mean
+                    node_pred = node_pred * model.y_std + model.y_mean
                 y_true_p = pressures_df.iloc[i + 1].to_numpy()
                 y_true_c = chlorine_df.iloc[i + 1].to_numpy()
-                diff_p = pred[:, 0].cpu().numpy() - y_true_p
-                diff_c = pred[:, 1].cpu().numpy() - y_true_c
+                diff_p = node_pred[:, 0].cpu().numpy() - y_true_p
+                diff_c = node_pred[:, 1].cpu().numpy() - y_true_c
                 rmse_p += float((diff_p ** 2).sum())
                 rmse_c += float((diff_c ** 2).sum())
                 mae_p += float(np.abs(diff_p).sum())
@@ -158,6 +169,14 @@ def validate_surrogate(
                 max_err_p = max(max_err_p, float(np.max(np.abs(diff_p))))
                 max_err_c = max(max_err_c, float(np.max(np.abs(diff_c))))
                 count += len(y_true_p)
+                if flow_pred is not None:
+                    mass_loss = compute_mass_balance_loss(
+                        flow_pred,
+                        edge_index,
+                        len(wn.node_name_list),
+                    )
+                    mass_total += mass_loss.item()
+                    mass_count += 1
 
     rmse_p = (rmse_p / count) ** 0.5
     rmse_c = (rmse_c / count) ** 0.5
@@ -179,6 +198,10 @@ def validate_surrogate(
         "pressure_max_error": max_err_p,
         "chlorine_max_error": max_err_c,
     }
+    if mass_count > 0:
+        avg_mass = mass_total / mass_count
+        print(f"[Validation] Avg node imbalance (kg/s): {avg_mass:.3e}")
+        metrics["avg_mass_imbalance"] = avg_mass
 
     os.makedirs(REPO_ROOT / "logs", exist_ok=True)
     with open(REPO_ROOT / "logs" / "surrogate_metrics.json", "w") as f:
