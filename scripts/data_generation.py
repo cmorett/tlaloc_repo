@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Optional
 from sklearn.preprocessing import MinMaxScaler
 import warnings
+from functools import partial
+from multiprocessing import Pool, cpu_count
 
 # Resolve repository paths so all files are created inside the repo
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -236,16 +238,12 @@ def extract_additional_targets(sim_results: wntr.sim.results.SimulationResults, 
     return flow_rates, pump_energy_arr
 
 
-from functools import partial
-from multiprocessing import Pool, cpu_count
-
-
 def run_scenarios(
     inp_file: str,
     num_scenarios: int,
     seed: Optional[int] = None,
     extreme_event_prob: float = 0.0,
-    num_workers: Optional[int] = None,
+    num_workers: int | None = None,
 ) -> List[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
 ]:
