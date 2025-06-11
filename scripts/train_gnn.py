@@ -2,6 +2,7 @@ import argparse
 import os
 from pathlib import Path
 from datetime import datetime
+import sys
 
 import numpy as np
 import torch
@@ -15,6 +16,11 @@ import wntr
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Optional
+
+# Ensure the repository root is importable when running this file directly
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from models.loss_utils import compute_mass_balance_loss
 
