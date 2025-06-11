@@ -41,8 +41,13 @@ def simulate_extreme_event(
         link.initial_status = LinkStatus.Closed
     elif event_type == "quality_variation":
         for source in wn.source_name_list:
-            n = wn.get_node(source)
-            n.initial_quality *= random.uniform(0.5, 1.5)
+            # Some INP files might register a "source" that isn't actually
+            # present in the node registry (WNTR returns the file name with an
+            # added index like ``INP1``).  Only modify nodes that truly exist.
+            if source in wn.node_name_list:
+                n = wn.get_node(source)
+                if hasattr(n, "initial_quality"):
+                    n.initial_quality *= random.uniform(0.5, 1.5)
 
 
 
@@ -293,7 +298,8 @@ def build_sequence_dataset(
         quality = sim_results.node["quality"].clip(lower=0.0, upper=5.0)
         demands = sim_results.node.get("demand")
         if demands is not None:
-            demands = demands.clip(lower=0.0, upper=demands.max() * 1.5)
+            max_d = float(demands.max().max())
+            demands = demands.clip(lower=0.0, upper=max_d * 1.5)
         times = pressures.index
         flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
 
@@ -378,7 +384,8 @@ def build_dataset(
         pressures = pressures.clip(lower=0.0)
         quality = quality.clip(lower=0.0, upper=5.0)
         if demands is not None:
-            demands = demands.clip(lower=0.0, upper=demands.max() * 1.5)
+            max_d = float(demands.max().max())
+            demands = demands.clip(lower=0.0, upper=max_d * 1.5)
 
         for i in range(len(times) - 1):
             pump_vector = np.array([pump_ctrl[p][i] for p in pumps], dtype=np.float64)
