@@ -506,6 +506,16 @@ def run_mpc_step(
         init = torch.ones(horizon, num_pumps, device=device)
     u = init.clone().detach().requires_grad_(True)
 
+    # ``torch.nn.LSTM`` in evaluation mode does not support the backward
+    # pass when using cuDNN.  Some surrogates (``RecurrentGNNSurrogate`` or
+    # ``MultiTaskGNNSurrogate``) therefore need to be temporarily switched to
+    # training mode during optimisation.  The models loaded by
+    # ``load_surrogate_model`` disable dropout, so toggling the mode has no
+    # effect on the forward computation.
+    prev_training = model.training
+    if hasattr(model, "rnn") and not model.training:
+        model.train()
+
     # --- Phase 1: warm start with Adam -------------------------------------
     adam_steps = max(1, min(10, iterations // 5))
     adam_opt = torch.optim.Adam([u], lr=0.05)
@@ -562,6 +572,9 @@ def run_mpc_step(
     with torch.no_grad():
         u.data.clamp_(0.0, 1.0)
 
+    if hasattr(model, "rnn") and not prev_training:
+        model.eval()
+
     return u.detach()
 
 
@@ -599,9 +612,15 @@ def propagate_with_surrogate(
                 device,
                 model,
             )
-            pred = model(x, edge_index, edge_attr)
-            if isinstance(pred, dict):
-                pred = pred.get("node_outputs")
+            if hasattr(model, "rnn"):
+                seq_in = x.unsqueeze(0).unsqueeze(0)
+                pred = model(seq_in, edge_index, edge_attr)
+                if isinstance(pred, dict):
+                    pred = pred.get("node_outputs")[0, 0]
+            else:
+                pred = model(x, edge_index, edge_attr)
+                if isinstance(pred, dict):
+                    pred = pred.get("node_outputs")
             if getattr(model, "y_mean", None) is not None:
                 pred = pred * model.y_std + model.y_mean
             assert not torch.isnan(pred).any(), "NaN prediction"
