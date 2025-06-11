@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Optional
 
+from models.loss_utils import compute_mass_balance_loss
+
 
 class HydroConv(MessagePassing):
     """Mass-conserving convolution using edge attributes."""
@@ -476,9 +478,20 @@ def evaluate(model, loader, device):
     return total_loss / len(loader.dataset)
 
 
-def train_sequence(model: nn.Module, loader: TorchLoader, edge_index: torch.Tensor, edge_attr: torch.Tensor, optimizer, device) -> float:
+def train_sequence(
+    model: nn.Module,
+    loader: TorchLoader,
+    edge_index: torch.Tensor,
+    edge_attr: torch.Tensor,
+    optimizer,
+    device,
+    physics_loss: bool = False,
+    w_mass: float = 0.5,
+) -> tuple[float, float, float, float, float]:
     model.train()
     total_loss = 0.0
+    node_total = edge_total = energy_total = mass_total = 0.0
+    node_count = int(edge_index.max()) + 1
     for X_seq, Y_seq in loader:
         X_seq = X_seq.to(device)
         optimizer.zero_grad()
@@ -488,27 +501,55 @@ def train_sequence(model: nn.Module, loader: TorchLoader, edge_index: torch.Tens
                 preds['node_outputs'],
                 Y_seq['node_outputs'].to(device)
             )
-            # ``edge_outputs`` in ``SequenceDataset`` does not include the final
-            # feature dimension, whereas the model predicts ``[B, T, E, 1]``.
-            # Add the singleton dimension here so broadcasting does not occur
-            # during loss computation.
             edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
             loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
             loss_energy = F.mse_loss(preds['pump_energy'], Y_seq['pump_energy'].to(device))
+            if physics_loss:
+                mass_loss = compute_mass_balance_loss(
+                    preds['edge_outputs'].squeeze(-1),
+                    edge_index.to(device),
+                    node_count,
+                )
+            else:
+                mass_loss = torch.tensor(0.0, device=device)
             loss = loss_node + 0.5 * loss_edge + 0.1 * loss_energy
+            if physics_loss:
+                loss = loss + w_mass * mass_loss
         else:
             Y_seq = Y_seq.to(device)
+            loss_node = loss_edge = loss_energy = mass_loss = torch.tensor(0.0, device=device)
             loss = F.mse_loss(preds, Y_seq.float())
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         total_loss += loss.item() * X_seq.size(0)
-    return total_loss / len(loader.dataset)
+        node_total += loss_node.item() * X_seq.size(0)
+        edge_total += loss_edge.item() * X_seq.size(0)
+        energy_total += loss_energy.item() * X_seq.size(0)
+        mass_total += mass_loss.item() * X_seq.size(0)
+    denom = len(loader.dataset)
+    return (
+        total_loss / denom,
+        node_total / denom,
+        edge_total / denom,
+        energy_total / denom,
+        mass_total / denom,
+    )
 
 
-def evaluate_sequence(model: nn.Module, loader: TorchLoader, edge_index: torch.Tensor, edge_attr: torch.Tensor, device) -> float:
+def evaluate_sequence(
+    model: nn.Module,
+    loader: TorchLoader,
+    edge_index: torch.Tensor,
+    edge_attr: torch.Tensor,
+    device,
+    physics_loss: bool = False,
+    w_mass: float = 0.5,
+) -> tuple[float, float, float, float, float]:
     model.eval()
     total_loss = 0.0
+    node_total = edge_total = energy_total = mass_total = 0.0
+    node_count = int(edge_index.max()) + 1
     with torch.no_grad():
         for X_seq, Y_seq in loader:
             X_seq = X_seq.to(device)
@@ -524,12 +565,34 @@ def evaluate_sequence(model: nn.Module, loader: TorchLoader, edge_index: torch.T
                     preds['pump_energy'],
                     Y_seq['pump_energy'].to(device)
                 )
+                if physics_loss:
+                    mass_loss = compute_mass_balance_loss(
+                        preds['edge_outputs'].squeeze(-1),
+                        edge_index.to(device),
+                        node_count,
+                    )
+                else:
+                    mass_loss = torch.tensor(0.0, device=device)
                 loss = loss_node + 0.5 * loss_edge + 0.1 * loss_energy
+                if physics_loss:
+                    loss = loss + w_mass * mass_loss
             else:
                 Y_seq = Y_seq.to(device)
+                loss_node = loss_edge = loss_energy = mass_loss = torch.tensor(0.0, device=device)
                 loss = F.mse_loss(preds, Y_seq.float())
             total_loss += loss.item() * X_seq.size(0)
-    return total_loss / len(loader.dataset)
+            node_total += loss_node.item() * X_seq.size(0)
+            edge_total += loss_edge.item() * X_seq.size(0)
+            energy_total += loss_energy.item() * X_seq.size(0)
+            mass_total += mass_loss.item() * X_seq.size(0)
+    denom = len(loader.dataset)
+    return (
+        total_loss / denom,
+        node_total / denom,
+        edge_total / denom,
+        energy_total / denom,
+        mass_total / denom,
+    )
 
 # Resolve important directories relative to the repository root so that training
 # can be launched from any location.
@@ -724,9 +787,27 @@ def main(args: argparse.Namespace):
         patience = 0
         for epoch in range(args.epochs):
             if seq_mode:
-                loss = train_sequence(model, loader, data_ds.edge_index, data_ds.edge_attr, optimizer, device)
+                loss_tuple = train_sequence(
+                    model,
+                    loader,
+                    data_ds.edge_index,
+                    data_ds.edge_attr,
+                    optimizer,
+                    device,
+                    physics_loss=args.physics_loss,
+                )
+                loss = loss_tuple[0]
+                node_l, edge_l, energy_l, mass_l = loss_tuple[1:]
                 if val_loader is not None:
-                    val_loss = evaluate_sequence(model, val_loader, data_ds.edge_index, data_ds.edge_attr, device)
+                    val_tuple = evaluate_sequence(
+                        model,
+                        val_loader,
+                        data_ds.edge_index,
+                        data_ds.edge_attr,
+                        device,
+                        physics_loss=args.physics_loss,
+                    )
+                    val_loss = val_tuple[0]
                 else:
                     val_loss = loss
             else:
@@ -739,6 +820,10 @@ def main(args: argparse.Namespace):
             curr_lr = optimizer.param_groups[0]['lr']
             losses.append((loss, val_loss))
             f.write(f"{epoch},{loss:.6f},{val_loss:.6f},{curr_lr:.6e}\n")
+            if args.physics_loss and seq_mode:
+                print(
+                    f"Epoch {epoch}: node={node_l:.3f}, edge={edge_l:.3f}, energy={energy_l:.3f}, mass={mass_l:.3f}"
+                )
             if val_loss < best_val - 1e-6:
                 best_val = val_loss
                 patience = 0
@@ -889,6 +974,11 @@ if __name__ == "__main__":
         action="store_true",
         default=True,
         help="Apply normalization to features and targets",
+    )
+    parser.add_argument(
+        "--physics_loss",
+        action="store_true",
+        help="Add mass conservation loss to training",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--run-name", default="", help="Optional run name")
