@@ -22,6 +22,8 @@ class HydroConv(MessagePassing):
 
     def __init__(self, in_channels: int, out_channels: int, edge_dim: int):
         super().__init__(aggr="add")
+        self.in_channels = in_channels
+        self.out_channels = out_channels
         self.lin = nn.Linear(in_channels, out_channels)
         self.edge_mlp = nn.Sequential(
             nn.Linear(edge_dim, 1),
