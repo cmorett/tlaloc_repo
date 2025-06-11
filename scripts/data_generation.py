@@ -243,7 +243,7 @@ def run_scenarios(
     num_scenarios: int,
     seed: Optional[int] = None,
     extreme_event_prob: float = 0.0,
-    num_workers: int | None = None,
+    num_workers: Optional[int] = None,
 ) -> List[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
 ]:
