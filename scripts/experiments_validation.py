@@ -13,6 +13,7 @@ import json
 import pickle
 from pathlib import Path
 from typing import Dict, List, Optional
+import sys
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,12 +21,17 @@ import pandas as pd
 import torch
 import wntr
 from wntr.metrics.economic import pump_energy
+
+# Ensure the repository root is importable when running this script directly
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from models.loss_utils import compute_mass_balance_loss
 
 # Compute absolute path to the repository's data directory so that results are
 # always written inside the project regardless of the current working
 # directory.
-REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
 TEMP_DIR = DATA_DIR / "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
