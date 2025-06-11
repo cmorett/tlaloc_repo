@@ -3,6 +3,7 @@ import pytest
 import os
 from pathlib import Path
 import sys
+import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from scripts.mpc_control import load_surrogate_model
@@ -62,3 +63,27 @@ def test_load_surrogate_selects_latest(tmp_path, monkeypatch):
 
     model = load_surrogate_model(torch.device('cpu'))
     assert model.conv1.out_channels == 2
+
+
+def test_load_surrogate_handles_multitask_norm(tmp_path):
+    state = {
+        'conv1.lin.weight': torch.zeros(1, 1),
+        'conv1.bias': torch.zeros(1),
+        'conv2.lin.weight': torch.zeros(1, 1),
+        'conv2.bias': torch.zeros(1),
+    }
+    path = tmp_path / 'model.pth'
+    torch.save(state, path)
+    np.savez(
+        tmp_path / 'model_norm.npz',
+        x_mean=np.zeros(1),
+        x_std=np.ones(1),
+        y_mean_node=np.zeros(1),
+        y_std_node=np.ones(1),
+        y_mean_edge=np.zeros(1),
+        y_std_edge=np.ones(1),
+        y_mean_energy=np.zeros(1),
+        y_std_energy=np.ones(1),
+    )
+    model = load_surrogate_model(torch.device('cpu'), path=str(path))
+    assert model.y_mean is not None

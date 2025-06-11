@@ -131,7 +131,15 @@ def validate_surrogate(
                 c = chlorine_df.iloc[i].to_dict()
                 controls = pump_array[i]
                 x = _prepare_features(wn, p, c, controls, model).to(device)
-                pred = model(x, edge_index, edge_attr)
+                if hasattr(model, "rnn"):
+                    seq_in = x.unsqueeze(0).unsqueeze(0)
+                    pred = model(seq_in, edge_index, edge_attr)
+                    if isinstance(pred, dict):
+                        pred = pred.get("node_outputs")[0, 0]
+                else:
+                    pred = model(x, edge_index, edge_attr)
+                    if isinstance(pred, dict):
+                        pred = pred.get("node_outputs")
                 if hasattr(model, "y_mean") and model.y_mean is not None:
                     pred = pred * model.y_std + model.y_mean
                 y_true_p = pressures_df.iloc[i + 1].to_numpy()

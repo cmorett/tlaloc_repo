@@ -39,11 +39,12 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 class GNNSurrogate(torch.nn.Module):
     """Flexible GCN used by the MPC controller."""
 
-    def __init__(self, conv_layers: List[nn.Module]):
+    def __init__(self, conv_layers: List[nn.Module], fc_out: Optional[nn.Linear] = None):
         super().__init__()
         self.layers = nn.ModuleList(conv_layers)
         self.conv1 = self.layers[0]
         self.conv2 = self.layers[-1]
+        self.fc_out = fc_out
 
     def forward(
         self,
@@ -58,6 +59,8 @@ class GNNSurrogate(torch.nn.Module):
                 x = conv(x, edge_index)
             if i < len(self.layers) - 1:
                 x = torch.relu(x)
+        if self.fc_out is not None:
+            x = self.fc_out(x)
         return x
 
 
@@ -140,18 +143,25 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
     # older checkpoints that used ``conv1``/``conv2``.  If the latter is
     # detected, rename the keys so ``load_state_dict`` can succeed.
     if any(k.startswith("conv1") for k in state) and not any(k.startswith("layers.0") for k in state):
-        renamed = {}
+        renamed = dict(state)
         mapping = {
             "conv1.bias": "layers.0.bias",
             "conv1.weight": "layers.0.weight",
             "conv1.lin.weight": "layers.0.lin.weight",
+            "conv1.lin.bias": "layers.0.lin.bias",
+            "conv1.edge_mlp.0.weight": "layers.0.edge_mlp.0.weight",
+            "conv1.edge_mlp.0.bias": "layers.0.edge_mlp.0.bias",
             "conv2.bias": "layers.1.bias",
             "conv2.weight": "layers.1.weight",
             "conv2.lin.weight": "layers.1.lin.weight",
+            "conv2.lin.bias": "layers.1.lin.bias",
+            "conv2.edge_mlp.0.weight": "layers.1.edge_mlp.0.weight",
+            "conv2.edge_mlp.0.bias": "layers.1.edge_mlp.0.bias",
         }
         for old, new in mapping.items():
             if old in state:
-                renamed[new] = renamed[old] = state[old]
+                renamed[new] = state[old]
+                del renamed[old]
         state = renamed
     elif any(k.startswith("encoder.convs") for k in state):
         # Models trained with ``EnhancedGNNEncoder`` store convolution weights
@@ -174,6 +184,23 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
             if idx == last_idx:
                 renamed[f"conv2.{rest}"] = v
         state = renamed
+    elif any(k.startswith("convs") for k in state):
+        renamed = {}
+        indices = sorted({int(k.split(".")[1]) for k in state if k.startswith("convs")})
+        last_idx = max(indices)
+        for k, v in state.items():
+            if not k.startswith("convs"):
+                continue
+            parts = k.split(".")
+            idx = int(parts[1])
+            rest = ".".join(parts[2:])
+            base_key = f"layers.{idx}.{rest}"
+            renamed[base_key] = v
+            if idx == 0:
+                renamed[f"conv1.{rest}"] = v
+            if idx == last_idx:
+                renamed[f"conv2.{rest}"] = v
+        state = renamed
 
     layer_keys = [
         k
@@ -181,6 +208,7 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
         if k.startswith("layers.")
         and (k.endswith("weight") or k.endswith("lin.weight"))
     ]
+    fc_layer = None
     if layer_keys:
         indices = sorted({int(k.split(".")[1]) for k in layer_keys})
         conv_layers = []
@@ -207,22 +235,32 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
         out_dim = state[out_key].shape[0]
         conv_layers = [GCNConv(in_dim, hidden_dim), GCNConv(hidden_dim, out_dim)]
 
+    if "fc_out.weight" in state:
+        out_dim, hidden_dim = state["fc_out.weight"].shape
+        fc_layer = nn.Linear(hidden_dim, out_dim)
+
     # Fail early if the checkpoint contains invalid values which would otherwise
     # produce NaN predictions during MPC optimisation.
     for k, v in state.items():
         if torch.isnan(v).any():
             raise ValueError(f"NaN detected in model weights ({k}) – re-train the surrogate.")
 
-    model = GNNSurrogate(conv_layers).to(device)
-    model.load_state_dict(state)
+    model = GNNSurrogate(conv_layers, fc_out=fc_layer).to(device)
+    model.load_state_dict(state, strict=False)
 
     norm_path = str(full_path.with_suffix("")) + "_norm.npz"
     if os.path.exists(norm_path):
         arr = np.load(norm_path)
         model.x_mean = torch.tensor(arr["x_mean"], dtype=torch.float32, device=device)
         model.x_std = torch.tensor(arr["x_std"], dtype=torch.float32, device=device)
-        model.y_mean = torch.tensor(arr["y_mean"], dtype=torch.float32, device=device)
-        model.y_std = torch.tensor(arr["y_std"], dtype=torch.float32, device=device)
+        if "y_mean" in arr:
+            model.y_mean = torch.tensor(arr["y_mean"], dtype=torch.float32, device=device)
+            model.y_std = torch.tensor(arr["y_std"], dtype=torch.float32, device=device)
+        elif "y_mean_node" in arr:
+            model.y_mean = torch.tensor(arr["y_mean_node"], dtype=torch.float32, device=device)
+            model.y_std = torch.tensor(arr["y_std_node"], dtype=torch.float32, device=device)
+        else:
+            model.y_mean = model.y_std = None
     else:
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
 
@@ -317,7 +355,21 @@ def compute_mpc_cost(
             device,
             model,
         )
-        pred = model(x, edge_index, edge_attr)
+        if hasattr(model, "rnn"):
+            seq_in = x.unsqueeze(0).unsqueeze(0)
+            pred = model(seq_in, edge_index, edge_attr)
+            if isinstance(pred, dict):
+                pred = pred.get("node_outputs")[0, 0]
+        else:
+            if hasattr(model, "rnn"):
+                seq_in = x.unsqueeze(0).unsqueeze(0)
+                pred = model(seq_in, edge_index, edge_attr)
+                if isinstance(pred, dict):
+                    pred = pred.get("node_outputs")[0, 0]
+            else:
+                pred = model(x, edge_index, edge_attr)
+                if isinstance(pred, dict):
+                    pred = pred.get("node_outputs")
         if getattr(model, "y_mean", None) is not None:
             pred = pred * model.y_std + model.y_mean
         assert not torch.isnan(pred).any(), "NaN prediction"
@@ -494,6 +546,8 @@ def propagate_with_surrogate(
                 model,
             )
             pred = model(x, edge_index, edge_attr)
+            if isinstance(pred, dict):
+                pred = pred.get("node_outputs")
             if getattr(model, "y_mean", None) is not None:
                 pred = pred * model.y_std + model.y_mean
             assert not torch.isnan(pred).any(), "NaN prediction"
