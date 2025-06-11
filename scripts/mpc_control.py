@@ -20,9 +20,13 @@ from sklearn.preprocessing import MinMaxScaler
 # ``scripts`` package.  Support both usages by attempting a relative import
 # first and falling back to an absolute one when the module is run as a script.
 try:
-    from .train_gnn import HydroConv  # type: ignore
+    from .train_gnn import (
+        HydroConv,
+        RecurrentGNNSurrogate,
+        MultiTaskGNNSurrogate,
+    )  # type: ignore
 except ImportError:  # pragma: no cover - executed when run as a script
-    from train_gnn import HydroConv
+    from train_gnn import HydroConv, RecurrentGNNSurrogate, MultiTaskGNNSurrogate
 import wntr
 from wntr.metrics.economic import pump_energy
 
@@ -165,24 +169,29 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
         state = renamed
     elif any(k.startswith("encoder.convs") for k in state):
         # Models trained with ``EnhancedGNNEncoder`` store convolution weights
-        # under ``encoder.convs.X``.  Convert these to ``layers.X`` and duplicate
-        # the first/last layer under ``conv1``/``conv2`` for backwards
+        # under ``encoder.convs.X`` and the final fully connected layer under
+        # ``encoder.fc_out``.  Convert these to ``layers.X`` / ``fc_out`` and
+        # duplicate the first/last layer under ``conv1``/``conv2`` for backwards
         # compatibility.
         renamed = {}
         indices = sorted({int(k.split(".")[2]) for k in state if k.startswith("encoder.convs")})
         last_idx = max(indices)
         for k, v in state.items():
-            if not k.startswith("encoder.convs"):
-                continue
-            parts = k.split(".")
-            idx = int(parts[2])
-            rest = ".".join(parts[3:])
-            base_key = f"layers.{idx}.{rest}"
-            renamed[base_key] = v
-            if idx == 0:
-                renamed[f"conv1.{rest}"] = v
-            if idx == last_idx:
-                renamed[f"conv2.{rest}"] = v
+            if k.startswith("encoder.convs"):
+                parts = k.split(".")
+                idx = int(parts[2])
+                rest = ".".join(parts[3:])
+                base_key = f"layers.{idx}.{rest}"
+                renamed[base_key] = v
+                if idx == 0:
+                    renamed[f"conv1.{rest}"] = v
+                if idx == last_idx:
+                    renamed[f"conv2.{rest}"] = v
+            elif k.startswith("encoder.fc_out"):
+                rest = k.split(".", 2)[2]
+                renamed[f"fc_out.{rest}"] = v
+            else:
+                renamed[k] = v
         state = renamed
     elif any(k.startswith("convs") for k in state):
         renamed = {}
@@ -239,13 +248,58 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
         out_dim, hidden_dim = state["fc_out.weight"].shape
         fc_layer = nn.Linear(hidden_dim, out_dim)
 
+    has_rnn = any(k.startswith("rnn.") for k in state)
+    multitask = "node_decoder.weight" in state
+
     # Fail early if the checkpoint contains invalid values which would otherwise
     # produce NaN predictions during MPC optimisation.
     for k, v in state.items():
         if torch.isnan(v).any():
             raise ValueError(f"NaN detected in model weights ({k}) – re-train the surrogate.")
 
-    model = GNNSurrogate(conv_layers, fc_out=fc_layer).to(device)
+    edge_dim = None
+    if isinstance(conv_layers[0], HydroConv):
+        edge_dim = conv_layers[0].edge_mlp[0].in_features
+
+    if multitask:
+        node_out_dim, rnn_hidden_dim = state["node_decoder.weight"].shape
+        edge_out_dim = state["edge_decoder.weight"].shape[0]
+        energy_out_dim = state["energy_decoder.weight"].shape[0]
+        model = MultiTaskGNNSurrogate(
+            in_channels=conv_layers[0].in_channels,
+            hidden_channels=conv_layers[0].out_channels,
+            edge_dim=edge_dim if edge_dim is not None else 0,
+            node_output_dim=node_out_dim,
+            edge_output_dim=edge_out_dim,
+            energy_output_dim=energy_out_dim,
+            num_layers=len(conv_layers),
+            use_attention=False,
+            gat_heads=1,
+            dropout=0.0,
+            residual=False,
+            rnn_hidden_dim=rnn_hidden_dim,
+        ).to(device)
+        model.conv1 = model.encoder.convs[0]
+        model.conv2 = model.encoder.convs[-1]
+    elif has_rnn:
+        out_dim, rnn_hidden_dim = state["decoder.weight"].shape
+        model = RecurrentGNNSurrogate(
+            in_channels=conv_layers[0].in_channels,
+            hidden_channels=conv_layers[0].out_channels,
+            edge_dim=edge_dim if edge_dim is not None else 0,
+            output_dim=out_dim,
+            num_layers=len(conv_layers),
+            use_attention=False,
+            gat_heads=1,
+            dropout=0.0,
+            residual=False,
+            rnn_hidden_dim=rnn_hidden_dim,
+        ).to(device)
+        model.conv1 = model.encoder.convs[0]
+        model.conv2 = model.encoder.convs[-1]
+    else:
+        model = GNNSurrogate(conv_layers, fc_out=fc_layer).to(device)
+
     model.load_state_dict(state, strict=False)
 
     norm_path = str(full_path.with_suffix("")) + "_norm.npz"
