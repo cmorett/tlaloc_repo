@@ -20,7 +20,10 @@ supported:
 
 All plots generated during training, validation and MPC experiments are
 saved under the top-level ``plots/`` directory.  The scripts automatically
-create this folder if it does not yet exist.
+create this folder if it does not yet exist. After each training run
+``train_gnn.py`` saves two scatter plots comparing model predictions to
+EPANET results: ``pred_vs_actual_pressure_<run>.png`` and
+``pred_vs_actual_chlorine_<run>.png``.
 
 The script automatically detects which format is provided and loads the data
 accordingly. When using the matrix format, supply the path to the shared
