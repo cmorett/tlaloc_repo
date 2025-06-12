@@ -336,7 +336,7 @@ def compute_edge_attr_stats(edge_attr: np.ndarray) -> tuple[torch.Tensor, torch.
     return attr_mean, attr_std
 
 
-def save_scatter_plots(true_p, preds_p, true_c, preds_c, run_name: str, plots_dir: Path | None = None) -> None:
+def save_scatter_plots(true_p, preds_p, true_c, preds_c, run_name: str, plots_dir: Optional[Path] = None) -> None:
     """Save scatter plots for pressure and chlorine predictions."""
     if plots_dir is None:
         plots_dir = PLOTS_DIR
