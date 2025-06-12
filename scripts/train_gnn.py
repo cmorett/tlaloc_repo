@@ -336,6 +336,33 @@ def compute_edge_attr_stats(edge_attr: np.ndarray) -> tuple[torch.Tensor, torch.
     return attr_mean, attr_std
 
 
+def save_scatter_plots(true_p, preds_p, true_c, preds_c, run_name: str, plots_dir: Path | None = None) -> None:
+    """Save scatter plots for pressure and chlorine predictions."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    os.makedirs(plots_dir, exist_ok=True)
+
+    r2_p = np.corrcoef(true_p, preds_p)[0, 1] ** 2 if len(true_p) > 1 else 0.0
+    plt.figure()
+    plt.scatter(true_p, preds_p, s=10, alpha=0.5)
+    plt.xlabel("EPANET Pressure")
+    plt.ylabel("Predicted Pressure")
+    plt.annotate(f"$R^2$={r2_p:.2f}", xy=(0.05, 0.95), xycoords="axes fraction", va="top")
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, f"pred_vs_actual_pressure_{run_name}.png"))
+    plt.close()
+
+    r2_c = np.corrcoef(true_c, preds_c)[0, 1] ** 2 if len(true_c) > 1 else 0.0
+    plt.figure()
+    plt.scatter(true_c, preds_c, s=10, alpha=0.5, color="tab:orange")
+    plt.xlabel("EPANET Chlorine")
+    plt.ylabel("Predicted Chlorine")
+    plt.annotate(f"$R^2$={r2_c:.2f}", xy=(0.05, 0.95), xycoords="axes fraction", va="top")
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, f"pred_vs_actual_chlorine_{run_name}.png"))
+    plt.close()
+
+
 def apply_normalization(
     data_list,
     x_mean,
@@ -902,9 +929,11 @@ def main(args: argparse.Namespace):
         true_c = []
         with torch.no_grad():
             if seq_mode:
+                ei = test_ds.edge_index.to(device)
+                ea = test_ds.edge_attr.to(device) if test_ds.edge_attr is not None else None
                 for X_seq, Y_seq in test_loader:
                     X_seq = X_seq.to(device)
-                    out = model(X_seq, edge_index_np.to(device), edge_attr.to(device))
+                    out = model(X_seq, ei, ea)
                     if isinstance(out, dict):
                         node_pred = out["node_outputs"]
                     else:
@@ -934,20 +963,7 @@ def main(args: argparse.Namespace):
             preds_c = np.array(preds_c)
             true_p = np.array(true_p)
             true_c = np.array(true_c)
-            r2_p = np.corrcoef(true_p, preds_p)[0, 1] ** 2
-            r2_c = np.corrcoef(true_c, preds_c)[0, 1] ** 2
-            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-            axes[0].scatter(true_p, preds_p, s=10, alpha=0.5)
-            axes[0].set_xlabel("EPANET Pressure")
-            axes[0].set_ylabel("Predicted Pressure")
-            axes[0].annotate(f"$R^2$={r2_p:.2f}", xy=(0.05, 0.95), xycoords="axes fraction", va="top")
-            axes[1].scatter(true_c, preds_c, s=10, alpha=0.5, color="tab:orange")
-            axes[1].set_xlabel("EPANET Chlorine")
-            axes[1].set_ylabel("Predicted Chlorine")
-            axes[1].annotate(f"$R^2$={r2_c:.2f}", xy=(0.05, 0.95), xycoords="axes fraction", va="top")
-            plt.tight_layout()
-            plt.savefig(os.path.join(PLOTS_DIR, f"pred_vs_actual_scatter_{run_name}.png"))
-            plt.close()
+            save_scatter_plots(true_p, preds_p, true_c, preds_c, run_name)
 
     print(f"Best model saved to {model_path}")
 
