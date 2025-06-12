@@ -131,3 +131,6 @@ control inputs (the additional features appended by `scripts/data_generation.py`
 If a model trained with only four features (demand, pressure, chlorine and
 elevation) is loaded, `mpc_control.py` will exit early because pump actions would
 have no effect on the predictions.
+`simulate_closed_loop` now performs the same check and raises a `ValueError`
+when the loaded model does not include pump controls so that experiment scripts
+fail fast instead of silently optimising with zero gradients.

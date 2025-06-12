@@ -696,6 +696,13 @@ def simulate_closed_loop(
     pressures and chlorine levels using the GNN surrogate which allows the loop
     to run nearly instantly.
     """
+    expected_in_dim = 4 + len(pump_names)
+    in_dim = getattr(getattr(model, "conv1", None), "in_channels", None)
+    if in_dim is None or in_dim < expected_in_dim:
+        raise ValueError(
+            "Loaded model was trained without pump controls - rerun train_gnn.py"
+        )
+
     log = []
     pressure_violations = 0
     chlorine_violations = 0
