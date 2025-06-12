@@ -18,6 +18,10 @@ supported:
 2. **Matrix format** – ``X`` is an array of node feature matrices and a shared
    ``edge_index`` array is stored separately.
 
+All plots generated during training, validation and MPC experiments are
+saved under the top-level ``plots/`` directory.  The scripts automatically
+create this folder if it does not yet exist.
+
 The script automatically detects which format is provided and loads the data
 accordingly. When using the matrix format, supply the path to the shared
 ``edge_index`` file via ``--edge-index-path`` (defaults to ``data/edge_index.npy``).

@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 import os
 from pathlib import Path
 import json
+from datetime import datetime
 
 
 import numpy as np
@@ -39,6 +40,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
 TEMP_DIR = DATA_DIR / "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
+PLOTS_DIR = REPO_ROOT / "plots"
+os.makedirs(PLOTS_DIR, exist_ok=True)
 
 
 class GNNSurrogate(torch.nn.Module):
@@ -632,6 +635,44 @@ def propagate_with_surrogate(
     return cur_p, cur_c
 
 
+def plot_single_run(df: pd.DataFrame, run_name: str) -> None:
+    """Generate basic time series plots for a single MPC run."""
+    os.makedirs(PLOTS_DIR, exist_ok=True)
+    plt.figure(figsize=(8, 3))
+    plt.plot(df["time"], df["min_pressure"], label="min pressure")
+    plt.xlabel("Hour")
+    plt.ylabel("Pressure [m]")
+    plt.tight_layout()
+    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_min_pressure_{run_name}.png"))
+    plt.close()
+
+    plt.figure(figsize=(8, 3))
+    plt.plot(df["time"], df["min_chlorine"], label="min chlorine", color="tab:orange")
+    plt.xlabel("Hour")
+    plt.ylabel("Chlorine [mg/L]")
+    plt.tight_layout()
+    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_chlorine_{run_name}.png"))
+    plt.close()
+
+    plt.figure(figsize=(8, 3))
+    plt.plot(df["time"], df["energy"], label="energy", color="tab:green")
+    plt.xlabel("Hour")
+    plt.ylabel("Energy [kWh]")
+    plt.tight_layout()
+    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_energy_{run_name}.png"))
+    plt.close()
+
+    plt.figure(figsize=(8, 3))
+    ctrl = np.stack(df["controls"].to_list())
+    avg = ctrl.mean(axis=1)
+    plt.plot(df["time"], avg, label="avg speed")
+    plt.xlabel("Hour")
+    plt.ylabel("Average Pump Speed")
+    plt.tight_layout()
+    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_controls_{run_name}.png"))
+    plt.close()
+
+
 def simulate_closed_loop(
     wn: wntr.network.WaterNetworkModel,
     model: GNNSurrogate,
@@ -645,6 +686,7 @@ def simulate_closed_loop(
     Pmin: float,
     Cmin: float,
     feedback_interval: int = 24,
+    run_name: str = "",
 ) -> pd.DataFrame:
     """Run 24-hour closed-loop MPC using the surrogate for fast updates.
 
@@ -763,6 +805,7 @@ def simulate_closed_loop(
                 "min_chlorine": min_c,
                 "energy": energy,
                 "runtime_sec": end - start,
+                "controls": first_controls.cpu().numpy().tolist(),
             }
         )
         print(
@@ -787,6 +830,8 @@ def simulate_closed_loop(
     os.makedirs(REPO_ROOT / "logs", exist_ok=True)
     with open(REPO_ROOT / "logs" / "mpc_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
+    if run_name:
+        plot_single_run(df, run_name)
     return df
 
 
@@ -844,6 +889,7 @@ def main():
         args.Pmin,
         args.Cmin,
         args.feedback_interval,
+        datetime.now().strftime("%Y%m%d_%H%M%S"),
     )
 
 
