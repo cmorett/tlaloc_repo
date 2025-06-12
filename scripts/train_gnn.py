@@ -605,6 +605,7 @@ def evaluate_sequence(
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
 MODELS_DIR = REPO_ROOT / "models"
+PLOTS_DIR = REPO_ROOT / "plots"
 
 
 def main(args: argparse.Namespace):
@@ -865,19 +866,88 @@ def main(args: argparse.Namespace):
             if patience >= args.early_stop_patience:
                 break
 
+    os.makedirs(PLOTS_DIR, exist_ok=True)
     # plot loss curve
     if losses:
         tr = [l[0] for l in losses]
         vl = [l[1] for l in losses]
         plt.figure()
-        plt.plot(tr, label="train")
-        plt.plot(vl, label="val")
+        plt.loglog(tr, label="train")
+        plt.loglog(vl, label="val")
         plt.legend()
-        plt.xlabel("epoch")
-        plt.ylabel("loss")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
         plt.tight_layout()
-        plt.savefig(os.path.join(DATA_DIR, f"training_loss_{run_name}.png"))
+        plt.savefig(os.path.join(PLOTS_DIR, f"loss_curve_{run_name}.png"))
         plt.close()
+
+    # scatter plot of predictions vs actual on test set
+    if args.x_test_path and os.path.exists(args.x_test_path):
+        if seq_mode:
+            Xt = np.load(args.x_test_path, allow_pickle=True)
+            Yt = np.load(args.y_test_path, allow_pickle=True)
+            if Xt.ndim == 3:
+                Yt = np.array([{k: v[None, ...] for k, v in y.items()} for y in Yt], dtype=object)
+                Xt = Xt[:, None, ...]
+            test_ds = SequenceDataset(Xt, Yt, edge_index_np, edge_attr)
+            test_loader = TorchLoader(test_ds, batch_size=args.batch_size)
+        else:
+            test_list = load_dataset(args.x_test_path, args.y_test_path, args.edge_index_path, edge_attr=edge_attr)
+            test_loader = DataLoader(test_list, batch_size=args.batch_size)
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.eval()
+        preds_p = []
+        preds_c = []
+        true_p = []
+        true_c = []
+        with torch.no_grad():
+            if seq_mode:
+                for X_seq, Y_seq in test_loader:
+                    X_seq = X_seq.to(device)
+                    out = model(X_seq, edge_index_np.to(device), edge_attr.to(device))
+                    if isinstance(out, dict):
+                        node_pred = out["node_outputs"]
+                    else:
+                        node_pred = out
+                    if isinstance(Y_seq, dict):
+                        Y_node = Y_seq["node_outputs"]
+                    else:
+                        Y_node = Y_seq
+                    if hasattr(model, "y_mean") and model.y_mean is not None:
+                        node_pred = node_pred * model.y_std + model.y_mean
+                    preds_p.extend(node_pred[..., 0].cpu().numpy().ravel())
+                    preds_c.extend(node_pred[..., 1].cpu().numpy().ravel())
+                    true_p.extend(Y_node[..., 0].cpu().numpy().ravel())
+                    true_c.extend(Y_node[..., 1].cpu().numpy().ravel())
+            else:
+                for batch in test_loader:
+                    batch = batch.to(device)
+                    out = model(batch)
+                    if hasattr(model, "y_mean") and model.y_mean is not None:
+                        out = out * model.y_std + model.y_mean
+                    preds_p.extend(out[:, 0].cpu().numpy())
+                    preds_c.extend(out[:, 1].cpu().numpy())
+                    true_p.extend(batch.y[:, 0].cpu().numpy())
+                    true_c.extend(batch.y[:, 1].cpu().numpy())
+        if preds_p:
+            preds_p = np.array(preds_p)
+            preds_c = np.array(preds_c)
+            true_p = np.array(true_p)
+            true_c = np.array(true_c)
+            r2_p = np.corrcoef(true_p, preds_p)[0, 1] ** 2
+            r2_c = np.corrcoef(true_c, preds_c)[0, 1] ** 2
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+            axes[0].scatter(true_p, preds_p, s=10, alpha=0.5)
+            axes[0].set_xlabel("EPANET Pressure")
+            axes[0].set_ylabel("Predicted Pressure")
+            axes[0].annotate(f"$R^2$={r2_p:.2f}", xy=(0.05, 0.95), xycoords="axes fraction", va="top")
+            axes[1].scatter(true_c, preds_c, s=10, alpha=0.5, color="tab:orange")
+            axes[1].set_xlabel("EPANET Chlorine")
+            axes[1].set_ylabel("Predicted Chlorine")
+            axes[1].annotate(f"$R^2$={r2_c:.2f}", xy=(0.05, 0.95), xycoords="axes fraction", va="top")
+            plt.tight_layout()
+            plt.savefig(os.path.join(PLOTS_DIR, f"pred_vs_actual_scatter_{run_name}.png"))
+            plt.close()
 
     print(f"Best model saved to {model_path}")
 
@@ -908,6 +978,16 @@ if __name__ == "__main__":
         "--y-val-path",
         default=os.path.join(DATA_DIR, "Y_val.npy"),
         help="Validation labels",
+    )
+    parser.add_argument(
+        "--x-test-path",
+        default=os.path.join(DATA_DIR, "X_test.npy"),
+        help="Test features",
+    )
+    parser.add_argument(
+        "--y-test-path",
+        default=os.path.join(DATA_DIR, "Y_test.npy"),
+        help="Test labels",
     )
     parser.add_argument(
         "--epochs",

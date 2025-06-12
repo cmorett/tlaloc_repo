@@ -13,6 +13,7 @@ import json
 import pickle
 from pathlib import Path
 from typing import Dict, List, Optional
+from datetime import datetime
 import sys
 
 import numpy as np
@@ -35,6 +36,8 @@ from models.loss_utils import compute_mass_balance_loss
 DATA_DIR = REPO_ROOT / "data"
 TEMP_DIR = DATA_DIR / "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
+PLOTS_DIR = REPO_ROOT / "plots"
+os.makedirs(PLOTS_DIR, exist_ok=True)
 
 from mpc_control import (
     load_network,
@@ -104,6 +107,7 @@ def validate_surrogate(
     wn: wntr.network.WaterNetworkModel,
     test_results: List,
     device: torch.device,
+    run_name: str,
 ) -> Dict[str, float]:
     """Compute RMSE of surrogate predictions.
 
@@ -122,6 +126,18 @@ def validate_surrogate(
     mass_total = 0.0
     mass_count = 0
     count = 0
+    err_p_all: List[float] = []
+    err_c_all: List[float] = []
+    node_types = {
+        n: (
+            "junction"
+            if n in wn.junction_name_list
+            else ("tank" if n in wn.tank_name_list else "reservoir")
+        )
+        for n in wn.node_name_list
+    }
+    err_p_by_type = {t: [] for t in set(node_types.values())}
+    err_c_by_type = {t: [] for t in set(node_types.values())}
     model.eval()
     edge_index = edge_index.to(device)
     if edge_attr is not None:
@@ -168,6 +184,12 @@ def validate_surrogate(
                 y_true_c = chlorine_df.iloc[i + 1].to_numpy()
                 diff_p = node_pred[:, 0].cpu().numpy() - y_true_p
                 diff_c = node_pred[:, 1].cpu().numpy() - y_true_c
+                err_p_all.extend(diff_p.tolist())
+                err_c_all.extend(diff_c.tolist())
+                for idx, name in enumerate(wn.node_name_list):
+                    t = node_types[name]
+                    err_p_by_type[t].append(float(diff_p[idx]))
+                    err_c_by_type[t].append(float(diff_c[idx]))
                 rmse_p += float((diff_p ** 2).sum())
                 rmse_c += float((diff_c ** 2).sum())
                 mae_p += float(np.abs(diff_p).sum())
@@ -213,6 +235,24 @@ def validate_surrogate(
     with open(REPO_ROOT / "logs" / "surrogate_metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
 
+    if err_p_all:
+        os.makedirs(PLOTS_DIR, exist_ok=True)
+        fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+        axes[0, 0].hist(err_p_all, bins=50, color="tab:blue", alpha=0.7)
+        axes[0, 0].set_title("Pressure Error")
+        axes[0, 1].hist(err_c_all, bins=50, color="tab:orange", alpha=0.7)
+        axes[0, 1].set_title("Chlorine Error")
+        types = list(err_p_by_type.keys())
+        axes[1, 0].boxplot([err_p_by_type[t] for t in types], labels=types)
+        axes[1, 0].set_title("Pressure Error by Node Type")
+        axes[1, 1].boxplot([err_c_by_type[t] for t in types], labels=types)
+        axes[1, 1].set_title("Chlorine Error by Node Type")
+        for ax in axes.ravel():
+            ax.tick_params(labelsize=8)
+        plt.tight_layout()
+        plt.savefig(os.path.join(PLOTS_DIR, f"error_histograms_{run_name}.png"))
+        plt.close()
+
     return metrics
 
 
@@ -257,6 +297,7 @@ def run_all_pumps_on(
                     0.0,
                 ),
                 "energy": float(energy),
+                "controls": [1.0 for _ in pump_names],
             }
         )
     df = pd.DataFrame(log)
@@ -324,6 +365,7 @@ def run_heuristic_baseline(
                     0.0,
                 ),
                 "energy": float(energy),
+                "controls": [1.0 if status == wntr.network.base.LinkStatus.Open else 0.0 for _ in pump_names],
             }
         )
     df = pd.DataFrame(log)
@@ -332,11 +374,12 @@ def run_heuristic_baseline(
     return df
 
 
-def aggregate_and_plot(results: Dict[str, pd.DataFrame]) -> None:
+def aggregate_and_plot(results: Dict[str, pd.DataFrame], run_name: str) -> None:
     """Save combined CSV and generate simple plots."""
 
     combined = pd.concat(results, names=["method", None])
     os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(PLOTS_DIR, exist_ok=True)
     combined.to_csv(os.path.join(DATA_DIR, "all_results.csv"))
 
     plt.figure(figsize=(10, 4))
@@ -346,7 +389,7 @@ def aggregate_and_plot(results: Dict[str, pd.DataFrame]) -> None:
     plt.ylabel("Minimum Pressure")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(DATA_DIR, "pressure_comparison.png"))
+    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_min_pressure_{run_name}.png"))
     plt.close()
 
     plt.figure(figsize=(10, 4))
@@ -356,7 +399,29 @@ def aggregate_and_plot(results: Dict[str, pd.DataFrame]) -> None:
     plt.ylabel("Minimum Chlorine")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(DATA_DIR, "chlorine_comparison.png"))
+    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_chlorine_{run_name}.png"))
+    plt.close()
+
+    plt.figure(figsize=(10, 4))
+    for name, df in results.items():
+        plt.plot(df["time"], df["energy"], label=name)
+    plt.xlabel("Hour")
+    plt.ylabel("Energy [kWh]")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_energy_{run_name}.png"))
+    plt.close()
+
+    plt.figure(figsize=(10, 4))
+    for name, df in results.items():
+        ctrl = np.stack(df["controls"].to_list())
+        avg = ctrl.mean(axis=1)
+        plt.plot(df["time"], avg, label=name)
+    plt.xlabel("Hour")
+    plt.ylabel("Average Pump Speed")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_controls_{run_name}.png"))
     plt.close()
 
 
@@ -383,6 +448,7 @@ def main() -> None:
         default=1,
         help="Hours between EPANET synchronizations",
     )
+    parser.add_argument("--run-name", default="", help="Optional run name")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -396,7 +462,7 @@ def main() -> None:
     if os.path.exists(args.test_pkl):
         with open(args.test_pkl, "rb") as f:
             test_res = pickle.load(f)
-        metrics = validate_surrogate(model, edge_index, edge_attr, wn, test_res, device)
+        metrics = validate_surrogate(model, edge_index, edge_attr, wn, test_res, device, args.run_name or "")
         pd.DataFrame([metrics]).to_csv(
             os.path.join(DATA_DIR, "surrogate_validation.csv"), index=False
         )
@@ -425,7 +491,8 @@ def main() -> None:
         wntr.network.WaterNetworkModel(args.inp), pump_names
     )
 
-    aggregate_and_plot({"mpc": mpc_df, "heuristic": heur_df, "all_on": all_on_df})
+    run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
+    aggregate_and_plot({"mpc": mpc_df, "heuristic": heur_df, "all_on": all_on_df}, run_name)
 
 
 if __name__ == "__main__":
