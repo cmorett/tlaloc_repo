@@ -801,6 +801,19 @@ def main(args: argparse.Namespace):
             gat_heads=args.gat_heads,
         ).to(device)
 
+    # expose normalization stats on the model for later un-normalisation
+    if args.normalize:
+        if seq_mode and getattr(data_ds, "multi", False):
+            model.y_mean = y_mean["node_outputs"]
+            model.y_std = y_std["node_outputs"]
+        else:
+            model.y_mean = y_mean
+            model.y_std = y_std
+        model.x_mean = x_mean
+        model.x_std = x_std
+    else:
+        model.x_mean = model.x_std = model.y_mean = model.y_std = None
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 
@@ -917,9 +930,21 @@ def main(args: argparse.Namespace):
                 Yt = np.array([{k: v[None, ...] for k, v in y.items()} for y in Yt], dtype=object)
                 Xt = Xt[:, None, ...]
             test_ds = SequenceDataset(Xt, Yt, edge_index_np, edge_attr)
+            if args.normalize:
+                apply_sequence_normalization(
+                    test_ds,
+                    x_mean,
+                    x_std,
+                    y_mean,
+                    y_std,
+                    edge_mean,
+                    edge_std,
+                )
             test_loader = TorchLoader(test_ds, batch_size=args.batch_size)
         else:
             test_list = load_dataset(args.x_test_path, args.y_test_path, args.edge_index_path, edge_attr=edge_attr)
+            if args.normalize:
+                apply_normalization(test_list, x_mean, x_std, y_mean, y_std, edge_mean, edge_std)
             test_loader = DataLoader(test_list, batch_size=args.batch_size)
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.eval()
