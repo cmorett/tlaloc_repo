@@ -347,7 +347,13 @@ def prepare_node_features(
 
     num_nodes = len(wn.node_name_list)
     num_pumps = len(pump_names)
-    feats = np.zeros((num_nodes, 4 + num_pumps), dtype=np.float32)
+
+    # ``pump_controls`` is a tensor that will be optimised by the MPC loop.
+    # Building the feature matrix directly with PyTorch tensors preserves the
+    # gradient through to the cost function.
+    pump_controls = pump_controls.to(dtype=torch.float32, device=device)
+    feats = torch.zeros((num_nodes, 4 + num_pumps), dtype=torch.float32, device=device)
+
     for name, idx in node_to_index.items():
         node = wn.get_node(name)
         if name in wn.junction_name_list:
@@ -366,11 +372,17 @@ def prepare_node_features(
             elev = node.head
         if elev is None:
             elev = 0.0
-        base = [demand, pressures.get(name, 0.0), chlorine.get(name, 0.0), elev]
-        base.extend(pump_controls.tolist())
-        feats[idx] = np.array(base, dtype=np.float32)
 
-    feats = torch.tensor(feats[:, : model.conv1.in_channels], dtype=torch.float32, device=device)
+        feats[idx, 0] = float(demand)
+        feats[idx, 1] = float(pressures.get(name, 0.0))
+        feats[idx, 2] = float(chlorine.get(name, 0.0))
+        feats[idx, 3] = float(elev)
+
+    # broadcast the pump control vector to all nodes
+    feats[:, 4 : 4 + num_pumps] = pump_controls.view(1, -1).expand(num_nodes, num_pumps)
+
+    feats = feats[:, : model.conv1.in_channels]
+
     if getattr(model, "x_mean", None) is not None:
         feats = (feats - model.x_mean) / model.x_std
     return feats
