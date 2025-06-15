@@ -69,9 +69,15 @@ def _prepare_features(
         [base_demand, pressure, chlorine, elevation, pump1, ...].
     """
 
+    num_nodes = len(wn.node_name_list)
     num_pumps = len(pump_controls)
-    feats = []
-    for name in wn.node_name_list:
+    feats = torch.empty(
+        (num_nodes, 4 + num_pumps),
+        dtype=torch.float32,
+        pin_memory=torch.cuda.is_available(),
+    )
+    pump_t = torch.tensor(pump_controls, dtype=torch.float32)
+    for idx, name in enumerate(wn.node_name_list):
         node = wn.get_node(name)
         if name in wn.junction_name_list:
             demand = node.demand_timeseries_list[0].base_value
@@ -91,12 +97,11 @@ def _prepare_features(
         if elev is None:
             elev = 0.0
 
-        base = [demand, pressures.get(name, 0.0), chlorine.get(name, 0.0), elev]
-        base.extend(pump_controls.tolist())
-        feats.append(base)
-    feats = torch.tensor(feats, dtype=torch.float32)
-    if hasattr(model, "x_mean") and model.x_mean is not None:
-        feats = (feats - model.x_mean.cpu()) / model.x_std.cpu()
+        feats[idx, 0] = float(demand)
+        feats[idx, 1] = pressures.get(name, 0.0)
+        feats[idx, 2] = chlorine.get(name, 0.0)
+        feats[idx, 3] = float(elev)
+        feats[idx, 4:] = pump_t
     return feats
 
 
@@ -160,7 +165,10 @@ def validate_surrogate(
                 p = pressures_df.iloc[i].to_dict()
                 c = chlorine_df.iloc[i].to_dict()
                 controls = pump_array[i]
-                x = _prepare_features(wn, p, c, controls, model).to(device)
+                feats = _prepare_features(wn, p, c, controls, model)
+                x = feats.to(device, non_blocking=True)
+                if hasattr(model, "x_mean") and model.x_mean is not None:
+                    x = (x - model.x_mean) / model.x_std
                 if hasattr(model, "rnn"):
                     seq_in = x.unsqueeze(0).unsqueeze(0)
                     pred = model(seq_in, edge_index, edge_attr)
