@@ -76,18 +76,18 @@ class HydroConv(MessagePassing):
 
         aggr = self.propagate(edge_index, x=x, edge_attr=edge_attr, edge_type=edge_type)
         out = torch.zeros((x.size(0), self.out_channels), device=x.device, dtype=aggr.dtype)
-        for t in range(self.num_node_types):
+        for t, lin in enumerate(self.lin):
             idx = node_type == t
-            if idx.any():
-                out[idx] = self.lin[t](aggr[idx])
+            if torch.any(idx):
+                out[idx] = lin(aggr[idx])
         return out
 
     def message(self, x_i: torch.Tensor, x_j: torch.Tensor, edge_attr: torch.Tensor, edge_type: torch.Tensor) -> torch.Tensor:
         weight = torch.zeros(edge_attr.size(0), 1, device=edge_attr.device)
-        for t in range(self.num_edge_types):
+        for t, mlp in enumerate(self.edge_mlps):
             idx = edge_type == t
-            if idx.any():
-                weight[idx] = self.edge_mlps[t](edge_attr[idx])
+            if torch.any(idx):
+                weight[idx] = mlp(edge_attr[idx])
         return weight * (x_j - x_i)
 
 
