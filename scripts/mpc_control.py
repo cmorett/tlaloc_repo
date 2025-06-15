@@ -69,12 +69,12 @@ class GNNSurrogate(torch.nn.Module):
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_attr: Optional[torch.Tensor] = None,
-        node_type: Optional[torch.Tensor] = None,
-        edge_type: Optional[torch.Tensor] = None,
+        node_types: Optional[torch.Tensor] = None,
+        edge_types: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         for i, conv in enumerate(self.layers):
             if hasattr(conv, "edge_mlps"):
-                x = conv(x, edge_index, edge_attr, node_type, edge_type)
+                x = conv(x, edge_index, edge_attr, node_types, edge_types)
             else:
                 x = conv(x, edge_index)
             if i < len(self.layers) - 1:
@@ -474,8 +474,8 @@ def compute_mpc_cost(
     model: GNNSurrogate,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
-    node_type: torch.Tensor,
-    edge_type: torch.Tensor,
+    node_types: torch.Tensor,
+    edge_types: torch.Tensor,
     feature_template: torch.Tensor,
     pressures: torch.Tensor,
     chlorine: torch.Tensor,
@@ -500,11 +500,11 @@ def compute_mpc_cost(
         x = prepare_node_features(feature_template, cur_p, cur_c, u[t], model)
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
-            pred = model(seq_in, edge_index, edge_attr, node_type, edge_type)
+            pred = model(seq_in, edge_index, edge_attr, node_types, edge_types)
             if isinstance(pred, dict):
                 pred = pred.get("node_outputs")[0, 0]
         else:
-            pred = model(x, edge_index, edge_attr, node_type, edge_type)
+            pred = model(x, edge_index, edge_attr, node_types, edge_types)
             if isinstance(pred, dict):
                 pred = pred.get("node_outputs")
         if getattr(model, "y_mean", None) is not None:
@@ -557,8 +557,8 @@ def run_mpc_step(
     model: GNNSurrogate,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
-    node_type: torch.Tensor,
-    edge_type: torch.Tensor,
+    node_types: torch.Tensor,
+    edge_types: torch.Tensor,
     feature_template: torch.Tensor,
     pressures: torch.Tensor,
     chlorine: torch.Tensor,
@@ -616,8 +616,8 @@ def run_mpc_step(
             model,
             edge_index,
             edge_attr,
-            node_type,
-            edge_type,
+            node_types,
+            edge_types,
             feature_template,
             pressures,
             chlorine,
@@ -644,8 +644,8 @@ def run_mpc_step(
             model,
             edge_index,
             edge_attr,
-            node_type,
-            edge_type,
+            node_types,
+            edge_types,
             feature_template,
             pressures,
             chlorine,
@@ -676,8 +676,8 @@ def propagate_with_surrogate(
     model: GNNSurrogate,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
-    node_type: torch.Tensor,
-    edge_type: torch.Tensor,
+    node_types: torch.Tensor,
+    edge_types: torch.Tensor,
     feature_template: torch.Tensor,
     pressures: Dict[str, float],
     chlorine: Dict[str, float],
@@ -703,8 +703,8 @@ def propagate_with_surrogate(
         cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], device=device)
         b_edge_index = edge_index
         b_edge_attr = edge_attr
-        b_node_type = node_type
-        b_edge_type = edge_type
+        b_node_type = node_types
+        b_edge_type = edge_types
         batch_size = 1
     else:
         batch_size = len(pressures)
@@ -722,8 +722,8 @@ def propagate_with_surrogate(
             torch.arange(batch_size, device=device).repeat_interleave(E) * num_nodes
         )
         b_edge_attr = edge_attr.repeat(batch_size, 1) if edge_attr is not None else None
-        b_node_type = node_type.repeat(batch_size) if node_type is not None else None
-        b_edge_type = edge_type.repeat(batch_size) if edge_type is not None else None
+        b_node_type = node_types.repeat(batch_size) if node_types is not None else None
+        b_edge_type = edge_types.repeat(batch_size) if edge_types is not None else None
 
     with torch.no_grad():
         for u in control_seq:
