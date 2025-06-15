@@ -12,10 +12,12 @@ from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch.utils.data import Dataset, DataLoader as TorchLoader
 from torch_geometric.nn import GCNConv, MessagePassing, GATConv, LayerNorm
+from torch_geometric.utils import subgraph, k_hop_subgraph
 import wntr
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Optional
+import networkx as nx
 
 # Ensure the repository root is importable when running this file directly
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -620,6 +622,93 @@ def build_node_type(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
     return np.array(types, dtype=np.int64)
 
 
+def partition_graph_greedy(edge_index: np.ndarray, num_nodes: int, cluster_size: int) -> list[np.ndarray]:
+    """Split ``edge_index`` into clusters using greedy modularity heuristics."""
+    G = nx.Graph()
+    G.add_nodes_from(range(num_nodes))
+    G.add_edges_from((int(s), int(t)) for s, t in edge_index.T)
+    communities = list(nx.algorithms.community.greedy_modularity_communities(G))
+    clusters: list[list[int]] = []
+    for com in communities:
+        nodes = list(com)
+        for i in range(0, len(nodes), cluster_size):
+            clusters.append(nodes[i : i + cluster_size])
+    assigned = {n for cl in clusters for n in cl}
+    for n in range(num_nodes):
+        if n not in assigned:
+            smallest = min(range(len(clusters)), key=lambda i: len(clusters[i]))
+            clusters[smallest].append(n)
+    return [np.array(sorted(c), dtype=np.int64) for c in clusters]
+
+
+class ClusterSampleDataset(Dataset):
+    """Dataset that yields samples restricted to precomputed node clusters."""
+
+    def __init__(self, base_data: list[Data], clusters: list[np.ndarray]):
+        self.base_data = base_data
+        self.clusters = clusters
+        self.num_clusters = len(clusters)
+        base = base_data[0]
+        self.edge_index = base.edge_index
+        self.edge_attr = getattr(base, "edge_attr", None)
+        self.node_type = getattr(base, "node_type", None)
+        self.edge_type = getattr(base, "edge_type", None)
+        self.subgraphs = []
+        ei = torch.tensor(self.edge_index, dtype=torch.long)
+        for nodes in clusters:
+            nodes_t = torch.tensor(nodes, dtype=torch.long)
+            sub_ei, mask = subgraph(nodes_t, ei, relabel_nodes=True)
+            self.subgraphs.append((nodes_t, sub_ei, mask))
+
+    def __len__(self) -> int:  # type: ignore[override]
+        return len(self.base_data) * self.num_clusters
+
+    def __getitem__(self, idx: int):  # type: ignore[override]
+        sample_idx = idx // self.num_clusters
+        cluster_idx = idx % self.num_clusters
+        nodes_t, ei, mask = self.subgraphs[cluster_idx]
+        base = self.base_data[sample_idx]
+        data = Data(x=base.x[nodes_t], y=base.y[nodes_t], edge_index=ei)
+        if self.edge_attr is not None:
+            data.edge_attr = self.edge_attr[mask]
+        if self.node_type is not None:
+            data.node_type = self.node_type[nodes_t]
+        if self.edge_type is not None:
+            data.edge_type = self.edge_type[mask]
+        return data
+
+
+class NeighborSampleDataset(Dataset):
+    """Dataset performing random neighbor sampling on-the-fly."""
+
+    def __init__(self, base_data: list[Data], edge_index: np.ndarray, sample_size: int, num_hops: int = 1):
+        self.base_data = base_data
+        self.sample_size = sample_size
+        self.num_hops = num_hops
+        self.edge_index = torch.tensor(edge_index, dtype=torch.long)
+        base = base_data[0]
+        self.edge_attr = getattr(base, "edge_attr", None)
+        self.node_type = getattr(base, "node_type", None)
+        self.edge_type = getattr(base, "edge_type", None)
+        self.num_nodes = int(self.edge_index.max()) + 1
+
+    def __len__(self) -> int:  # type: ignore[override]
+        return len(self.base_data)
+
+    def __getitem__(self, idx: int):  # type: ignore[override]
+        base = self.base_data[idx]
+        targets = np.random.choice(self.num_nodes, min(self.sample_size, self.num_nodes), replace=False)
+        subset, ei, mapping, mask = k_hop_subgraph(torch.tensor(targets, dtype=torch.long), self.num_hops, self.edge_index, relabel_nodes=True)
+        data = Data(x=base.x[subset], y=base.y[subset], edge_index=ei)
+        if self.edge_attr is not None:
+            data.edge_attr = self.edge_attr[mask]
+        if self.node_type is not None:
+            data.node_type = self.node_type[subset]
+        if self.edge_type is not None:
+            data.edge_type = self.edge_type[mask]
+        return data
+
+
 def train(model, loader, optimizer, device, check_negative=True):
     model.train()
     total_loss = 0
@@ -957,6 +1046,20 @@ def main(args: argparse.Namespace):
                 print("Chlorine mean/std:", y_mean[1].item(), y_std[1].item())
     else:
         x_mean = x_std = y_mean = y_std = None
+
+    if not seq_mode:
+        if args.neighbor_sampling:
+            sample_size = args.cluster_batch_size or max(1, int(0.2 * data_list[0].num_nodes))
+            data_list = NeighborSampleDataset(data_list, edge_index_np, sample_size)
+            loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
+            if val_loader is not None:
+                val_loader = DataLoader(NeighborSampleDataset(val_list, edge_index_np, sample_size), batch_size=args.batch_size)
+        elif args.cluster_batch_size > 0:
+            clusters = partition_graph_greedy(edge_index_np, data_list[0].num_nodes, args.cluster_batch_size)
+            data_list = ClusterSampleDataset(data_list, clusters)
+            loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
+            if val_loader is not None:
+                val_loader = DataLoader(ClusterSampleDataset(val_list, clusters), batch_size=args.batch_size)
 
     expected_in_dim = 4 + len(wn.pump_name_list)
 
@@ -1379,6 +1482,17 @@ if __name__ == "__main__":
         type=float,
         default=0.1,
         help="Weight of the head loss consistency term",
+    )
+    parser.add_argument(
+        "--cluster-batch-size",
+        type=int,
+        default=0,
+        help="Number of nodes per cluster for sparse training (0 disables)",
+    )
+    parser.add_argument(
+        "--neighbor-sampling",
+        action="store_true",
+        help="Use random neighbor sampling instead of clustering",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--run-name", default="", help="Optional run name")
