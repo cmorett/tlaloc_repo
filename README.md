@@ -44,6 +44,13 @@ consumption. ``train_gnn.py`` automatically detects such multi-task arrays and
 switches to a ``MultiTaskGNNSurrogate`` model which optimizes a weighted loss
 over all targets.
 
+The GNN architecture has been refactored to support **heterogeneous graphs**.
+Node embeddings are now conditioned on the component type (junction, tank,
+pump or valve) while edges differentiate pipes, pumps and valves.  The helper
+scripts automatically compute these type indices from the EPANET network and
+store them in ``edge_type.npy``.  Training and MPC control handle these
+additional attributes transparently.
+
 Example usage:
 
 ```bash

@@ -26,16 +26,32 @@ from models.loss_utils import compute_mass_balance_loss
 
 
 class HydroConv(MessagePassing):
-    """Mass-conserving convolution using edge attributes."""
+    """Mass-conserving convolution supporting heterogeneous components."""
 
-    def __init__(self, in_channels: int, out_channels: int, edge_dim: int):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        edge_dim: int,
+        num_node_types: int = 1,
+        num_edge_types: int = 1,
+    ) -> None:
         super().__init__(aggr="add")
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.lin = nn.Linear(in_channels, out_channels)
-        self.edge_mlp = nn.Sequential(
-            nn.Linear(edge_dim, 1),
-            nn.Softplus(),
+        self.num_node_types = num_node_types
+        self.num_edge_types = num_edge_types
+
+        # Separate linear layers per node type so different components can
+        # learn distinct transformations.
+        self.lin = nn.ModuleList(
+            [nn.Linear(in_channels, out_channels) for _ in range(num_node_types)]
+        )
+
+        # Each edge type obtains its own small MLP to compute a transmissibility
+        # weight from the edge attributes.
+        self.edge_mlps = nn.ModuleList(
+            [nn.Sequential(nn.Linear(edge_dim, 1), nn.Softplus()) for _ in range(num_edge_types)]
         )
 
     def forward(
@@ -43,11 +59,30 @@ class HydroConv(MessagePassing):
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_attr: torch.Tensor,
+        node_type: Optional[torch.Tensor] = None,
+        edge_type: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return self.lin(self.propagate(edge_index, x=x, edge_attr=edge_attr))
+        """Run convolution with optional node/edge type information."""
 
-    def message(self, x_i: torch.Tensor, x_j: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:
-        weight = self.edge_mlp(edge_attr).view(-1, 1)
+        if node_type is None:
+            node_type = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+        if edge_type is None:
+            edge_type = torch.zeros(edge_index.size(1), dtype=torch.long, device=edge_index.device)
+
+        aggr = self.propagate(edge_index, x=x, edge_attr=edge_attr, edge_type=edge_type)
+        out = torch.zeros((x.size(0), self.out_channels), device=x.device, dtype=aggr.dtype)
+        for t in range(self.num_node_types):
+            idx = node_type == t
+            if idx.any():
+                out[idx] = self.lin[t](aggr[idx])
+        return out
+
+    def message(self, x_i: torch.Tensor, x_j: torch.Tensor, edge_attr: torch.Tensor, edge_type: torch.Tensor) -> torch.Tensor:
+        weight = torch.zeros(edge_attr.size(0), 1, device=edge_attr.device)
+        for t in range(self.num_edge_types):
+            idx = edge_type == t
+            if idx.any():
+                weight[idx] = self.edge_mlps[t](edge_attr[idx])
         return weight * (x_j - x_i)
 
 
@@ -108,11 +143,13 @@ class EnhancedGNNEncoder(nn.Module):
     def forward(self, data: Data) -> torch.Tensor:
         x, edge_index = data.x, data.edge_index
         edge_attr = getattr(data, "edge_attr", None)
+        node_type = getattr(data, "node_type", None)
+        edge_type = getattr(data, "edge_type", None)
         for conv, norm in zip(self.convs, self.norms):
             identity = x
             if isinstance(conv, HydroConv) or not self.use_attention:
                 if isinstance(conv, HydroConv):
-                    x = conv(x, edge_index, edge_attr)
+                    x = conv(x, edge_index, edge_attr, node_type, edge_type)
                 else:
                     x = conv(x, edge_index)
             else:
@@ -165,6 +202,8 @@ class RecurrentGNNSurrogate(nn.Module):
         X_seq: torch.Tensor,
         edge_index: torch.Tensor,
         edge_attr: torch.Tensor,
+        node_type: Optional[torch.Tensor] = None,
+        edge_type: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         batch_size, T, num_nodes, in_dim = X_seq.size()
         device = X_seq.device
@@ -173,10 +212,13 @@ class RecurrentGNNSurrogate(nn.Module):
         batch_edge_index = edge_index.repeat(1, batch_size) + (
             torch.arange(batch_size, device=device).repeat_interleave(E) * num_nodes
         )
-        if edge_attr is not None:
-            edge_attr_rep = edge_attr.repeat(batch_size, 1)
-        else:
-            edge_attr_rep = None
+        edge_attr_rep = edge_attr.repeat(batch_size, 1) if edge_attr is not None else None
+        node_type_rep = (
+            node_type.repeat(batch_size) if node_type is not None else None
+        )
+        edge_type_rep = (
+            edge_type.repeat(batch_size) if edge_type is not None else None
+        )
 
         node_embeddings = []
         for t in range(T):
@@ -184,6 +226,10 @@ class RecurrentGNNSurrogate(nn.Module):
             data = Data(x=x_t, edge_index=batch_edge_index)
             if edge_attr_rep is not None:
                 data.edge_attr = edge_attr_rep
+            if node_type_rep is not None:
+                data.node_type = node_type_rep
+            if edge_type_rep is not None:
+                data.edge_type = edge_type_rep
             gnn_out = self.encoder(data)  # [batch_size*num_nodes, hidden]
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
             node_embeddings.append(gnn_out)
@@ -218,7 +264,14 @@ class MultiTaskGNNSurrogate(nn.Module):
         self.edge_decoder = nn.Linear(rnn_hidden_dim * 2, edge_output_dim)
         self.energy_decoder = nn.Linear(rnn_hidden_dim, energy_output_dim)
 
-    def forward(self, X_seq: torch.Tensor, edge_index: torch.Tensor, edge_attr: torch.Tensor):
+    def forward(
+        self,
+        X_seq: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+        node_type: Optional[torch.Tensor] = None,
+        edge_type: Optional[torch.Tensor] = None,
+    ):
         batch_size, T, num_nodes, in_dim = X_seq.size()
         device = X_seq.device
         E = edge_index.size(1)
@@ -226,6 +279,12 @@ class MultiTaskGNNSurrogate(nn.Module):
             torch.arange(batch_size, device=device).repeat_interleave(E) * num_nodes
         )
         edge_attr_rep = edge_attr.repeat(batch_size, 1) if edge_attr is not None else None
+        node_type_rep = (
+            node_type.repeat(batch_size) if node_type is not None else None
+        )
+        edge_type_rep = (
+            edge_type.repeat(batch_size) if edge_type is not None else None
+        )
 
         node_embeddings = []
         for t in range(T):
@@ -233,6 +292,10 @@ class MultiTaskGNNSurrogate(nn.Module):
             data = Data(x=x_t, edge_index=batch_edge_index)
             if edge_attr_rep is not None:
                 data.edge_attr = edge_attr_rep
+            if node_type_rep is not None:
+                data.node_type = node_type_rep
+            if edge_type_rep is not None:
+                data.edge_type = edge_type_rep
             gnn_out = self.encoder(data)
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
             node_embeddings.append(gnn_out)
@@ -264,6 +327,8 @@ def load_dataset(
     y_path: str,
     edge_index_path: str = "edge_index.npy",
     edge_attr: Optional[np.ndarray] = None,
+    node_type: Optional[np.ndarray] = None,
+    edge_type: Optional[np.ndarray] = None,
 ) -> list[Data]:
     """Load training data.
 
@@ -279,8 +344,14 @@ def load_dataset(
     y = np.load(y_path, allow_pickle=True)
     data_list = []
     edge_attr_tensor = None
+    node_type_tensor = None
+    edge_type_tensor = None
     if edge_attr is not None:
         edge_attr_tensor = torch.tensor(edge_attr, dtype=torch.float32)
+    if node_type is not None:
+        node_type_tensor = torch.tensor(node_type, dtype=torch.long)
+    if edge_type is not None:
+        edge_type_tensor = torch.tensor(edge_type, dtype=torch.long)
 
     # Detect whether the first entry is a dictionary (object array) or a plain
     # matrix. ``np.ndarray`` with ``dtype=object`` will require calling
@@ -301,6 +372,10 @@ def load_dataset(
             data = Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
             if edge_attr_tensor is not None:
                 data.edge_attr = edge_attr_tensor
+            if node_type_tensor is not None:
+                data.node_type = node_type_tensor
+            if edge_type_tensor is not None:
+                data.edge_type = edge_type_tensor
             data_list.append(data)
     else:
         # ``X`` already contains node feature matrices. Load the shared
@@ -313,6 +388,10 @@ def load_dataset(
             data = Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
             if edge_attr_tensor is not None:
                 data.edge_attr = edge_attr_tensor
+            if node_type_tensor is not None:
+                data.node_type = node_type_tensor
+            if edge_type_tensor is not None:
+                data.edge_type = edge_type_tensor
             data_list.append(data)
 
     return data_list
@@ -382,12 +461,18 @@ def apply_normalization(
 class SequenceDataset(Dataset):
     """Simple ``Dataset`` for sequence data supporting multi-task labels."""
 
-    def __init__(self, X: np.ndarray, Y: np.ndarray, edge_index: np.ndarray, edge_attr: Optional[np.ndarray]):
+    def __init__(self, X: np.ndarray, Y: np.ndarray, edge_index: np.ndarray, edge_attr: Optional[np.ndarray], node_type: Optional[np.ndarray] = None, edge_type: Optional[np.ndarray] = None):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.edge_index = torch.tensor(edge_index, dtype=torch.long)
         self.edge_attr = None
         if edge_attr is not None:
             self.edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
+        self.node_type = None
+        if node_type is not None:
+            self.node_type = torch.tensor(node_type, dtype=torch.long)
+        self.edge_type = None
+        if edge_type is not None:
+            self.edge_type = torch.tensor(edge_type, dtype=torch.long)
 
         first = Y[0]
         if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
@@ -478,6 +563,46 @@ def build_edge_attr(
     return np.array([attr_dict[(int(s), int(t))] for s, t in edge_index.T], dtype=np.float32)
 
 
+def build_edge_type(
+    wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
+) -> np.ndarray:
+    """Return integer edge type array matching ``edge_index``."""
+
+    node_map = {n: i for i, n in enumerate(wn.node_name_list)}
+    type_dict: dict[tuple[int, int], int] = {}
+    for link_name in wn.link_name_list:
+        link = wn.get_link(link_name)
+        i = node_map[link.start_node.name]
+        j = node_map[link.end_node.name]
+        if link_name in wn.pipe_name_list:
+            t = 0  # pipe connection
+        elif link_name in wn.pump_name_list:
+            t = 1  # pump connection
+        elif link_name in wn.valve_name_list:
+            t = 2  # valve connection
+        else:
+            t = 0
+        type_dict[(i, j)] = t
+        type_dict[(j, i)] = t
+
+    return np.array([type_dict[(int(s), int(t))] for s, t in edge_index.T], dtype=np.int64)
+
+
+def build_node_type(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
+    """Return integer node type array for the network nodes."""
+
+    types = []
+    for n in wn.node_name_list:
+        if n in wn.junction_name_list:
+            types.append(0)
+        elif n in wn.tank_name_list:
+            types.append(1)
+        else:
+            # Pumps and valves are modeled as edges; keep unique index
+            types.append(0)
+    return np.array(types, dtype=np.int64)
+
+
 def train(model, loader, optimizer, device, check_negative=True):
     model.train()
     total_loss = 0
@@ -516,6 +641,8 @@ def train_sequence(
     loader: TorchLoader,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
+    node_type: Optional[torch.Tensor],
+    edge_type: Optional[torch.Tensor],
     optimizer,
     device,
     physics_loss: bool = False,
@@ -528,7 +655,13 @@ def train_sequence(
     for X_seq, Y_seq in loader:
         X_seq = X_seq.to(device)
         optimizer.zero_grad()
-        preds = model(X_seq, edge_index.to(device), edge_attr.to(device))
+        preds = model(
+            X_seq,
+            edge_index.to(device),
+            edge_attr.to(device),
+            node_type,
+            edge_type,
+        )
         if isinstance(Y_seq, dict):
             loss_node = F.mse_loss(
                 preds['node_outputs'],
@@ -575,6 +708,8 @@ def evaluate_sequence(
     loader: TorchLoader,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
+    node_type: Optional[torch.Tensor],
+    edge_type: Optional[torch.Tensor],
     device,
     physics_loss: bool = False,
     w_mass: float = 0.5,
@@ -586,7 +721,13 @@ def evaluate_sequence(
     with torch.no_grad():
         for X_seq, Y_seq in loader:
             X_seq = X_seq.to(device)
-            preds = model(X_seq, edge_index.to(device), edge_attr.to(device))
+            preds = model(
+                X_seq,
+                edge_index.to(device),
+                edge_attr.to(device),
+                node_type,
+                edge_type,
+            )
             if isinstance(Y_seq, dict):
                 loss_node = F.mse_loss(
                     preds['node_outputs'],
@@ -642,6 +783,8 @@ def main(args: argparse.Namespace):
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     edge_attr = build_edge_attr(wn, edge_index_np)
+    edge_types = build_edge_type(wn, edge_index_np)
+    node_types = build_node_type(wn)
     edge_mean, edge_std = compute_edge_attr_stats(edge_attr)
     X_raw = np.load(args.x_path, allow_pickle=True)
     Y_raw = np.load(args.y_path, allow_pickle=True)
@@ -659,11 +802,23 @@ def main(args: argparse.Namespace):
             seq_mode = True
 
     if seq_mode:
-        data_ds = SequenceDataset(X_raw, Y_raw, edge_index_np, edge_attr)
+        data_ds = SequenceDataset(
+            X_raw,
+            Y_raw,
+            edge_index_np,
+            edge_attr,
+            node_type=node_types,
+            edge_type=edge_types,
+        )
         loader = TorchLoader(data_ds, batch_size=args.batch_size, shuffle=True)
     else:
         data_list = load_dataset(
-            args.x_path, args.y_path, args.edge_index_path, edge_attr=edge_attr
+            args.x_path,
+            args.y_path,
+            args.edge_index_path,
+            edge_attr=edge_attr,
+            node_type=node_types,
+            edge_type=edge_types,
         )
         loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
 
@@ -675,7 +830,14 @@ def main(args: argparse.Namespace):
             if Xv.ndim == 3:
                 Yv = np.array([{k: v[None, ...] for k, v in y.items()} for y in Yv], dtype=object)
                 Xv = Xv[:, None, ...]
-            val_ds = SequenceDataset(Xv, Yv, edge_index_np, edge_attr)
+            val_ds = SequenceDataset(
+                Xv,
+                Yv,
+                edge_index_np,
+                edge_attr,
+                node_type=node_types,
+                edge_type=edge_types,
+            )
             val_loader = TorchLoader(val_ds, batch_size=args.batch_size)
             val_list = val_ds
         else:
@@ -684,6 +846,8 @@ def main(args: argparse.Namespace):
                 args.y_val_path,
                 args.edge_index_path,
                 edge_attr=edge_attr,
+                node_type=node_types,
+                edge_type=edge_types,
             )
             val_loader = DataLoader(val_list, batch_size=args.batch_size)
     else:
@@ -839,6 +1003,8 @@ def main(args: argparse.Namespace):
                     loader,
                     data_ds.edge_index,
                     data_ds.edge_attr,
+                    data_ds.node_type,
+                    data_ds.edge_type,
                     optimizer,
                     device,
                     physics_loss=args.physics_loss,
@@ -851,6 +1017,8 @@ def main(args: argparse.Namespace):
                         val_loader,
                         data_ds.edge_index,
                         data_ds.edge_attr,
+                        data_ds.node_type,
+                        data_ds.edge_type,
                         device,
                         physics_loss=args.physics_loss,
                     )
@@ -929,7 +1097,14 @@ def main(args: argparse.Namespace):
             if Xt.ndim == 3:
                 Yt = np.array([{k: v[None, ...] for k, v in y.items()} for y in Yt], dtype=object)
                 Xt = Xt[:, None, ...]
-            test_ds = SequenceDataset(Xt, Yt, edge_index_np, edge_attr)
+            test_ds = SequenceDataset(
+                Xt,
+                Yt,
+                edge_index_np,
+                edge_attr,
+                node_type=node_types,
+                edge_type=edge_types,
+            )
             if args.normalize:
                 apply_sequence_normalization(
                     test_ds,
@@ -942,7 +1117,14 @@ def main(args: argparse.Namespace):
                 )
             test_loader = TorchLoader(test_ds, batch_size=args.batch_size)
         else:
-            test_list = load_dataset(args.x_test_path, args.y_test_path, args.edge_index_path, edge_attr=edge_attr)
+            test_list = load_dataset(
+                args.x_test_path,
+                args.y_test_path,
+                args.edge_index_path,
+                edge_attr=edge_attr,
+                node_type=node_types,
+                edge_type=edge_types,
+            )
             if args.normalize:
                 apply_normalization(test_list, x_mean, x_std, y_mean, y_std, edge_mean, edge_std)
             test_loader = DataLoader(test_list, batch_size=args.batch_size)
@@ -956,9 +1138,11 @@ def main(args: argparse.Namespace):
             if seq_mode:
                 ei = test_ds.edge_index.to(device)
                 ea = test_ds.edge_attr.to(device) if test_ds.edge_attr is not None else None
+                nt = test_ds.node_type.to(device) if test_ds.node_type is not None else None
+                et = test_ds.edge_type.to(device) if test_ds.edge_type is not None else None
                 for X_seq, Y_seq in test_loader:
                     X_seq = X_seq.to(device)
-                    out = model(X_seq, ei, ea)
+                    out = model(X_seq, ei, ea, nt, et)
                     if isinstance(out, dict):
                         node_pred = out["node_outputs"]
                     else:

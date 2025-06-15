@@ -26,7 +26,7 @@ class DummyModel(torch.nn.Module):
 
 def test_validate_surrogate_accepts_tuple():
     device = torch.device('cpu')
-    wn, node_to_index, pump_names, edge_index = load_network('CTown.inp')
+    wn, node_to_index, pump_names, edge_index, node_types, edge_types = load_network('CTown.inp')
     wn.options.time.duration = 2 * 3600
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.quality_timestep = 3600

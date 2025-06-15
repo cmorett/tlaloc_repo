@@ -27,9 +27,19 @@ try:
         HydroConv,
         RecurrentGNNSurrogate,
         MultiTaskGNNSurrogate,
+        build_edge_attr,
+        build_edge_type,
+        build_node_type,
     )  # type: ignore
 except ImportError:  # pragma: no cover - executed when run as a script
-    from train_gnn import HydroConv, RecurrentGNNSurrogate, MultiTaskGNNSurrogate
+    from train_gnn import (
+        HydroConv,
+        RecurrentGNNSurrogate,
+        MultiTaskGNNSurrogate,
+        build_edge_attr,
+        build_edge_type,
+        build_node_type,
+    )
 import wntr
 from wntr.metrics.economic import pump_energy
 
@@ -60,10 +70,12 @@ class GNNSurrogate(torch.nn.Module):
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_attr: Optional[torch.Tensor] = None,
+        node_type: Optional[torch.Tensor] = None,
+        edge_type: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         for i, conv in enumerate(self.layers):
             if isinstance(conv, HydroConv):
-                x = conv(x, edge_index, edge_attr)
+                x = conv(x, edge_index, edge_attr, node_type, edge_type)
             else:
                 x = conv(x, edge_index)
             if i < len(self.layers) - 1:
@@ -90,6 +102,7 @@ def load_network(inp_file: str, return_edge_attr: bool = False):
     node_to_index = {n: i for i, n in enumerate(wn.node_name_list)}
     edges = []
     attrs = []
+    etypes = []
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
         i = node_to_index[link.start_node.name]
@@ -101,15 +114,31 @@ def load_network(inp_file: str, return_edge_attr: bool = False):
         rough = getattr(link, "roughness", 0.0) or 0.0
         attrs.append([length, diam, rough])
         attrs.append([length, diam, rough])
+        if link_name in wn.pipe_name_list:
+            t = 0
+        elif link_name in wn.pump_name_list:
+            t = 1
+        elif link_name in wn.valve_name_list:
+            t = 2
+        else:
+            t = 0
+        etypes.extend([t, t])
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+    node_types = build_node_type(wn)
+    edge_types = torch.tensor(etypes, dtype=torch.long)
     if return_edge_attr:
-        edge_attr = np.array(attrs, dtype=np.float32)
-        edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
-        scaler = MinMaxScaler()
-        edge_attr = scaler.fit_transform(edge_attr)
+        edge_attr = build_edge_attr(wn, edge_index.numpy())
         edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
-        return wn, node_to_index, wn.pump_name_list, edge_index, edge_attr
-    return wn, node_to_index, wn.pump_name_list, edge_index
+        return (
+            wn,
+            node_to_index,
+            wn.pump_name_list,
+            edge_index,
+            edge_attr,
+            node_types,
+            edge_types,
+        )
+    return wn, node_to_index, wn.pump_name_list, edge_index, node_types, edge_types
 
 
 
@@ -394,6 +423,8 @@ def compute_mpc_cost(
     model: GNNSurrogate,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
+    node_type: torch.Tensor,
+    edge_type: torch.Tensor,
     pressures: Dict[str, float],
     chlorine: Dict[str, float],
     horizon: int,
@@ -428,19 +459,13 @@ def compute_mpc_cost(
         )
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
-            pred = model(seq_in, edge_index, edge_attr)
+            pred = model(seq_in, edge_index, edge_attr, node_type, edge_type)
             if isinstance(pred, dict):
                 pred = pred.get("node_outputs")[0, 0]
         else:
-            if hasattr(model, "rnn"):
-                seq_in = x.unsqueeze(0).unsqueeze(0)
-                pred = model(seq_in, edge_index, edge_attr)
-                if isinstance(pred, dict):
-                    pred = pred.get("node_outputs")[0, 0]
-            else:
-                pred = model(x, edge_index, edge_attr)
-                if isinstance(pred, dict):
-                    pred = pred.get("node_outputs")
+            pred = model(x, edge_index, edge_attr, node_type, edge_type)
+            if isinstance(pred, dict):
+                pred = pred.get("node_outputs")
         if getattr(model, "y_mean", None) is not None:
             pred = pred * model.y_std + model.y_mean
         assert not torch.isnan(pred).any(), "NaN prediction"
@@ -492,6 +517,8 @@ def run_mpc_step(
     model: GNNSurrogate,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
+    node_type: torch.Tensor,
+    edge_type: torch.Tensor,
     pressures: Dict[str, float],
     chlorine: Dict[str, float],
     horizon: int,
@@ -546,6 +573,8 @@ def run_mpc_step(
             model,
             edge_index,
             edge_attr,
+            node_type,
+            edge_type,
             pressures,
             chlorine,
             horizon,
@@ -573,6 +602,8 @@ def run_mpc_step(
             model,
             edge_index,
             edge_attr,
+            node_type,
+            edge_type,
             pressures,
             chlorine,
             horizon,
@@ -600,6 +631,8 @@ def propagate_with_surrogate(
     model: GNNSurrogate,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
+    node_type: torch.Tensor,
+    edge_type: torch.Tensor,
     pressures: Dict[str, float],
     chlorine: Dict[str, float],
     control_seq: torch.Tensor,
@@ -631,11 +664,11 @@ def propagate_with_surrogate(
             )
             if hasattr(model, "rnn"):
                 seq_in = x.unsqueeze(0).unsqueeze(0)
-                pred = model(seq_in, edge_index, edge_attr)
+                pred = model(seq_in, edge_index, edge_attr, node_type, edge_type)
                 if isinstance(pred, dict):
                     pred = pred.get("node_outputs")[0, 0]
             else:
-                pred = model(x, edge_index, edge_attr)
+                pred = model(x, edge_index, edge_attr, node_type, edge_type)
                 if isinstance(pred, dict):
                     pred = pred.get("node_outputs")
             if getattr(model, "y_mean", None) is not None:
@@ -740,6 +773,8 @@ def simulate_closed_loop(
             model,
             edge_index,
             edge_attr,
+            node_type,
+            edge_type,
             pressures,
             chlorine,
             horizon,
@@ -796,6 +831,8 @@ def simulate_closed_loop(
                 model,
                 edge_index,
                 edge_attr,
+                node_type,
+                edge_type,
                 pressures,
                 chlorine,
                 u_opt,
@@ -873,7 +910,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     inp_path = os.path.join(REPO_ROOT, "CTown.inp")
-    wn, node_to_index, pump_names, edge_index, edge_attr = load_network(
+    wn, node_to_index, pump_names, edge_index, edge_attr, node_types, edge_types = load_network(
         inp_path, return_edge_attr=True
     )
     edge_index = edge_index.to(device)

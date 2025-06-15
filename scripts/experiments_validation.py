@@ -452,7 +452,7 @@ def main() -> None:
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    wn, node_to_index, pump_names, edge_index, edge_attr = load_network(
+    wn, node_to_index, pump_names, edge_index, edge_attr, node_types, edge_types = load_network(
         args.inp, return_edge_attr=True
     )
     edge_index = edge_index.to(device)
