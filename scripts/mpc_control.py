@@ -61,8 +61,6 @@ class GNNSurrogate(torch.nn.Module):
     def __init__(self, conv_layers: List[nn.Module], fc_out: Optional[nn.Linear] = None):
         super().__init__()
         self.layers = nn.ModuleList(conv_layers)
-        self.conv1 = self.layers[0]
-        self.conv2 = self.layers[-1]
         self.fc_out = fc_out
 
     def forward(
@@ -313,8 +311,6 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
             residual=False,
             rnn_hidden_dim=rnn_hidden_dim,
         ).to(device)
-        model.conv1 = model.encoder.convs[0]
-        model.conv2 = model.encoder.convs[-1]
     elif has_rnn:
         out_dim, rnn_hidden_dim = state["decoder.weight"].shape
         model = RecurrentGNNSurrogate(
@@ -329,8 +325,6 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
             residual=False,
             rnn_hidden_dim=rnn_hidden_dim,
         ).to(device)
-        model.conv1 = model.encoder.convs[0]
-        model.conv2 = model.encoder.convs[-1]
     else:
         model = GNNSurrogate(conv_layers, fc_out=fc_layer).to(device)
 
@@ -410,7 +404,9 @@ def prepare_node_features(
     # broadcast the pump control vector to all nodes
     feats[:, 4 : 4 + num_pumps] = pump_controls.view(1, -1).expand(num_nodes, num_pumps)
 
-    feats = feats[:, : model.conv1.in_channels]
+    in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
+    if in_dim is not None:
+        feats = feats[:, :in_dim]
 
     if getattr(model, "x_mean", None) is not None:
         feats = (feats - model.x_mean) / model.x_std
@@ -742,7 +738,7 @@ def simulate_closed_loop(
     to run nearly instantly.
     """
     expected_in_dim = 4 + len(pump_names)
-    in_dim = getattr(getattr(model, "conv1", None), "in_channels", None)
+    in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
     if in_dim is None or in_dim < expected_in_dim:
         raise ValueError(
             "Loaded model was trained without pump controls - rerun train_gnn.py"
@@ -922,9 +918,10 @@ def main():
         return
 
     expected_in_dim = 4 + len(pump_names)
-    if model.conv1.in_channels != expected_in_dim:
+    in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
+    if in_dim != expected_in_dim:
         print(
-            f"Loaded surrogate expects {model.conv1.in_channels} input features "
+            f"Loaded surrogate expects {in_dim} input features "
             f"but the network requires {expected_in_dim}."
         )
         print(

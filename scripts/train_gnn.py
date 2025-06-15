@@ -90,7 +90,7 @@ class HydroConv(MessagePassing):
 
 
 class EnhancedGNNEncoder(nn.Module):
-    """GNN encoder supporting attention and residual connections."""
+    """Flexible GNN encoder supporting heterogeneous graphs and attention."""
 
     def __init__(
         self,
@@ -104,6 +104,7 @@ class EnhancedGNNEncoder(nn.Module):
         edge_dim: Optional[int] = None,
         use_attention: bool = False,
         gat_heads: int = 4,
+        share_weights: bool = False,
     ) -> None:
         super().__init__()
 
@@ -111,37 +112,33 @@ class EnhancedGNNEncoder(nn.Module):
         self.dropout = dropout
         self.residual = residual
         self.act_fn = getattr(F, activation)
+        self.share_weights = share_weights
+
+        def make_conv(in_c: int, out_c: int):
+            if use_attention:
+                return GATConv(in_c, out_c // gat_heads, heads=gat_heads, edge_dim=edge_dim)
+            if edge_dim is not None:
+                return HydroConv(in_c, out_c, edge_dim)
+            return GCNConv(in_c, out_c)
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
 
-        if use_attention:
-            self.convs.append(
-                GATConv(in_channels, hidden_channels // gat_heads, heads=gat_heads, edge_dim=edge_dim)
-            )
+        if share_weights:
+            first = make_conv(in_channels, hidden_channels)
+            self.convs.append(first)
+            shared = first if in_channels == hidden_channels else make_conv(hidden_channels, hidden_channels)
+            for _ in range(num_layers - 1):
+                self.convs.append(shared)
         else:
-            conv_cls = (
-                (lambda in_c, out_c: HydroConv(in_c, out_c, edge_dim))
-                if edge_dim is not None
-                else (lambda in_c, out_c: GCNConv(in_c, out_c))
-            )
-            self.convs.append(conv_cls(in_channels, hidden_channels))
+            for i in range(num_layers):
+                in_c = in_channels if i == 0 else hidden_channels
+                self.convs.append(make_conv(in_c, hidden_channels))
 
-        self.norms.append(LayerNorm(hidden_channels))
-
-        for _ in range(num_layers - 1):
-            if use_attention:
-                self.convs.append(
-                    GATConv(hidden_channels, hidden_channels // gat_heads, heads=gat_heads, edge_dim=edge_dim)
-                )
-            else:
-                self.convs.append(conv_cls(hidden_channels, hidden_channels))
+        for _ in range(num_layers):
             self.norms.append(LayerNorm(hidden_channels))
 
         self.fc_out = nn.Linear(hidden_channels, out_channels)
-
-        self.conv1 = self.convs[0]
-        self.conv2 = self.convs[-1]
 
     def forward(self, data: Data) -> torch.Tensor:
         x, edge_index = data.x, data.edge_index
@@ -150,13 +147,12 @@ class EnhancedGNNEncoder(nn.Module):
         edge_type = getattr(data, "edge_type", None)
         for conv, norm in zip(self.convs, self.norms):
             identity = x
-            if isinstance(conv, HydroConv) or not self.use_attention:
-                if isinstance(conv, HydroConv):
-                    x = conv(x, edge_index, edge_attr, node_type, edge_type)
-                else:
-                    x = conv(x, edge_index)
-            else:
+            if isinstance(conv, HydroConv):
+                x = conv(x, edge_index, edge_attr, node_type, edge_type)
+            elif isinstance(conv, GATConv):
                 x = conv(x, edge_index, edge_attr)
+            else:
+                x = conv(x, edge_index)
             x = self.act_fn(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = norm(x)
@@ -184,6 +180,7 @@ class RecurrentGNNSurrogate(nn.Module):
         dropout: float,
         residual: bool,
         rnn_hidden_dim: int,
+        share_weights: bool = False,
     ) -> None:
         super().__init__()
         self.encoder = EnhancedGNNEncoder(
@@ -196,6 +193,7 @@ class RecurrentGNNSurrogate(nn.Module):
             edge_dim=edge_dim,
             use_attention=use_attention,
             gat_heads=gat_heads,
+            share_weights=share_weights,
         )
         self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
         self.decoder = nn.Linear(rnn_hidden_dim, output_dim)
@@ -249,7 +247,22 @@ class RecurrentGNNSurrogate(nn.Module):
 class MultiTaskGNNSurrogate(nn.Module):
     """Recurrent GNN surrogate predicting node and edge level targets."""
 
-    def __init__(self, in_channels: int, hidden_channels: int, edge_dim: int, node_output_dim: int, edge_output_dim: int, energy_output_dim: int, num_layers: int, use_attention: bool, gat_heads: int, dropout: float, residual: bool, rnn_hidden_dim: int) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        edge_dim: int,
+        node_output_dim: int,
+        edge_output_dim: int,
+        energy_output_dim: int,
+        num_layers: int,
+        use_attention: bool,
+        gat_heads: int,
+        dropout: float,
+        residual: bool,
+        rnn_hidden_dim: int,
+        share_weights: bool = False,
+    ) -> None:
         super().__init__()
         self.encoder = EnhancedGNNEncoder(
             in_channels,
@@ -261,6 +274,7 @@ class MultiTaskGNNSurrogate(nn.Module):
             edge_dim=edge_dim,
             use_attention=use_attention,
             gat_heads=gat_heads,
+            share_weights=share_weights,
         )
         self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
         self.node_decoder = nn.Linear(rnn_hidden_dim, node_output_dim)
@@ -968,6 +982,7 @@ def main(args: argparse.Namespace):
                 dropout=args.dropout,
                 residual=args.residual,
                 rnn_hidden_dim=args.rnn_hidden_dim,
+                share_weights=args.share_weights,
             ).to(device)
         else:
             model = RecurrentGNNSurrogate(
@@ -981,6 +996,7 @@ def main(args: argparse.Namespace):
                 dropout=args.dropout,
                 residual=args.residual,
                 rnn_hidden_dim=args.rnn_hidden_dim,
+                share_weights=args.share_weights,
             ).to(device)
     else:
         sample = data_list[0]
@@ -1001,6 +1017,7 @@ def main(args: argparse.Namespace):
             edge_dim=edge_attr.shape[1],
             use_attention=args.use_attention,
             gat_heads=args.gat_heads,
+            share_weights=args.share_weights,
         ).to(device)
 
     # expose normalization stats on the model for later un-normalisation
@@ -1299,6 +1316,11 @@ if __name__ == "__main__":
         "--residual",
         action="store_true",
         help="Use residual connections",
+    )
+    parser.add_argument(
+        "--share-weights",
+        action="store_true",
+        help="Reuse the same convolution weights across GNN layers",
     )
     parser.add_argument(
         "--rnn-hidden-dim",
