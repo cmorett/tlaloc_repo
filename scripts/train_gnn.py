@@ -22,7 +22,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from models.loss_utils import compute_mass_balance_loss
+from models.loss_utils import (
+    compute_mass_balance_loss,
+    pressure_headloss_consistency_loss,
+)
 
 
 class HydroConv(MessagePassing):
@@ -641,16 +644,19 @@ def train_sequence(
     loader: TorchLoader,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
+    edge_attr_phys: torch.Tensor,
     node_type: Optional[torch.Tensor],
     edge_type: Optional[torch.Tensor],
     optimizer,
     device,
     physics_loss: bool = False,
+    pressure_loss: bool = False,
     w_mass: float = 0.5,
-) -> tuple[float, float, float, float, float]:
+    w_head: float = 0.1,
+) -> tuple[float, float, float, float, float, float]:
     model.train()
     total_loss = 0.0
-    node_total = edge_total = energy_total = mass_total = 0.0
+    node_total = edge_total = energy_total = mass_total = head_total = 0.0
     node_count = int(edge_index.max()) + 1
     for X_seq, Y_seq in loader:
         X_seq = X_seq.to(device)
@@ -671,16 +677,28 @@ def train_sequence(
             loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
             loss_energy = F.mse_loss(preds['pump_energy'], Y_seq['pump_energy'].to(device))
             if physics_loss:
+                flows_mb = preds['edge_outputs'].squeeze(-1).permute(2, 0, 1)
                 mass_loss = compute_mass_balance_loss(
-                    preds['edge_outputs'].squeeze(-1),
+                    flows_mb,
                     edge_index.to(device),
                     node_count,
                 )
             else:
                 mass_loss = torch.tensor(0.0, device=device)
+            if pressure_loss:
+                head_loss = pressure_headloss_consistency_loss(
+                    preds['node_outputs'][..., 0],
+                    preds['edge_outputs'].squeeze(-1),
+                    edge_index.to(device),
+                    edge_attr_phys.to(device),
+                )
+            else:
+                head_loss = torch.tensor(0.0, device=device)
             loss = loss_node + 0.5 * loss_edge + 0.1 * loss_energy
             if physics_loss:
                 loss = loss + w_mass * mass_loss
+            if pressure_loss:
+                loss = loss + w_head * head_loss
         else:
             Y_seq = Y_seq.to(device)
             loss_node = loss_edge = loss_energy = mass_loss = torch.tensor(0.0, device=device)
@@ -693,6 +711,7 @@ def train_sequence(
         edge_total += loss_edge.item() * X_seq.size(0)
         energy_total += loss_energy.item() * X_seq.size(0)
         mass_total += mass_loss.item() * X_seq.size(0)
+        head_total += head_loss.item() * X_seq.size(0)
     denom = len(loader.dataset)
     return (
         total_loss / denom,
@@ -700,6 +719,7 @@ def train_sequence(
         edge_total / denom,
         energy_total / denom,
         mass_total / denom,
+        head_total / denom,
     )
 
 
@@ -708,15 +728,18 @@ def evaluate_sequence(
     loader: TorchLoader,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
+    edge_attr_phys: torch.Tensor,
     node_type: Optional[torch.Tensor],
     edge_type: Optional[torch.Tensor],
     device,
     physics_loss: bool = False,
+    pressure_loss: bool = False,
     w_mass: float = 0.5,
+    w_head: float = 0.1,
 ) -> tuple[float, float, float, float, float]:
     model.eval()
     total_loss = 0.0
-    node_total = edge_total = energy_total = mass_total = 0.0
+    node_total = edge_total = energy_total = mass_total = head_total = 0.0
     node_count = int(edge_index.max()) + 1
     with torch.no_grad():
         for X_seq, Y_seq in loader:
@@ -740,16 +763,28 @@ def evaluate_sequence(
                     Y_seq['pump_energy'].to(device)
                 )
                 if physics_loss:
+                    flows_mb = preds['edge_outputs'].squeeze(-1).permute(2, 0, 1)
                     mass_loss = compute_mass_balance_loss(
-                        preds['edge_outputs'].squeeze(-1),
+                        flows_mb,
                         edge_index.to(device),
                         node_count,
                     )
                 else:
                     mass_loss = torch.tensor(0.0, device=device)
+                if pressure_loss:
+                    head_loss = pressure_headloss_consistency_loss(
+                        preds['node_outputs'][..., 0],
+                        preds['edge_outputs'].squeeze(-1),
+                        edge_index.to(device),
+                        edge_attr_phys.to(device),
+                    )
+                else:
+                    head_loss = torch.tensor(0.0, device=device)
                 loss = loss_node + 0.5 * loss_edge + 0.1 * loss_energy
                 if physics_loss:
                     loss = loss + w_mass * mass_loss
+                if pressure_loss:
+                    loss = loss + w_head * head_loss
             else:
                 Y_seq = Y_seq.to(device)
                 loss_node = loss_edge = loss_energy = mass_loss = torch.tensor(0.0, device=device)
@@ -759,6 +794,7 @@ def evaluate_sequence(
             edge_total += loss_edge.item() * X_seq.size(0)
             energy_total += loss_energy.item() * X_seq.size(0)
             mass_total += mass_loss.item() * X_seq.size(0)
+            head_total += head_loss.item() * X_seq.size(0)
     denom = len(loader.dataset)
     return (
         total_loss / denom,
@@ -766,6 +802,7 @@ def evaluate_sequence(
         edge_total / denom,
         energy_total / denom,
         mass_total / denom,
+        head_total / denom,
     )
 
 # Resolve important directories relative to the repository root so that training
@@ -783,6 +820,7 @@ def main(args: argparse.Namespace):
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     edge_attr = build_edge_attr(wn, edge_index_np)
+    edge_attr_raw = torch.tensor(edge_attr, dtype=torch.float32)
     edge_types = build_edge_type(wn, edge_index_np)
     node_types = build_node_type(wn)
     edge_mean, edge_std = compute_edge_attr_stats(edge_attr)
@@ -1003,24 +1041,32 @@ def main(args: argparse.Namespace):
                     loader,
                     data_ds.edge_index,
                     data_ds.edge_attr,
+                    edge_attr_raw,
                     data_ds.node_type,
                     data_ds.edge_type,
                     optimizer,
                     device,
                     physics_loss=args.physics_loss,
+                    pressure_loss=args.pressure_loss,
+                    w_mass=args.w_mass,
+                    w_head=args.w_head,
                 )
                 loss = loss_tuple[0]
-                node_l, edge_l, energy_l, mass_l = loss_tuple[1:]
+                node_l, edge_l, energy_l, mass_l, head_l = loss_tuple[1:]
                 if val_loader is not None:
                     val_tuple = evaluate_sequence(
                         model,
                         val_loader,
                         data_ds.edge_index,
                         data_ds.edge_attr,
+                        edge_attr_raw,
                         data_ds.node_type,
                         data_ds.edge_type,
                         device,
                         physics_loss=args.physics_loss,
+                        pressure_loss=args.pressure_loss,
+                        w_mass=args.w_mass,
+                        w_head=args.w_head,
                     )
                     val_loss = val_tuple[0]
                 else:
@@ -1036,9 +1082,13 @@ def main(args: argparse.Namespace):
             losses.append((loss, val_loss))
             f.write(f"{epoch},{loss:.6f},{val_loss:.6f},{curr_lr:.6e}\n")
             if args.physics_loss and seq_mode:
-                print(
-                    f"Epoch {epoch}: node={node_l:.3f}, edge={edge_l:.3f}, energy={energy_l:.3f}, mass={mass_l:.3f}"
+                msg = (
+                    f"Epoch {epoch}: node={node_l:.3f}, edge={edge_l:.3f}, "
+                    f"energy={energy_l:.3f}, mass={mass_l:.3f}"
                 )
+                if args.pressure_loss:
+                    msg += f", head={head_l:.3f}"
+                print(msg)
             if val_loss < best_val - 1e-6:
                 best_val = val_loss
                 patience = 0
@@ -1290,6 +1340,23 @@ if __name__ == "__main__":
         "--physics_loss",
         action="store_true",
         help="Add mass conservation loss to training",
+    )
+    parser.add_argument(
+        "--pressure_loss",
+        action="store_true",
+        help="Add pressure-headloss consistency penalty",
+    )
+    parser.add_argument(
+        "--w_mass",
+        type=float,
+        default=0.5,
+        help="Weight of the mass conservation loss term",
+    )
+    parser.add_argument(
+        "--w_head",
+        type=float,
+        default=0.1,
+        help="Weight of the head loss consistency term",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--run-name", default="", help="Optional run name")
