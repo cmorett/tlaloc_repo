@@ -51,6 +51,10 @@ scripts automatically compute these type indices from the EPANET network and
 store them in ``edge_type.npy``.  Training and MPC control handle these
 additional attributes transparently.
 
+Optionally, the same convolution layer can be reused for all message passing
+steps by passing ``--share-weights`` to ``train_gnn.py``. This reduces the
+number of parameters and can speed up optimisation.
+
 Example usage:
 
 ```bash

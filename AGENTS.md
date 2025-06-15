@@ -9,7 +9,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
 - `CTown.inp` – EPANET input file for the C‑Town network.
 - `scripts/`
   - `data_generation.py` – create randomized simulation scenarios and produce training datasets.
-  - `train_gnn.py` – train a two-layer GCN (`SimpleGCN`) on generated data.
+  - `train_gnn.py` – train a graph neural network surrogate on generated data.
   - `mpc_control.py` – run gradient-based MPC using the trained surrogate.
   - `experiments_validation.py` – validate the surrogate, compare baselines and aggregate results.
 - `models/` – storage location for trained weights (`gnn_surrogate.pth`).
@@ -37,7 +37,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
 ## Architecture Overview
 
 1. **Data Generation** – `scripts/data_generation.py` executes multiple EPANET simulations with randomized pump states and scaled base demands. It writes node feature matrices, labels for the next hour pressure and chlorine, and the graph `edge_index` to the `data/` directory.
-2. **Surrogate Training** – `scripts/train_gnn.py` loads the generated data, builds `torch_geometric.data.Data` objects and trains a simple two-layer GCN. NaNs in the features are replaced with zero to avoid invalid losses. Gradients are clipped to keep the training stable. Scatter plots comparing predictions to EPANET are saved under `plots/`.
+2. **Surrogate Training** – `scripts/train_gnn.py` loads the generated data and trains a configurable GNN encoder. The model supports heterogeneous node and edge types, optional attention and residual connections. NaNs in the features are replaced with zero to avoid invalid losses. Gradients are clipped to keep the training stable. Scatter plots comparing predictions to EPANET are saved under `plots/`.
 3. **MPC Controller** – `scripts/mpc_control.py` loads the trained surrogate (`GNNSurrogate`) and repeatedly optimizes pump speeds via gradient descent. The controller can either propagate the network state entirely through the surrogate or periodically synchronize with EPANET for ground truth. Simulation history is written to `data/mpc_history.csv` and a summary JSON file to `logs/`.
 4. **Experiment Validation** – `scripts/experiments_validation.py` evaluates the surrogate on prerecorded EPANET scenarios and compares the MPC controller against two baselines. Results are aggregated into CSV files under `data/` and plots under `plots/`. Validation metrics are stored in `logs/surrogate_metrics.json`.
 

@@ -16,7 +16,7 @@ class DummyConv(torch.nn.Module):
 class DummyModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = DummyConv(4)  # only basic features
+        self.layers = torch.nn.ModuleList([DummyConv(4)])  # only basic features
     def forward(self, x, edge_index, edge_attr=None):
         return torch.zeros(x.size(0), 2)
 
