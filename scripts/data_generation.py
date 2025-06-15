@@ -460,12 +460,14 @@ def build_dataset(
 
 def build_edge_index(
     wn: wntr.network.WaterNetworkModel,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Return directed edge index and normalized edge attributes."""
+
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return directed edge index, edge attributes and edge types."""
 
     node_index_map = {name: idx for idx, name in enumerate(wn.node_name_list)}
     edges: List[List[int]] = []
     attrs: List[List[float]] = []
+    types: List[int] = []
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
         i1 = node_index_map[link.start_node.name]
@@ -477,6 +479,15 @@ def build_edge_index(
         rough = getattr(link, "roughness", 0.0) or 0.0
         attrs.append([length, diam, rough])
         attrs.append([length, diam, rough])
+        if link_name in wn.pipe_name_list:
+            t = 0
+        elif link_name in wn.pump_name_list:
+            t = 1
+        elif link_name in wn.valve_name_list:
+            t = 2
+        else:
+            t = 0
+        types.extend([t, t])
 
     edge_index = np.array(edges, dtype=np.int64).T
     edge_attr = np.array(attrs, dtype=np.float32)
@@ -486,7 +497,8 @@ def build_edge_index(
     edge_attr = scaler.fit_transform(edge_attr)
 
     assert edge_index.shape[0] == 2
-    return edge_index, edge_attr
+    edge_type = np.array(types, dtype=np.int64)
+    return edge_index, edge_attr, edge_type
 
 
 def main() -> None:
@@ -551,7 +563,7 @@ def main() -> None:
         X_val, Y_val = build_dataset(val_res, wn_template)
         X_test, Y_test = build_dataset(test_res, wn_template)
 
-    edge_index, edge_attr = build_edge_index(wn_template)
+    edge_index, edge_attr, edge_type = build_edge_index(wn_template)
 
     out_dir = Path(args.output_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -568,6 +580,7 @@ def main() -> None:
         np.save(os.path.join(out_dir, "scenario_test.npy"), test_labels)
     np.save(os.path.join(out_dir, "edge_index.npy"), edge_index)
     np.save(os.path.join(out_dir, "edge_attr.npy"), edge_attr)
+    np.save(os.path.join(out_dir, "edge_type.npy"), edge_type)
 
     with open(os.path.join(out_dir, "train_results_list.pkl"), "wb") as f:
         pickle.dump(train_res, f)

@@ -23,7 +23,7 @@ class DummyModel(torch.nn.Module):
 
 def test_simulate_closed_loop_requires_pump_inputs():
     device = torch.device("cpu")
-    wn, node_to_index, pump_names, edge_index, edge_attr = load_network("CTown.inp", return_edge_attr=True)
+    wn, node_to_index, pump_names, edge_index, edge_attr, node_types, edge_types = load_network("CTown.inp", return_edge_attr=True)
     model = DummyModel().to(device)
     with pytest.raises(ValueError):
         simulate_closed_loop(
