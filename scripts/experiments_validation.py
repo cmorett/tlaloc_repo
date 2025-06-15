@@ -449,15 +449,27 @@ def main() -> None:
         help="Hours between EPANET synchronizations",
     )
     parser.add_argument("--run-name", default="", help="Optional run name")
+    parser.add_argument(
+        "--no-jit",
+        action="store_true",
+        help="Disable TorchScript compilation of the surrogate",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    wn, node_to_index, pump_names, edge_index, edge_attr, node_types, edge_types = load_network(
-        args.inp, return_edge_attr=True
-    )
+    (
+        wn,
+        node_to_index,
+        pump_names,
+        edge_index,
+        edge_attr,
+        node_types,
+        edge_types,
+        feature_template,
+    ) = load_network(args.inp, return_edge_attr=True, return_features=True)
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device)
-    model = load_surrogate_model(device, path=args.model)
+    model = load_surrogate_model(device, path=args.model, use_jit=not args.no_jit)
 
     if os.path.exists(args.test_pkl):
         with open(args.test_pkl, "rb") as f:
@@ -474,6 +486,9 @@ def main() -> None:
         model,
         edge_index,
         edge_attr,
+        feature_template.to(device),
+        torch.tensor(node_types, dtype=torch.long, device=device),
+        torch.tensor(edge_types, dtype=torch.long, device=device),
         args.horizon,
         args.iterations,
         node_to_index,

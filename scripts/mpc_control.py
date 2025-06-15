@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import warnings
 from torch_geometric.nn import GCNConv
 from sklearn.preprocessing import MinMaxScaler
 # Import ``HydroConv`` from the training module located in the same
@@ -72,7 +73,7 @@ class GNNSurrogate(torch.nn.Module):
         edge_type: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         for i, conv in enumerate(self.layers):
-            if isinstance(conv, HydroConv):
+            if hasattr(conv, "edge_mlps"):
                 x = conv(x, edge_index, edge_attr, node_type, edge_type)
             else:
                 x = conv(x, edge_index)
@@ -191,7 +192,11 @@ def load_network(
 
 
 
-def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GNNSurrogate:
+def load_surrogate_model(
+    device: torch.device,
+    path: Optional[str] = None,
+    use_jit: bool = True,
+) -> GNNSurrogate:
     """Load trained GNN surrogate weights.
 
     Parameters
@@ -400,6 +405,15 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
 
     model.eval()
+
+    if use_jit:
+        try:
+            # Compile with TorchScript for efficient inference
+            scripted = torch.jit.script(model)
+            model = torch.jit.optimize_for_inference(scripted)
+        except Exception as e:  # pragma: no cover - optional optimisation
+            warnings.warn(f"TorchScript compilation failed: {e}")
+
     return model
 
 
@@ -412,8 +426,22 @@ def prepare_node_features(
 ) -> torch.Tensor:
     """Assemble node features using precomputed static attributes."""
     num_nodes = template.size(0)
-    num_pumps = pump_controls.numel()
+    num_pumps = pump_controls.size(-1)
     pump_controls = pump_controls.to(dtype=torch.float32, device=template.device)
+
+    if pressures.dim() == 2:
+        batch_size = pressures.size(0)
+        feats = template.expand(batch_size, num_nodes, template.size(1)).clone()
+        feats[:, :, 1] = pressures
+        feats[:, :, 2] = chlorine
+        feats[:, :, 4 : 4 + num_pumps] = pump_controls.view(batch_size, 1, -1).expand(batch_size, num_nodes, num_pumps)
+        in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
+        if in_dim is not None:
+            feats = feats[:, :, :in_dim]
+        if getattr(model, "x_mean", None) is not None:
+            feats = (feats - model.x_mean.view(1, 1, -1)) / model.x_std.view(1, 1, -1)
+        return feats.view(batch_size * num_nodes, -1)
+
     feats = template.clone()
     feats[:, 1] = pressures
     feats[:, 2] = chlorine
@@ -647,31 +675,77 @@ def propagate_with_surrogate(
     The current state ``pressures``/``chlorine`` is advanced through the
     sequence of pump controls ``control_seq`` without running EPANET.  The
     function returns dictionaries for the next pressures and chlorine levels
-    after applying the entire sequence.
+    after applying the entire sequence.  ``pressures`` and ``chlorine`` can be
+    either dictionaries for a single scenario or lists of dictionaries for
+    batched evaluation:
+
+    ``pressures = [dict(...), dict(...)]``
+    ``chlorine = [dict(...), dict(...)]``
     """
 
-    cur_p = torch.tensor([pressures[n] for n in wn.node_name_list], device=device)
-    cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], device=device)
+    single = isinstance(pressures, dict)
+    if single:
+        cur_p = torch.tensor([pressures[n] for n in wn.node_name_list], device=device)
+        cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], device=device)
+        b_edge_index = edge_index
+        b_edge_attr = edge_attr
+        b_node_type = node_type
+        b_edge_type = edge_type
+        batch_size = 1
+    else:
+        batch_size = len(pressures)
+        cur_p = torch.stack([
+            torch.tensor([p[n] for n in wn.node_name_list], device=device)
+            for p in pressures
+        ])
+        cur_c = torch.stack([
+            torch.tensor([c[n] for n in wn.node_name_list], device=device)
+            for c in chlorine
+        ])
+        num_nodes = feature_template.size(0)
+        E = edge_index.size(1)
+        b_edge_index = edge_index.repeat(1, batch_size) + (
+            torch.arange(batch_size, device=device).repeat_interleave(E) * num_nodes
+        )
+        b_edge_attr = edge_attr.repeat(batch_size, 1) if edge_attr is not None else None
+        b_node_type = node_type.repeat(batch_size) if node_type is not None else None
+        b_edge_type = edge_type.repeat(batch_size) if edge_type is not None else None
+
     with torch.no_grad():
         for u in control_seq:
-            x = prepare_node_features(feature_template, cur_p, cur_c, u, model)
-            if hasattr(model, "rnn"):
-                seq_in = x.unsqueeze(0).unsqueeze(0)
-                pred = model(seq_in, edge_index, edge_attr, node_type, edge_type)
-                if isinstance(pred, dict):
-                    pred = pred.get("node_outputs")[0, 0]
+            if u.dim() == 1:
+                u_in = u.view(1, -1).expand(batch_size, -1)
             else:
-                pred = model(x, edge_index, edge_attr, node_type, edge_type)
+                u_in = u
+            x = prepare_node_features(feature_template, cur_p, cur_c, u_in, model)
+            if hasattr(model, "rnn"):
+                seq_in = x.view(batch_size, -1, feature_template.size(0), x.size(-1))
+                seq_in = seq_in[:, None]
+                pred = model(seq_in, b_edge_index, b_edge_attr, b_node_type, b_edge_type)
+                if isinstance(pred, dict):
+                    pred = pred.get("node_outputs")[:, 0]
+            else:
+                pred = model(x, b_edge_index, b_edge_attr, b_node_type, b_edge_type)
                 if isinstance(pred, dict):
                     pred = pred.get("node_outputs")
             if getattr(model, "y_mean", None) is not None:
                 pred = pred * model.y_std + model.y_mean
             assert not torch.isnan(pred).any(), "NaN prediction"
-            cur_p = pred[:, 0]
-            cur_c = pred[:, 1]
-    out_p = {n: float(cur_p[i]) for i, n in enumerate(wn.node_name_list)}
-    out_c = {n: float(cur_c[i]) for i, n in enumerate(wn.node_name_list)}
-    return out_p, out_c
+            pred = pred.view(batch_size, feature_template.size(0), -1)
+            cur_p = pred[:, :, 0]
+            cur_c = pred[:, :, 1]
+
+    if single:
+        out_p = {n: float(cur_p[0, i]) for i, n in enumerate(wn.node_name_list)}
+        out_c = {n: float(cur_c[0, i]) for i, n in enumerate(wn.node_name_list)}
+        return out_p, out_c
+
+    out_ps = []
+    out_cs = []
+    for b in range(batch_size):
+        out_ps.append({n: float(cur_p[b, i]) for i, n in enumerate(wn.node_name_list)})
+        out_cs.append({n: float(cur_c[b, i]) for i, n in enumerate(wn.node_name_list)})
+    return out_ps, out_cs
 
 
 def plot_single_run(df: pd.DataFrame, run_name: str) -> None:
@@ -900,6 +974,11 @@ def main():
         default=24,
         help="Hours between EPANET synchronizations",
     )
+    parser.add_argument(
+        "--no-jit",
+        action="store_true",
+        help="Disable TorchScript compilation of the surrogate",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -919,7 +998,7 @@ def main():
     node_types = torch.tensor(node_types, dtype=torch.long, device=device)
     edge_types = torch.tensor(edge_types, dtype=torch.long, device=device)
     try:
-        model = load_surrogate_model(device)
+        model = load_surrogate_model(device, use_jit=not args.no_jit)
     except FileNotFoundError as e:
         print(e)
         return

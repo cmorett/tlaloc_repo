@@ -18,7 +18,7 @@ def test_load_surrogate_renames_old_keys(tmp_path):
     }
     path = tmp_path / 'model_old.pth'
     torch.save(state, path)
-    model = load_surrogate_model(torch.device('cpu'), path=str(path))
+    model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
     assert model.layers[0].out_channels == 4
     assert model.layers[-1].out_channels == 2
 
@@ -33,7 +33,7 @@ def test_load_surrogate_detects_nan(tmp_path):
     path = tmp_path / 'model_nan.pth'
     torch.save(state, path)
     with pytest.raises(ValueError):
-        load_surrogate_model(torch.device('cpu'), path=str(path))
+        load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
 
 
 def test_load_surrogate_selects_latest(tmp_path, monkeypatch):
@@ -61,7 +61,7 @@ def test_load_surrogate_selects_latest(tmp_path, monkeypatch):
     # Ensure function searches within our temporary repository
     monkeypatch.setattr('scripts.mpc_control.REPO_ROOT', tmp_path)
 
-    model = load_surrogate_model(torch.device('cpu'))
+    model = load_surrogate_model(torch.device('cpu'), use_jit=False)
     assert model.layers[0].out_channels == 2
 
 
@@ -85,5 +85,5 @@ def test_load_surrogate_handles_multitask_norm(tmp_path):
         y_mean_energy=np.zeros(1),
         y_std_energy=np.ones(1),
     )
-    model = load_surrogate_model(torch.device('cpu'), path=str(path))
+    model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
     assert model.y_mean is not None
