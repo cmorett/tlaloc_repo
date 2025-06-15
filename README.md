@@ -140,6 +140,10 @@ Once the surrogate model is trained you can run gradient-based MPC using
 python scripts/mpc_control.py --horizon 6 --iterations 50 --feedback-interval 24
 ```
 
+Pass ``--profile`` to print the runtime of each MPC optimisation step. The
+controller now builds node features on the GPU to minimise Python overhead.
+```
+
 By default the controller loads the most recent ``.pth`` file found in the
 ``models`` directory so retraining will automatically use the newest weights.
 

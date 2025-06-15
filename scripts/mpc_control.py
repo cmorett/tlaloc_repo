@@ -83,13 +83,20 @@ class GNNSurrogate(torch.nn.Module):
         return x
 
 
-def load_network(inp_file: str, return_edge_attr: bool = False):
+def load_network(
+    inp_file: str,
+    return_edge_attr: bool = False,
+    return_features: bool = False,
+):
     """Load EPANET network and build edge index for PyG.
 
     Parameters
     ----------
     return_edge_attr : bool, optional
         If ``True`` also return the normalized edge attributes.
+    return_features : bool, optional
+        If ``True`` also return a static node feature tensor used for fast MPC
+        simulation.
     """
     wn = wntr.network.WaterNetworkModel(inp_file)
     wn.options.quality.parameter = "CHEMICAL"
@@ -124,9 +131,41 @@ def load_network(inp_file: str, return_edge_attr: bool = False):
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
     node_types = build_node_type(wn)
     edge_types = torch.tensor(etypes, dtype=torch.long)
+
+    static_feats = None
+    if return_features:
+        num_nodes = len(wn.node_name_list)
+        num_pumps = len(wn.pump_name_list)
+        static_feats = torch.zeros(num_nodes, 4 + num_pumps, dtype=torch.float32)
+        for name, idx in node_to_index.items():
+            node = wn.get_node(name)
+            if name in wn.junction_name_list:
+                demand = node.demand_timeseries_list[0].base_value
+            else:
+                demand = 0.0
+            if name in wn.junction_name_list or name in wn.tank_name_list:
+                elev = node.elevation
+            elif name in wn.reservoir_name_list:
+                elev = node.base_head
+            else:
+                elev = node.head
+            static_feats[idx, 0] = float(demand)
+            static_feats[idx, 3] = float(elev or 0.0)
+
     if return_edge_attr:
         edge_attr = build_edge_attr(wn, edge_index.numpy())
         edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
+        if return_features:
+            return (
+                wn,
+                node_to_index,
+                wn.pump_name_list,
+                edge_index,
+                edge_attr,
+                node_types,
+                edge_types,
+                static_feats,
+            )
         return (
             wn,
             node_to_index,
@@ -136,6 +175,18 @@ def load_network(inp_file: str, return_edge_attr: bool = False):
             node_types,
             edge_types,
         )
+
+    if return_features:
+        return (
+            wn,
+            node_to_index,
+            wn.pump_name_list,
+            edge_index,
+            node_types,
+            edge_types,
+            static_feats,
+        )
+
     return wn, node_to_index, wn.pump_name_list, edge_index, node_types, edge_types
 
 
@@ -213,6 +264,8 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
                 parts = k.split(".")
                 idx = int(parts[2])
                 rest = ".".join(parts[3:])
+                if rest.startswith("lin.0."):
+                    rest = "lin." + rest.split(".", 2)[2]
                 base_key = f"layers.{idx}.{rest}"
                 renamed[base_key] = v
                 if idx == 0:
@@ -351,63 +404,23 @@ def load_surrogate_model(device: torch.device, path: Optional[str] = None) -> GN
 
 
 def prepare_node_features(
-    wn: wntr.network.WaterNetworkModel,
-    pressures: Dict[str, float],
-    chlorine: Dict[str, float],
+    template: torch.Tensor,
+    pressures: torch.Tensor,
+    chlorine: torch.Tensor,
     pump_controls: torch.Tensor,
-    node_to_index: Dict[str, int],
-    pump_names: List[str],
-    device: torch.device,
     model: GNNSurrogate,
 ) -> torch.Tensor:
-    """Build node features for the surrogate model.
-
-    The function always constructs the full set of features, including pump
-    control inputs.  However, the loaded surrogate model might have been trained
-    without pump controls.  To accomodate both cases, the returned tensor is
-    truncated to ``in_dim`` columns.
-    """
-
-    num_nodes = len(wn.node_name_list)
-    num_pumps = len(pump_names)
-
-    # ``pump_controls`` is a tensor that will be optimised by the MPC loop.
-    # Building the feature matrix directly with PyTorch tensors preserves the
-    # gradient through to the cost function.
-    pump_controls = pump_controls.to(dtype=torch.float32, device=device)
-    feats = torch.zeros((num_nodes, 4 + num_pumps), dtype=torch.float32, device=device)
-
-    for name, idx in node_to_index.items():
-        node = wn.get_node(name)
-        if name in wn.junction_name_list:
-            demand = node.demand_timeseries_list[0].base_value
-        else:
-            demand = 0.0
-        if name in wn.junction_name_list or name in wn.tank_name_list:
-            elev = node.elevation
-        elif name in wn.reservoir_name_list:
-            # ``Reservoir`` objects expose ``head`` as ``None`` and store the
-            # hydraulic head in ``base_head``. Using ``head`` directly would
-            # produce ``NaN`` feature values which later lead to ``NaN``
-            # predictions during MPC optimisation.
-            elev = node.base_head
-        else:
-            elev = node.head
-        if elev is None:
-            elev = 0.0
-
-        feats[idx, 0] = float(demand)
-        feats[idx, 1] = float(pressures.get(name, 0.0))
-        feats[idx, 2] = float(chlorine.get(name, 0.0))
-        feats[idx, 3] = float(elev)
-
-    # broadcast the pump control vector to all nodes
+    """Assemble node features using precomputed static attributes."""
+    num_nodes = template.size(0)
+    num_pumps = pump_controls.numel()
+    pump_controls = pump_controls.to(dtype=torch.float32, device=template.device)
+    feats = template.clone()
+    feats[:, 1] = pressures
+    feats[:, 2] = chlorine
     feats[:, 4 : 4 + num_pumps] = pump_controls.view(1, -1).expand(num_nodes, num_pumps)
-
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
     if in_dim is not None:
         feats = feats[:, :in_dim]
-
     if getattr(model, "x_mean", None) is not None:
         feats = (feats - model.x_mean) / model.x_std
     return feats
@@ -421,11 +434,10 @@ def compute_mpc_cost(
     edge_attr: torch.Tensor,
     node_type: torch.Tensor,
     edge_type: torch.Tensor,
-    pressures: Dict[str, float],
-    chlorine: Dict[str, float],
+    feature_template: torch.Tensor,
+    pressures: torch.Tensor,
+    chlorine: torch.Tensor,
     horizon: int,
-    node_to_index: Dict[str, int],
-    pump_names: List[str],
     device: torch.device,
     Pmin: float,
     Cmin: float,
@@ -437,22 +449,13 @@ def compute_mpc_cost(
     penalized cubically to strongly discourage operating below the specified
     minimum thresholds.
     """
-    cur_p = dict(pressures)
-    cur_c = dict(chlorine)
+    cur_p = pressures.to(device)
+    cur_c = chlorine.to(device)
     total_cost = torch.tensor(0.0, device=device)
     smoothness_penalty = torch.tensor(0.0, device=device)
 
     for t in range(horizon):
-        x = prepare_node_features(
-            wn,
-            cur_p,
-            cur_c,
-            u[t],
-            node_to_index,
-            pump_names,
-            device,
-            model,
-        )
+        x = prepare_node_features(feature_template, cur_p, cur_c, u[t], model)
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
             pred = model(seq_in, edge_index, edge_attr, node_type, edge_type)
@@ -499,9 +502,8 @@ def compute_mpc_cost(
             smoothness_penalty = smoothness_penalty + torch.sum((u[t] - u[t - 1]) ** 2)
 
         # update dictionaries for next step
-        for idx, name in enumerate(wn.node_name_list):
-            cur_p[name] = pred_p[idx].item()
-            cur_c[name] = pred_c[idx].item()
+        cur_p = pred_p
+        cur_c = pred_c
 
     total_cost = total_cost + w_s * smoothness_penalty
 
@@ -515,16 +517,16 @@ def run_mpc_step(
     edge_attr: torch.Tensor,
     node_type: torch.Tensor,
     edge_type: torch.Tensor,
-    pressures: Dict[str, float],
-    chlorine: Dict[str, float],
+    feature_template: torch.Tensor,
+    pressures: torch.Tensor,
+    chlorine: torch.Tensor,
     horizon: int,
     iterations: int,
-    node_to_index: Dict[str, int],
-    pump_names: List[str],
     device: torch.device,
     Pmin: float,
     Cmin: float,
     u_warm: Optional[torch.Tensor] = None,
+    profile: bool = False,
 ) -> torch.Tensor:
     """Optimize pump controls for one hour using gradient-based MPC.
 
@@ -539,7 +541,10 @@ def run_mpc_step(
     u_warm : torch.Tensor, optional
         Previous control sequence to warm start the optimization.
     """
-    num_pumps = len(pump_names)
+    num_pumps = feature_template.size(1) - 4
+    start_time = time.time() if profile else None
+    pressures = pressures.to(device)
+    chlorine = chlorine.to(device)
     if u_warm is not None and u_warm.shape[0] >= horizon:
         init = torch.cat([u_warm[1:horizon], u_warm[horizon - 1 : horizon]], dim=0)
     else:
@@ -571,11 +576,10 @@ def run_mpc_step(
             edge_attr,
             node_type,
             edge_type,
+            feature_template,
             pressures,
             chlorine,
             horizon,
-            node_to_index,
-            pump_names,
             device,
             Pmin,
             Cmin,
@@ -600,11 +604,10 @@ def run_mpc_step(
             edge_attr,
             node_type,
             edge_type,
+            feature_template,
             pressures,
             chlorine,
             horizon,
-            node_to_index,
-            pump_names,
             device,
             Pmin,
             Cmin,
@@ -619,6 +622,10 @@ def run_mpc_step(
     if hasattr(model, "rnn") and not prev_training:
         model.eval()
 
+    if profile and start_time is not None:
+        end_time = time.time()
+        print(f"[profile] run_mpc_step: {end_time - start_time:.4f}s")
+
     return u.detach()
 
 
@@ -629,11 +636,10 @@ def propagate_with_surrogate(
     edge_attr: torch.Tensor,
     node_type: torch.Tensor,
     edge_type: torch.Tensor,
+    feature_template: torch.Tensor,
     pressures: Dict[str, float],
     chlorine: Dict[str, float],
     control_seq: torch.Tensor,
-    node_to_index: Dict[str, int],
-    pump_names: List[str],
     device: torch.device,
 ) -> tuple[Dict[str, float], Dict[str, float]]:
     """Propagate the network state using the surrogate model.
@@ -644,20 +650,11 @@ def propagate_with_surrogate(
     after applying the entire sequence.
     """
 
-    cur_p = dict(pressures)
-    cur_c = dict(chlorine)
+    cur_p = torch.tensor([pressures[n] for n in wn.node_name_list], device=device)
+    cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], device=device)
     with torch.no_grad():
         for u in control_seq:
-            x = prepare_node_features(
-                wn,
-                cur_p,
-                cur_c,
-                u,
-                node_to_index,
-                pump_names,
-                device,
-                model,
-            )
+            x = prepare_node_features(feature_template, cur_p, cur_c, u, model)
             if hasattr(model, "rnn"):
                 seq_in = x.unsqueeze(0).unsqueeze(0)
                 pred = model(seq_in, edge_index, edge_attr, node_type, edge_type)
@@ -670,11 +667,11 @@ def propagate_with_surrogate(
             if getattr(model, "y_mean", None) is not None:
                 pred = pred * model.y_std + model.y_mean
             assert not torch.isnan(pred).any(), "NaN prediction"
-            pred_p = pred[:, 0].tolist()
-            pred_c = pred[:, 1].tolist()
-            cur_p = {n: float(pred_p[i]) for i, n in enumerate(wn.node_name_list)}
-            cur_c = {n: float(pred_c[i]) for i, n in enumerate(wn.node_name_list)}
-    return cur_p, cur_c
+            cur_p = pred[:, 0]
+            cur_c = pred[:, 1]
+    out_p = {n: float(cur_p[i]) for i, n in enumerate(wn.node_name_list)}
+    out_c = {n: float(cur_c[i]) for i, n in enumerate(wn.node_name_list)}
+    return out_p, out_c
 
 
 def plot_single_run(df: pd.DataFrame, run_name: str) -> None:
@@ -720,6 +717,9 @@ def simulate_closed_loop(
     model: GNNSurrogate,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
+    feature_template: torch.Tensor,
+    node_types: torch.Tensor,
+    edge_types: torch.Tensor,
     horizon: int,
     iterations: int,
     node_to_index: Dict[str, int],
@@ -738,8 +738,8 @@ def simulate_closed_loop(
     to run nearly instantly.
     """
     expected_in_dim = 4 + len(pump_names)
-    in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
-    if in_dim is None or in_dim < expected_in_dim:
+    in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", expected_in_dim)
+    if in_dim < expected_in_dim:
         raise ValueError(
             "Loaded model was trained without pump controls - rerun train_gnn.py"
         )
@@ -769,14 +769,13 @@ def simulate_closed_loop(
             model,
             edge_index,
             edge_attr,
-            node_type,
-            edge_type,
-            pressures,
-            chlorine,
+            node_types,
+            edge_types,
+            feature_template,
+            torch.tensor([pressures[n] for n in wn.node_name_list], device=device),
+            torch.tensor([chlorine[n] for n in wn.node_name_list], device=device),
             horizon,
             iterations,
-            node_to_index,
-            pump_names,
             device,
             Pmin,
             Cmin,
@@ -829,11 +828,10 @@ def simulate_closed_loop(
                 edge_attr,
                 node_type,
                 edge_type,
+                feature_template,
                 pressures,
                 chlorine,
                 u_opt,
-                node_to_index,
-                pump_names,
                 device,
             )
             end = time.time()
@@ -906,11 +904,20 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     inp_path = os.path.join(REPO_ROOT, "CTown.inp")
-    wn, node_to_index, pump_names, edge_index, edge_attr, node_types, edge_types = load_network(
-        inp_path, return_edge_attr=True
-    )
+    (
+        wn,
+        node_to_index,
+        pump_names,
+        edge_index,
+        edge_attr,
+        node_types,
+        edge_types,
+        feature_template,
+    ) = load_network(inp_path, return_edge_attr=True, return_features=True)
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device)
+    node_types = torch.tensor(node_types, dtype=torch.long, device=device)
+    edge_types = torch.tensor(edge_types, dtype=torch.long, device=device)
     try:
         model = load_surrogate_model(device)
     except FileNotFoundError as e:
@@ -918,7 +925,7 @@ def main():
         return
 
     expected_in_dim = 4 + len(pump_names)
-    in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
+    in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", expected_in_dim)
     if in_dim != expected_in_dim:
         print(
             f"Loaded surrogate expects {in_dim} input features "
@@ -935,6 +942,9 @@ def main():
         model,
         edge_index,
         edge_attr,
+        feature_template.to(device),
+        node_types.to(device),
+        edge_types.to(device),
         args.horizon,
         args.iterations,
         node_to_index,
