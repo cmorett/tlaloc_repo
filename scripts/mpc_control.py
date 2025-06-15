@@ -320,8 +320,13 @@ def load_surrogate_model(
             w = state[w_key]
             in_dim = w.shape[1]
             out_dim = w.shape[0]
+            edge_key = None
             if f"layers.{i}.edge_mlp.0.weight" in state:
-                e_dim = state[f"layers.{i}.edge_mlp.0.weight"].shape[1]
+                edge_key = f"layers.{i}.edge_mlp.0.weight"
+            elif f"layers.{i}.edge_mlps.0.0.weight" in state:
+                edge_key = f"layers.{i}.edge_mlps.0.0.weight"
+            if edge_key is not None:
+                e_dim = state[edge_key].shape[1]
                 conv_layers.append(HydroConv(in_dim, out_dim, e_dim))
             else:
                 conv_layers.append(GCNConv(in_dim, out_dim))
@@ -349,7 +354,15 @@ def load_surrogate_model(
 
     edge_dim = None
     if isinstance(conv_layers[0], HydroConv):
-        edge_dim = conv_layers[0].edge_mlp[0].in_features
+        # ``HydroConv`` renamed ``edge_mlp`` to ``edge_mlps`` in recent versions
+        mlp_list = getattr(conv_layers[0], "edge_mlp", None)
+        if mlp_list is None:
+            mlp_list = conv_layers[0].edge_mlps
+        first_layer = mlp_list[0]
+        if isinstance(first_layer, nn.Sequential):
+            edge_dim = first_layer[0].in_features
+        else:
+            edge_dim = first_layer.in_features
 
     if multitask:
         node_out_dim, rnn_hidden_dim = state["node_decoder.weight"].shape
@@ -391,6 +404,7 @@ def load_surrogate_model(
     norm_path = str(full_path.with_suffix("")) + "_norm.npz"
     if os.path.exists(norm_path):
         arr = np.load(norm_path)
+        # Moved normalization constants to GPU to avoid device transfer
         model.x_mean = torch.tensor(arr["x_mean"], dtype=torch.float32, device=device)
         model.x_std = torch.tensor(arr["x_std"], dtype=torch.float32, device=device)
         if "y_mean" in arr:
@@ -719,8 +733,7 @@ def propagate_with_surrogate(
                 u_in = u
             x = prepare_node_features(feature_template, cur_p, cur_c, u_in, model)
             if hasattr(model, "rnn"):
-                seq_in = x.view(batch_size, -1, feature_template.size(0), x.size(-1))
-                seq_in = seq_in[:, None]
+                seq_in = x.view(batch_size, 1, feature_template.size(0), x.size(-1))
                 pred = model(seq_in, b_edge_index, b_edge_attr, b_node_type, b_edge_type)
                 if isinstance(pred, dict):
                     pred = pred.get("node_outputs")[:, 0]
@@ -827,8 +840,21 @@ def simulate_closed_loop(
     wn.options.time.report_timestep = 0
     sim = wntr.sim.EpanetSimulator(wn)
     results = sim.run_sim(str(TEMP_DIR / "temp"))
-    pressures = results.node["pressure"].iloc[0].to_dict()
-    chlorine = results.node["quality"].iloc[0].to_dict()
+    p_arr = results.node["pressure"].iloc[0].to_numpy(dtype=np.float32)
+    c_arr = results.node["quality"].iloc[0].to_numpy(dtype=np.float32)
+    pressures = dict(zip(wn.node_name_list, p_arr))
+    chlorine = dict(zip(wn.node_name_list, c_arr))
+    # Keep state tensors on GPU to avoid repeated host transfers
+    cur_p = (
+        torch.from_numpy(p_arr)
+        .pin_memory() if torch.cuda.is_available() else torch.from_numpy(p_arr)
+    )
+    cur_p = cur_p.to(device, non_blocking=True)
+    cur_c = (
+        torch.from_numpy(c_arr)
+        .pin_memory() if torch.cuda.is_available() else torch.from_numpy(c_arr)
+    )
+    cur_c = cur_c.to(device, non_blocking=True)
 
     base_demands = {
         j: wn.get_node(j).demand_timeseries_list[0].base_value
@@ -846,8 +872,8 @@ def simulate_closed_loop(
             node_types,
             edge_types,
             feature_template,
-            torch.tensor([pressures[n] for n in wn.node_name_list], device=device),
-            torch.tensor([chlorine[n] for n in wn.node_name_list], device=device),
+            cur_p,
+            cur_c,
             horizon,
             iterations,
             device,
@@ -885,8 +911,21 @@ def simulate_closed_loop(
             wn.options.time.report_timestep = 3600
             sim = wntr.sim.EpanetSimulator(wn)
             results = sim.run_sim(str(TEMP_DIR / "temp"))
-            pressures = results.node["pressure"].iloc[-1].to_dict()
-            chlorine = results.node["quality"].iloc[-1].to_dict()
+            p_arr = results.node["pressure"].iloc[-1].to_numpy(dtype=np.float32)
+            c_arr = results.node["quality"].iloc[-1].to_numpy(dtype=np.float32)
+            pressures = dict(zip(wn.node_name_list, p_arr))
+            chlorine = dict(zip(wn.node_name_list, c_arr))
+            # Using non_blocking transfer for EPANET output
+            cur_p = (
+                torch.from_numpy(p_arr)
+                .pin_memory() if torch.cuda.is_available() else torch.from_numpy(p_arr)
+            )
+            cur_p = cur_p.to(device, non_blocking=True)
+            cur_c = (
+                torch.from_numpy(c_arr)
+                .pin_memory() if torch.cuda.is_available() else torch.from_numpy(c_arr)
+            )
+            cur_c = cur_c.to(device, non_blocking=True)
             energy_df = pump_energy(
                 results.link["flowrate"][pump_names], results.node["head"], wn
             )
@@ -900,14 +939,16 @@ def simulate_closed_loop(
                 model,
                 edge_index,
                 edge_attr,
-                node_type,
-                edge_type,
+                node_types,
+                edge_types,
                 feature_template,
                 pressures,
                 chlorine,
                 u_opt,
                 device,
             )
+            cur_p = torch.tensor([pressures[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
+            cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
             end = time.time()
             energy = 0.0
         min_p = max(
