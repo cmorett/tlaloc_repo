@@ -1,4 +1,5 @@
 import torch
+from typing import Optional
 
 # Inspired by Ashraf et al. (AAAI 2024): Physics-Informed Graph Neural Networks for Water Distribution Systems
 # See: https://arxiv.org/pdf/2403.18570
@@ -38,8 +39,8 @@ def pressure_headloss_consistency_loss(
     pred_flows: torch.Tensor,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
-    edge_attr_mean: torch.Tensor | None = None,
-    edge_attr_std: torch.Tensor | None = None,
+    edge_attr_mean: Optional[torch.Tensor] = None,
+    edge_attr_std: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Return MSE between predicted and Hazen-Williams head losses.
 
