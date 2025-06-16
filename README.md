@@ -167,3 +167,28 @@ have no effect on the predictions.
 `simulate_closed_loop` now performs the same check and raises a `ValueError`
 when the loaded model does not include pump controls so that experiment scripts
 fail fast instead of silently optimising with zero gradients.
+
+## Reporting Key Performance Metrics
+
+The module `scripts/metrics.py` provides helper functions to compute the most
+common evaluation metrics for surrogate accuracy, MPC control behaviour and
+runtime performance.  Each function returns a formatted ``pandas.DataFrame`` for
+easy printing or saving.
+
+Example usage:
+
+```python
+from metrics import accuracy_metrics, control_metrics, computational_metrics, export_table
+
+# arrays of ground truth and predictions
+acc_df = accuracy_metrics(true_p, pred_p, true_c, pred_c)
+control_df = control_metrics(min_p, min_c, energy, p_min=20.0, c_min=0.2)
+comp_df = computational_metrics(inference_times, optimisation_times)
+
+# export to CSV
+export_table(acc_df, "logs/accuracy.csv")
+```
+
+Tables use clear labels and units so results can be understood at a glance.  The
+same metrics can also be exported to Excel or JSON by passing a path ending in
+``.xlsx`` or ``.json``.
