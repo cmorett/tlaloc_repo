@@ -1325,7 +1325,9 @@ def main(args: argparse.Namespace):
                     else:
                         Y_node = Y_seq
                     if hasattr(model, "y_mean") and model.y_mean is not None:
-                        node_pred = node_pred * model.y_std + model.y_mean
+                        y_std = model.y_std.to(node_pred.device)
+                        y_mean = model.y_mean.to(node_pred.device)
+                        node_pred = node_pred * y_std + y_mean
                     preds_p.extend(node_pred[..., 0].cpu().numpy().ravel())
                     preds_c.extend(node_pred[..., 1].cpu().numpy().ravel())
                     true_p.extend(Y_node[..., 0].cpu().numpy().ravel())
@@ -1335,7 +1337,9 @@ def main(args: argparse.Namespace):
                     batch = batch.to(device)
                     out = model(batch)
                     if hasattr(model, "y_mean") and model.y_mean is not None:
-                        out = out * model.y_std + model.y_mean
+                        y_std = model.y_std.to(out.device)
+                        y_mean = model.y_mean.to(out.device)
+                        out = out * y_std + y_mean
                     preds_p.extend(out[:, 0].cpu().numpy())
                     preds_c.extend(out[:, 1].cpu().numpy())
                     true_p.extend(batch.y[:, 0].cpu().numpy())
