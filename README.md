@@ -25,8 +25,9 @@ create this folder if it does not yet exist. After each training run
 EPANET results: ``pred_vs_actual_pressure_<run>.png`` and
 ``pred_vs_actual_chlorine_<run>.png``.
 When normalization is enabled (the default) the test data is scaled using the
-training statistics and the predictions are transformed back to physical units
-before plotting.
+training statistics. During evaluation both predictions **and** the
+corresponding ground truth labels are transformed back to physical units before
+plotting.
 
 The script automatically detects which format is provided and loads the data
 accordingly. When using the matrix format, supply the path to the shared
