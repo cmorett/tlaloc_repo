@@ -192,3 +192,12 @@ export_table(acc_df, "logs/accuracy.csv")
 Tables use clear labels and units so results can be understood at a glance.  The
 same metrics can also be exported to Excel or JSON by passing a path ending in
 ``.xlsx`` or ``.json``.
+
+## Visualization Suite
+
+The helper module `scripts/visualizations.py` collects common plotting
+functions used during training and MPC experiments.  It can generate
+prediction scatter plots, time series of minimum pressure/chlorine, energy
+trade-off bar charts and optimisation convergence curves.  All images are
+written to the `plots/` directory so they can be included in reports or
+presentations easily.
