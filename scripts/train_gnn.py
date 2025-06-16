@@ -434,31 +434,34 @@ def compute_edge_attr_stats(edge_attr: np.ndarray) -> tuple[torch.Tensor, torch.
     return attr_mean, attr_std
 
 
-def save_scatter_plots(true_p, preds_p, true_c, preds_c, run_name: str, plots_dir: Optional[Path] = None) -> None:
-    """Save scatter plots for pressure and chlorine predictions."""
+def save_scatter_plots(
+    true_p, preds_p, true_c, preds_c, run_name: str, plots_dir: Optional[Path] = None
+) -> None:
+    """Save enhanced scatter plots for surrogate predictions."""
+    try:
+        from .visualizations import predicted_vs_actual_scatter
+    except ImportError:  # pragma: no cover - executed when run as script
+        from visualizations import predicted_vs_actual_scatter
+
     if plots_dir is None:
         plots_dir = PLOTS_DIR
-    os.makedirs(plots_dir, exist_ok=True)
 
-    r2_p = np.corrcoef(true_p, preds_p)[0, 1] ** 2 if len(true_p) > 1 else 0.0
-    plt.figure()
-    plt.scatter(true_p, preds_p, s=10, alpha=0.5)
-    plt.xlabel("EPANET Pressure")
-    plt.ylabel("Predicted Pressure")
-    plt.annotate(f"$R^2$={r2_p:.2f}", xy=(0.05, 0.95), xycoords="axes fraction", va="top")
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, f"pred_vs_actual_pressure_{run_name}.png"))
-    plt.close()
-
-    r2_c = np.corrcoef(true_c, preds_c)[0, 1] ** 2 if len(true_c) > 1 else 0.0
-    plt.figure()
-    plt.scatter(true_c, preds_c, s=10, alpha=0.5, color="tab:orange")
-    plt.xlabel("EPANET Chlorine")
-    plt.ylabel("Predicted Chlorine")
-    plt.annotate(f"$R^2$={r2_c:.2f}", xy=(0.05, 0.95), xycoords="axes fraction", va="top")
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, f"pred_vs_actual_chlorine_{run_name}.png"))
-    plt.close()
+    fig = predicted_vs_actual_scatter(
+        true_p,
+        preds_p,
+        true_c,
+        preds_c,
+        run_name,
+        plots_dir=plots_dir,
+        return_fig=True,
+    )
+    # also store individual scatter images for backward compatibility
+    axes = fig.axes
+    axes[0].figure.savefig(plots_dir / f"pred_vs_actual_pressure_{run_name}.png")
+    axes[1].figure.savefig(
+        plots_dir / f"pred_vs_actual_chlorine_{run_name}.png"
+    )
+    plt.close(fig)
 
 
 def apply_normalization(
