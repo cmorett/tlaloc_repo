@@ -1328,6 +1328,7 @@ def main(args: argparse.Namespace):
                         y_std = model.y_std.to(node_pred.device)
                         y_mean = model.y_mean.to(node_pred.device)
                         node_pred = node_pred * y_std + y_mean
+                        Y_node = Y_node * y_std + y_mean
                     preds_p.extend(node_pred[..., 0].cpu().numpy().ravel())
                     preds_c.extend(node_pred[..., 1].cpu().numpy().ravel())
                     true_p.extend(Y_node[..., 0].cpu().numpy().ravel())
@@ -1340,10 +1341,13 @@ def main(args: argparse.Namespace):
                         y_std = model.y_std.to(out.device)
                         y_mean = model.y_mean.to(out.device)
                         out = out * y_std + y_mean
+                        batch_y = batch.y * y_std + y_mean
+                    else:
+                        batch_y = batch.y
                     preds_p.extend(out[:, 0].cpu().numpy())
                     preds_c.extend(out[:, 1].cpu().numpy())
-                    true_p.extend(batch.y[:, 0].cpu().numpy())
-                    true_c.extend(batch.y[:, 1].cpu().numpy())
+                    true_p.extend(batch_y[:, 0].cpu().numpy())
+                    true_c.extend(batch_y[:, 1].cpu().numpy())
         if preds_p:
             preds_p = np.array(preds_p)
             preds_c = np.array(preds_c)
