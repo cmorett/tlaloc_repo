@@ -1321,9 +1321,9 @@ def main(args: argparse.Namespace):
                     else:
                         node_pred = out
                     if isinstance(Y_seq, dict):
-                        Y_node = Y_seq["node_outputs"]
+                        Y_node = Y_seq["node_outputs"].to(node_pred.device)
                     else:
-                        Y_node = Y_seq
+                        Y_node = Y_seq.to(node_pred.device)
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         y_std = model.y_std.to(node_pred.device)
                         y_mean = model.y_mean.to(node_pred.device)
