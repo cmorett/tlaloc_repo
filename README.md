@@ -2,6 +2,17 @@
 
 A GNN, MPC-gradient based, optimizer for EPANET water systems
 
+## Quick GPU check
+
+Verify that PyTorch and PyTorch Geometric are installed correctly by running
+
+```bash
+python pytorchcheck.py
+```
+The script moves a small tensor through a GCN layer on the GPU and prints the
+output shape. If this command fails, ensure the CUDA drivers and dependencies
+are installed before continuing.
+
 ## Training
 
 The repository provides a simple training script `scripts/train_gnn.py` which
@@ -59,11 +70,12 @@ number of parameters and can speed up optimisation.
 Example usage:
 
 ```bash
-python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy \
+python scripts/train_gnn.py \
+    --x-path data/X_train.npy --y-path data/Y_train.npy \
     --x-val-path data/X_val.npy --y-val-path data/Y_val.npy \
-    --epochs 100 --batch-size 16 --hidden-dim 32 --num-layers 3 \
-    --early-stop-patience 5 --edge-index-path data/edge_index.npy \
-    --inp-path CTown.inp
+    --edge-index-path data/edge_index.npy --inp-path CTown.inp \
+    --epochs 100 --batch-size 32 --hidden-dim 64 --num-layers 4 \
+    --dropout 0.1 --residual --early-stop-patience 10 --pressure_loss
 ```
 To disable the physics penalties pass ``--no-physics-loss``.
 
@@ -103,7 +115,9 @@ splits each run into training, validation and test sets (``X_train.npy``,
 looks like:
 
 ```bash
-python scripts/data_generation.py --num-scenarios 2000 --output-dir data/ --seed 42
+python scripts/data_generation.py \
+    --num-scenarios 2000 --output-dir data/ --seed 42 \
+    --extreme-event-prob 0.2
 ```
 The generation step utilizes all available CPU cores by default. The value
 ``2000`` matches the new default of ``--num-scenarios``. Use
@@ -119,7 +133,9 @@ the sequence arrays when ``--sequence-length`` is greater than one.
 To create sequence datasets for the recurrent surrogate specify ``--sequence-length``:
 
 ```bash
-python scripts/data_generation.py --num-scenarios 200 --sequence-length 24 --output-dir data/
+python scripts/data_generation.py \
+    --num-scenarios 200 --sequence-length 24 --output-dir data/ \
+    --seed 123
 ```
 This will also generate ``scenario_train.npy`` etc. recording the type of each
 scenario.
@@ -137,13 +153,24 @@ ground truth are denormalized and chlorine values are exponentiated so the
 resulting errors are reported in physical units.  All metrics are written to
 ``logs/surrogate_metrics.json`` for reproducibility.
 
+Typical validation command:
+
+```bash
+python scripts/experiments_validation.py \
+    --model models/gnn_surrogate.pth --inp CTown.inp \
+    --horizon 6 --iterations 50 --feedback-interval 1 \
+    --run-name baseline
+```
+
 ## Running MPC control
 
 Once the surrogate model is trained you can run gradient-based MPC using
 `scripts/mpc_control.py`:
 
 ```bash
-python scripts/mpc_control.py --horizon 6 --iterations 50 --feedback-interval 24
+python scripts/mpc_control.py \
+    --horizon 6 --iterations 50 --feedback-interval 24 \
+    --Pmin 20.0 --Cmin 0.2 --profile
 ```
 
 Pass ``--profile`` to print the runtime of each MPC optimisation step. The
@@ -183,7 +210,12 @@ easy printing or saving.
 Example usage:
 
 ```python
-from metrics import accuracy_metrics, control_metrics, computational_metrics, export_table
+from metrics import (
+    accuracy_metrics,
+    control_metrics,
+    computational_metrics,
+    export_table,
+)
 
 # arrays of ground truth and predictions
 acc_df = accuracy_metrics(true_p, pred_p, true_c, pred_c)
@@ -192,6 +224,8 @@ comp_df = computational_metrics(inference_times, optimisation_times)
 
 # export to CSV
 export_table(acc_df, "logs/accuracy.csv")
+export_table(control_df, "logs/control.csv")
+export_table(comp_df, "logs/computational.csv")
 ```
 
 Tables use clear labels and units so results can be understood at a glance.  The
