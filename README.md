@@ -147,9 +147,6 @@ The surrogate model is compiled with TorchScript during loading for faster
 inference.  Use ``--no-jit`` to disable this.  ``propagate_with_surrogate`` can
 also accept lists of pressure/chlorine dictionaries to evaluate multiple
 scenarios in parallel.
-TorchScript is automatically skipped when the surrogate uses ``GATConv`` layers
-as they are not yet scriptable.
-```
 
 By default the controller loads the most recent ``.pth`` file found in the
 ``models`` directory so retraining will automatically use the newest weights.
@@ -190,7 +187,7 @@ comp_df = computational_metrics(inference_times, optimisation_times)
 
 # export to CSV
 export_table(acc_df, "logs/accuracy.csv")
-```
+
 
 Tables use clear labels and units so results can be understood at a glance.  The
 same metrics can also be exported to Excel or JSON by passing a path ending in
