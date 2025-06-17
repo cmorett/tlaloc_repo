@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from scripts.train_gnn import save_scatter_plots
+from scripts.train_gnn import save_scatter_plots, predicted_vs_actual_scatter
 
 
 def test_save_scatter_plots(tmp_path):

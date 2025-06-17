@@ -34,4 +34,8 @@ def test_validate_surrogate_accepts_tuple():
     sim = wntr.sim.EpanetSimulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp"))
     model = DummyModel().to(device)
-    validate_surrogate(model, edge_index, None, wn, [(res, {})], device, "test")
+    metrics, arr, times = validate_surrogate(
+        model, edge_index, None, wn, [(res, {})], device, "test"
+    )
+    assert "pressure_rmse" in metrics
+    assert arr.shape[1] == len(wn.node_name_list)

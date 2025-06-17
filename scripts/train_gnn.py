@@ -16,7 +16,7 @@ from torch_geometric.utils import subgraph, k_hop_subgraph
 import wntr
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from typing import Optional
+from typing import Optional, Sequence
 import networkx as nx
 
 # Ensure the repository root is importable when running this file directly
@@ -437,6 +437,56 @@ def compute_norm_stats(data_list):
     return x_mean, x_std, y_mean, y_std
 
 
+def _to_numpy(seq: Sequence[float]) -> np.ndarray:
+    """Convert sequence to NumPy array."""
+    return np.asarray(seq, dtype=float)
+
+
+def predicted_vs_actual_scatter(
+    true_pressure: Sequence[float],
+    pred_pressure: Sequence[float],
+    true_chlorine: Sequence[float],
+    pred_chlorine: Sequence[float],
+    run_name: str,
+    plots_dir: Path | None = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Scatter plots comparing surrogate predictions with EPANET results."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    tp = _to_numpy(true_pressure)
+    pp = _to_numpy(pred_pressure)
+    tc = _to_numpy(true_chlorine)
+    pc = _to_numpy(pred_chlorine)
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+    axes[0].scatter(tp, pp, label="Pressure", color="tab:blue", alpha=0.7)
+    min_p, max_p = tp.min(), tp.max()
+    axes[0].plot([min_p, max_p], [min_p, max_p], "k--", lw=1)
+    axes[0].set_xlabel("Actual Pressure (m)")
+    axes[0].set_ylabel("Predicted Pressure (m)")
+    axes[0].set_title("Pressure")
+
+    axes[1].scatter(tc, pc, label="Chlorine", color="tab:orange", alpha=0.7)
+    min_c, max_c = tc.min(), tc.max()
+    axes[1].plot([min_c, max_c], [min_c, max_c], "k--", lw=1)
+    axes[1].set_xlabel("Actual Chlorine (mg/L)")
+    axes[1].set_ylabel("Predicted Chlorine (mg/L)")
+    axes[1].set_title("Chlorine")
+
+    fig.suptitle("Surrogate Model Prediction Accuracy for Pressure and Chlorine")
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.85)
+
+    fig.savefig(plots_dir / f"pred_vs_actual_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
 def compute_edge_attr_stats(edge_attr: np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
     """Return mean and std for edge attribute matrix."""
     attr_mean = torch.tensor(edge_attr.mean(axis=0), dtype=torch.float32)
@@ -448,11 +498,6 @@ def save_scatter_plots(
     true_p, preds_p, true_c, preds_c, run_name: str, plots_dir: Optional[Path] = None
 ) -> None:
     """Save enhanced scatter plots for surrogate predictions."""
-    try:
-        from .visualizations import predicted_vs_actual_scatter
-    except ImportError:  # pragma: no cover - executed when run as script
-        from visualizations import predicted_vs_actual_scatter
-
     if plots_dir is None:
         plots_dir = PLOTS_DIR
 

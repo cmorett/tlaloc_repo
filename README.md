@@ -195,9 +195,8 @@ same metrics can also be exported to Excel or JSON by passing a path ending in
 
 ## Visualization Suite
 
-The helper module `scripts/visualizations.py` collects common plotting
-functions used during training and MPC experiments.  It can generate
-prediction scatter plots, time series of minimum pressure/chlorine, energy
-trade-off bar charts and optimisation convergence curves.  All images are
+Plotting utilities are located within the training and experiment scripts
+themselves.  They generate prediction scatter plots, MPC time series,
+energy–pressure trade-off charts and convergence curves.  All images are
 written to the `plots/` directory so they can be included in reports or
 presentations easily.
