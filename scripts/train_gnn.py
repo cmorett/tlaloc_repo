@@ -92,7 +92,13 @@ class HydroConv(MessagePassing):
 
 
 class EnhancedGNNEncoder(nn.Module):
-    """Flexible GNN encoder supporting heterogeneous graphs and attention."""
+    """Flexible GNN encoder supporting heterogeneous graphs and attention.
+
+    The forward pass expects explicit tensor arguments so that the model can be
+    compiled with TorchScript.  ``x`` is a node feature matrix of shape
+    ``[N, F]`` and ``edge_index`` contains the directed edges with shape
+    ``[2, E]``. Optional edge attributes and type indices can also be provided.
+    """
 
     def __init__(
         self,
@@ -142,11 +148,14 @@ class EnhancedGNNEncoder(nn.Module):
 
         self.fc_out = nn.Linear(hidden_channels, out_channels)
 
-    def forward(self, data: Data) -> torch.Tensor:
-        x, edge_index = data.x, data.edge_index
-        edge_attr = getattr(data, "edge_attr", None)
-        node_type = getattr(data, "node_type", None)
-        edge_type = getattr(data, "edge_type", None)
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: Optional[torch.Tensor] = None,
+        node_type: Optional[torch.Tensor] = None,
+        edge_type: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         for conv, norm in zip(self.convs, self.norms):
             identity = x
             if isinstance(conv, HydroConv):
@@ -226,14 +235,13 @@ class RecurrentGNNSurrogate(nn.Module):
         node_embeddings = []
         for t in range(T):
             x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
-            data = Data(x=x_t, edge_index=batch_edge_index)
-            if edge_attr_rep is not None:
-                data.edge_attr = edge_attr_rep
-            if node_type_rep is not None:
-                data.node_type = node_type_rep
-            if edge_type_rep is not None:
-                data.edge_type = edge_type_rep
-            gnn_out = self.encoder(data)  # [batch_size*num_nodes, hidden]
+            gnn_out = self.encoder(
+                x_t,
+                batch_edge_index,
+                edge_attr_rep,
+                node_type_rep,
+                edge_type_rep,
+            )  # [batch_size*num_nodes, hidden]
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
             node_embeddings.append(gnn_out)
 
@@ -308,14 +316,13 @@ class MultiTaskGNNSurrogate(nn.Module):
         node_embeddings = []
         for t in range(T):
             x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
-            data = Data(x=x_t, edge_index=batch_edge_index)
-            if edge_attr_rep is not None:
-                data.edge_attr = edge_attr_rep
-            if node_type_rep is not None:
-                data.node_type = node_type_rep
-            if edge_type_rep is not None:
-                data.edge_type = edge_type_rep
-            gnn_out = self.encoder(data)
+            gnn_out = self.encoder(
+                x_t,
+                batch_edge_index,
+                edge_attr_rep,
+                node_type_rep,
+                edge_type_rep,
+            )
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
             node_embeddings.append(gnn_out)
 
@@ -722,7 +729,13 @@ def train(model, loader, optimizer, device, check_negative=True):
         if check_negative and ((batch.x[:, 1] < 0).any() or (batch.y[:, 0] < 0).any()):
             raise ValueError("Negative pressures encountered in training batch")
         optimizer.zero_grad()
-        out = model(batch)
+        out = model(
+            batch.x,
+            batch.edge_index,
+            getattr(batch, "edge_attr", None),
+            getattr(batch, "node_type", None),
+            getattr(batch, "edge_type", None),
+        )
         loss = F.mse_loss(out, batch.y.float())
         loss.backward()
         # Clip gradients to mitigate exploding gradients that could otherwise
@@ -739,7 +752,13 @@ def evaluate(model, loader, device):
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
-            out = model(batch)
+            out = model(
+                batch.x,
+                batch.edge_index,
+                getattr(batch, "edge_attr", None),
+                getattr(batch, "node_type", None),
+                getattr(batch, "edge_type", None),
+            )
             loss = F.mse_loss(out, batch.y.float())
             total_loss += loss.item() * batch.num_graphs
     return total_loss / len(loader.dataset)
@@ -1336,7 +1355,13 @@ def main(args: argparse.Namespace):
             else:
                 for batch in test_loader:
                     batch = batch.to(device)
-                    out = model(batch)
+                    out = model(
+                        batch.x,
+                        batch.edge_index,
+                        getattr(batch, "edge_attr", None),
+                        getattr(batch, "node_type", None),
+                        getattr(batch, "edge_type", None),
+                    )
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         y_std = model.y_std.to(out.device)
                         y_mean = model.y_mean.to(out.device)
