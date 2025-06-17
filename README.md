@@ -76,8 +76,10 @@ During inference on very large networks the same clusters can be evaluated
 sequentially to keep memory usage low.
 
 A physics-informed mass balance penalty is applied by default to encourage
-conservation of predicted flows.  Disable it with ``--no-physics-loss`` if
-necessary.  An additional ``--pressure_loss`` option enforces
+conservation of predicted flows.  Because each pipe appears twice in the graph
+(forward and reverse), the loss divides the imbalance by two so that equal and
+opposite flows cancel correctly.  Disable the term with ``--no-physics-loss``
+if necessary.  An additional ``--pressure_loss`` option enforces
 pressure–headloss consistency using the Hazen--Williams equation.  The
 relative importance of both penalties can be tuned via ``--w_mass`` and
 ``--w_head``.

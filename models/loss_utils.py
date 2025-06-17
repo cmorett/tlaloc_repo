@@ -31,6 +31,12 @@ def compute_mass_balance_loss(pred_flows: torch.Tensor, edge_index: torch.Tensor
         node_balance[u] -= f
         node_balance[v] += f
 
+    # Each physical link appears twice (forward and reverse). Without
+    # compensation this double-counts the contribution of every pipe which
+    # inflates the loss for perfectly conserved flows. Halving the imbalance
+    # restores a correct zero-loss for flows ``(+Q, -Q)`` on paired edges.
+    node_balance = node_balance / 2.0
+
     return torch.mean(node_balance ** 2)
 
 
