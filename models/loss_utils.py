@@ -71,7 +71,7 @@ def pressure_headloss_consistency_loss(
         attr = edge_attr
 
     length = attr[:, 0]
-    diam = attr[:, 1]
+    diam = attr[:, 1].clamp(min=1e-6)
     rough = attr[:, 2].clamp(min=1e-6)
 
     # Flatten prediction tensors so the first dimension represents the batch
