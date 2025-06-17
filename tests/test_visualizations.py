@@ -1,9 +1,7 @@
 from pathlib import Path
 
-from scripts.visualizations import (
-    predicted_vs_actual_scatter,
-    plot_convergence_curve,
-)
+from scripts.train_gnn import predicted_vs_actual_scatter
+from scripts.mpc_control import plot_convergence_curve
 
 
 def test_predicted_vs_actual_scatter(tmp_path: Path):

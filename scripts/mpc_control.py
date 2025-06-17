@@ -1,6 +1,6 @@
 import argparse
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 import os
 from pathlib import Path
 import json
@@ -55,6 +55,68 @@ TEMP_DIR = DATA_DIR / "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
 PLOTS_DIR = REPO_ROOT / "plots"
 os.makedirs(PLOTS_DIR, exist_ok=True)
+
+
+def plot_mpc_time_series(
+    df,  # pandas.DataFrame
+    Pmin: float,
+    Cmin: float,
+    run_name: str,
+    plots_dir: Path | None = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Time series of minimum pressure/chlorine and pump actions."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(3, 1, figsize=(8, 8), sharex=True)
+
+    axes[0].plot(df["time"], df["min_pressure"], label="Min Pressure", color="tab:blue")
+    axes[0].axhline(Pmin, color="red", linestyle="--", label="P_min")
+    axes[0].set_ylabel("Pressure (m)")
+    axes[0].set_title("Operational Performance Under MPC Control")
+    axes[0].legend()
+
+    axes[1].plot(df["time"], df["min_chlorine"], label="Min Chlorine", color="tab:orange")
+    axes[1].axhline(Cmin, color="red", linestyle="--", label="C_min")
+    axes[1].set_ylabel("Chlorine (mg/L)")
+    axes[1].legend()
+
+    controls = np.stack(df["controls"].to_list())
+    axes[2].plot(df["time"], controls)
+    axes[2].set_ylabel("Pump Speed (%)")
+    axes[2].set_xlabel("Time (hours)")
+
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"mpc_timeseries_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
+def plot_convergence_curve(
+    costs: Sequence[float],
+    run_name: str,
+    plots_dir: Path | None = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Plot optimisation cost over iterations."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(np.arange(len(costs)), costs, marker="o")
+    ax.set_xlabel("Optimization Iteration")
+    ax.set_ylabel("Cost Function Value")
+    ax.set_title("Convergence of Gradient-Based MPC Optimization")
+    ax.grid(True)
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"mpc_convergence_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
 
 
 class GNNSurrogate(torch.nn.Module):
@@ -579,7 +641,7 @@ def run_mpc_step(
     Cmin: float,
     u_warm: Optional[torch.Tensor] = None,
     profile: bool = False,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, List[float]]:
     """Optimize pump controls for one hour using gradient-based MPC.
 
     The optimization is performed in two phases: a short warm start with
@@ -594,6 +656,7 @@ def run_mpc_step(
         Previous control sequence to warm start the optimization.
     """
     num_pumps = feature_template.size(1) - 4
+    cost_history: List[float] = []
     start_time = time.time() if profile else None
     pressures = pressures.to(device)
     chlorine = chlorine.to(device)
@@ -641,6 +704,7 @@ def run_mpc_step(
         with torch.no_grad():
             u.data.clamp_(0.0, 1.0)
         scheduler.step(cost.item())
+        cost_history.append(float(cost.item()))
 
     # --- Phase 2: L-BFGS refinement --------------------------------------
     lbfgs_steps = max(iterations - adam_steps, 1)
@@ -667,7 +731,8 @@ def run_mpc_step(
         c.backward()
         return c
 
-    lbfgs_opt.step(closure)
+    final_cost = lbfgs_opt.step(closure)
+    cost_history.append(float(final_cost))
     with torch.no_grad():
         u.data.clamp_(0.0, 1.0)
 
@@ -678,7 +743,7 @@ def run_mpc_step(
         end_time = time.time()
         print(f"[profile] run_mpc_step: {end_time - start_time:.4f}s")
 
-    return u.detach()
+    return u.detach(), cost_history
 
 
 def propagate_with_surrogate(
@@ -771,43 +836,6 @@ def propagate_with_surrogate(
     return out_ps, out_cs
 
 
-def plot_single_run(df: pd.DataFrame, run_name: str) -> None:
-    """Generate basic time series plots for a single MPC run."""
-    os.makedirs(PLOTS_DIR, exist_ok=True)
-    plt.figure(figsize=(8, 3))
-    plt.plot(df["time"], df["min_pressure"], label="min pressure")
-    plt.xlabel("Hour")
-    plt.ylabel("Pressure [m]")
-    plt.tight_layout()
-    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_min_pressure_{run_name}.png"))
-    plt.close()
-
-    plt.figure(figsize=(8, 3))
-    plt.plot(df["time"], df["min_chlorine"], label="min chlorine", color="tab:orange")
-    plt.xlabel("Hour")
-    plt.ylabel("Chlorine [mg/L]")
-    plt.tight_layout()
-    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_chlorine_{run_name}.png"))
-    plt.close()
-
-    plt.figure(figsize=(8, 3))
-    plt.plot(df["time"], df["energy"], label="energy", color="tab:green")
-    plt.xlabel("Hour")
-    plt.ylabel("Energy [kWh]")
-    plt.tight_layout()
-    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_energy_{run_name}.png"))
-    plt.close()
-
-    plt.figure(figsize=(8, 3))
-    ctrl = np.stack(df["controls"].to_list())
-    avg = ctrl.mean(axis=1)
-    plt.plot(df["time"], avg, label="avg speed")
-    plt.xlabel("Hour")
-    plt.ylabel("Average Pump Speed")
-    plt.tight_layout()
-    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_controls_{run_name}.png"))
-    plt.close()
-
 
 def simulate_closed_loop(
     wn: wntr.network.WaterNetworkModel,
@@ -871,10 +899,11 @@ def simulate_closed_loop(
         for j in wn.junction_name_list
     }
     prev_u: Optional[torch.Tensor] = None
+    all_costs: List[float] = []
 
     for hour in range(24):
         start = time.time()
-        u_opt = run_mpc_step(
+        u_opt, costs = run_mpc_step(
             wn,
             model,
             edge_index,
@@ -891,6 +920,7 @@ def simulate_closed_loop(
             Cmin,
             prev_u,
         )
+        all_costs.extend(costs)
         prev_u = u_opt.detach()
 
         # apply control to network object for consistency
@@ -1007,7 +1037,8 @@ def simulate_closed_loop(
     with open(REPO_ROOT / "logs" / "mpc_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
     if run_name:
-        plot_single_run(df, run_name)
+        plot_mpc_time_series(df, Pmin, Cmin, run_name)
+        plot_convergence_curve(all_costs, run_name)
     return df
 
 

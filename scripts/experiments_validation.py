@@ -12,7 +12,7 @@ import os
 import json
 import pickle
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 from datetime import datetime
 import sys
 
@@ -22,6 +22,7 @@ import pandas as pd
 import torch
 import wntr
 from wntr.metrics.economic import pump_energy
+import epyt
 
 # Ensure the repository root is importable when running this script directly
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,87 @@ TEMP_DIR = DATA_DIR / "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
 PLOTS_DIR = REPO_ROOT / "plots"
 os.makedirs(PLOTS_DIR, exist_ok=True)
+
+
+def energy_pressure_tradeoff(
+    strategy: Sequence[str],
+    energy: Sequence[float],
+    violations: Sequence[int],
+    run_name: str,
+    plots_dir: Path | None = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Bar chart comparing energy usage and pressure violations."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, ax1 = plt.subplots(figsize=(6, 4))
+    x = np.arange(len(strategy))
+    width = 0.4
+
+    ax1.bar(x - width / 2, energy, width, color="tab:blue", label="Energy")
+    ax1.set_ylabel("Energy Consumption (kWh)", color="tab:blue")
+    ax1.tick_params(axis="y", labelcolor="tab:blue")
+
+    ax2 = ax1.twinx()
+    ax2.bar(x + width / 2, violations, width, color="tab:orange", label="Violations")
+    ax2.set_ylabel("Number of Pressure Violations", color="tab:orange")
+    ax2.tick_params(axis="y", labelcolor="tab:orange")
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(strategy)
+    ax1.set_xlabel("Control Strategy")
+    ax1.set_title("Energy vs Pressure Constraint Violations")
+
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"energy_pressure_tradeoff_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
+def pressure_error_heatmap(
+    errors: np.ndarray,
+    times: Sequence[int],
+    node_names: Sequence[str],
+    inp_path: str,
+    run_name: str,
+    plots_dir: Path | None = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Heatmaps showing pressure prediction errors across nodes and time."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    im = axes[0].imshow(errors, aspect="auto", cmap="magma")
+    axes[0].set_xlabel("Node")
+    axes[0].set_ylabel("Time (h)")
+    axes[0].set_title("Heatmap of Pressure Prediction Errors")
+    axes[0].set_yticks(np.arange(len(times)))
+    axes[0].set_yticklabels(times)
+    axes[0].set_xticks(np.arange(len(node_names)))
+    axes[0].set_xticklabels(node_names, rotation=90, fontsize=6)
+    fig.colorbar(im, ax=axes[0], label="Error (m)")
+
+    net = epyt.epanet(str(inp_path))
+    coords = net.getNodeCoordinates()
+    node_index = {name: i + 1 for i, name in enumerate(net.NodeNameID)}
+    avg_err = errors.mean(axis=0)
+    x = [coords["x"][node_index[n]] for n in node_names]
+    y = [coords["y"][node_index[n]] for n in node_names]
+    sc = axes[1].scatter(x, y, c=avg_err, cmap="magma")
+    axes[1].set_title("Average Node Error")
+    fig.colorbar(sc, ax=axes[1], label="Error (m)")
+
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"pressure_error_heatmap_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
 
 from mpc_control import (
     load_network,
@@ -113,7 +195,7 @@ def validate_surrogate(
     test_results: List,
     device: torch.device,
     run_name: str,
-) -> Dict[str, float]:
+) -> tuple[Dict[str, float], np.ndarray, List[int]]:
     """Compute RMSE of surrogate predictions.
 
     ``test_results`` may either contain ``wntr`` ``NetworkResults`` objects or
@@ -133,6 +215,8 @@ def validate_surrogate(
     count = 0
     err_p_all: List[float] = []
     err_c_all: List[float] = []
+    err_matrix: List[np.ndarray] = []
+    err_times: List[int] = []
     node_types = {
         n: (
             "junction"
@@ -149,6 +233,7 @@ def validate_surrogate(
         edge_attr = edge_attr.to(device)
 
     with torch.no_grad():
+        first = True
         for res in test_results:
             # ``data_generation.py`` stores tuples of ``(results, demand_scale)``.
             # Older pickle files may therefore provide the result object as the
@@ -198,6 +283,9 @@ def validate_surrogate(
                     t = node_types[name]
                     err_p_by_type[t].append(float(diff_p[idx]))
                     err_c_by_type[t].append(float(diff_c[idx]))
+                if first:
+                    err_matrix.append(diff_p)
+                    err_times.append(int(times[i + 1]))
                 rmse_p += float((diff_p ** 2).sum())
                 rmse_c += float((diff_c ** 2).sum())
                 mae_p += float(np.abs(diff_p).sum())
@@ -213,6 +301,8 @@ def validate_surrogate(
                     )
                     mass_total += mass_loss.item()
                     mass_count += 1
+            if first:
+                first = False
 
     rmse_p = (rmse_p / count) ** 0.5
     rmse_c = (rmse_c / count) ** 0.5
@@ -261,7 +351,8 @@ def validate_surrogate(
         plt.savefig(os.path.join(PLOTS_DIR, f"error_histograms_{run_name}.png"))
         plt.close()
 
-    return metrics
+    err_arr = np.stack(err_matrix) if err_matrix else np.empty((0, len(wn.node_name_list)))
+    return metrics, err_arr, err_times
 
 
 def run_all_pumps_on(
@@ -382,7 +473,7 @@ def run_heuristic_baseline(
     return df
 
 
-def aggregate_and_plot(results: Dict[str, pd.DataFrame], run_name: str) -> None:
+def aggregate_and_plot(results: Dict[str, pd.DataFrame], run_name: str, Pmin: float) -> None:
     """Save combined CSV and generate simple plots."""
 
     combined = pd.concat(results, names=["method", None])
@@ -399,6 +490,11 @@ def aggregate_and_plot(results: Dict[str, pd.DataFrame], run_name: str) -> None:
     plt.tight_layout()
     plt.savefig(os.path.join(PLOTS_DIR, f"mpc_min_pressure_{run_name}.png"))
     plt.close()
+
+    strategies = list(results.keys())
+    energies = [df["energy"].sum() for df in results.values()]
+    violations = [int((df["min_pressure"] < Pmin).sum()) for df in results.values()]
+    energy_pressure_tradeoff(strategies, energies, violations, run_name)
 
     plt.figure(figsize=(10, 4))
     for name, df in results.items():
@@ -482,9 +578,18 @@ def main() -> None:
     if os.path.exists(args.test_pkl):
         with open(args.test_pkl, "rb") as f:
             test_res = pickle.load(f)
-        metrics = validate_surrogate(model, edge_index, edge_attr, wn, test_res, device, args.run_name or "")
+        metrics, err_arr, err_times = validate_surrogate(
+            model, edge_index, edge_attr, wn, test_res, device, args.run_name or ""
+        )
         pd.DataFrame([metrics]).to_csv(
             os.path.join(DATA_DIR, "surrogate_validation.csv"), index=False
+        )
+        pressure_error_heatmap(
+            err_arr,
+            err_times,
+            wn.node_name_list,
+            args.inp,
+            args.run_name or "",
         )
     else:
         print(f"{args.test_pkl} not found. Skipping surrogate validation.")
@@ -515,7 +620,7 @@ def main() -> None:
     )
 
     run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
-    aggregate_and_plot({"mpc": mpc_df, "heuristic": heur_df, "all_on": all_on_df}, run_name)
+    aggregate_and_plot({"mpc": mpc_df, "heuristic": heur_df, "all_on": all_on_df}, run_name, args.Pmin)
 
 
 if __name__ == "__main__":
