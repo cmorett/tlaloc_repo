@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
 # Add the repository root so the `scripts` package can be imported when
 # running the tests directly or through CI.
 sys.path.append(str(REPO_ROOT))
@@ -13,7 +14,6 @@ from scripts.metrics import (
     control_metrics,
     computational_metrics,
 )
-
 
 def test_accuracy_metrics_basic():
     true_p = [10.0, 20.0]
