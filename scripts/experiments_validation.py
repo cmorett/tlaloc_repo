@@ -134,6 +134,7 @@ def _prepare_features(
     chlorine: Dict[str, float],
     pump_controls: np.ndarray,
     model: torch.nn.Module,
+    demands: Optional[Dict[str, float]] = None,
 ) -> torch.Tensor:
     """Build node features including pump controls.
 
@@ -148,7 +149,7 @@ def _prepare_features(
     -------
     torch.Tensor
         Tensor of shape ``[num_nodes, 4 + num_pumps]`` with
-        [base_demand, pressure, chlorine, elevation, pump1, ...].
+        [dynamic demand, pressure, chlorine, elevation, pump1, ...].
     """
 
     num_nodes = len(wn.node_name_list)
@@ -161,7 +162,9 @@ def _prepare_features(
     pump_t = torch.tensor(pump_controls, dtype=torch.float32)
     for idx, name in enumerate(wn.node_name_list):
         node = wn.get_node(name)
-        if name in wn.junction_name_list:
+        if demands is not None and name in demands:
+            demand = demands.get(name, 0.0)
+        elif name in wn.junction_name_list:
             demand = node.demand_timeseries_list[0].base_value
         else:
             demand = 0.0
@@ -243,14 +246,16 @@ def validate_surrogate(
 
             pressures_df = res.node["pressure"]
             chlorine_df = res.node["quality"]
-            pump_df = res.link["status"][wn.pump_name_list]
+            demand_df = res.node.get("demand")
+            pump_df = res.link["setting"][wn.pump_name_list]
             times = pressures_df.index
             pump_array = pump_df.values
             for i in range(len(times) - 1):
                 p = pressures_df.iloc[i].to_dict()
                 c = chlorine_df.iloc[i].to_dict()
+                dem = demand_df.iloc[i].to_dict() if demand_df is not None else None
                 controls = pump_array[i]
-                feats = _prepare_features(wn, p, c, controls, model)
+                feats = _prepare_features(wn, p, c, controls, model, dem)
                 x = feats.to(device, non_blocking=True)
                 if hasattr(model, "x_mean") and model.x_mean is not None:
                     x = (x - model.x_mean) / model.x_std
