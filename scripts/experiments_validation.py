@@ -46,7 +46,7 @@ def energy_pressure_tradeoff(
     energy: Sequence[float],
     violations: Sequence[int],
     run_name: str,
-    plots_dir: Path | None = None,
+    plots_dir: Optional[Path] = None,
     return_fig: bool = False,
 ) -> Optional[plt.Figure]:
     """Bar chart comparing energy usage and pressure violations."""
@@ -85,7 +85,7 @@ def pressure_error_heatmap(
     node_names: Sequence[str],
     inp_path: str,
     run_name: str,
-    plots_dir: Path | None = None,
+    plots_dir: Optional[Path] = None,
     return_fig: bool = False,
 ) -> Optional[plt.Figure]:
     """Heatmaps showing pressure prediction errors across nodes and time."""

@@ -62,7 +62,7 @@ def plot_mpc_time_series(
     Pmin: float,
     Cmin: float,
     run_name: str,
-    plots_dir: Path | None = None,
+    plots_dir: Optional[Path] = None,
     return_fig: bool = False,
 ) -> Optional[plt.Figure]:
     """Time series of minimum pressure/chlorine and pump actions."""
@@ -98,7 +98,7 @@ def plot_mpc_time_series(
 def plot_convergence_curve(
     costs: Sequence[float],
     run_name: str,
-    plots_dir: Path | None = None,
+    plots_dir: Optional[Path] = None,
     return_fig: bool = False,
 ) -> Optional[plt.Figure]:
     """Plot optimisation cost over iterations."""

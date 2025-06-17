@@ -466,7 +466,7 @@ def predicted_vs_actual_scatter(
     true_chlorine: Sequence[float],
     pred_chlorine: Sequence[float],
     run_name: str,
-    plots_dir: Path | None = None,
+    plots_dir: Optional[Path] = None,
     return_fig: bool = False,
 ) -> Optional[plt.Figure]:
     """Scatter plots comparing surrogate predictions with EPANET results."""
