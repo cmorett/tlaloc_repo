@@ -246,7 +246,7 @@ def validate_surrogate(
             if isinstance(res, tuple):
                 res = res[0]
 
-            pressures_df = res.node["pressure"]
+            pressures_df = res.node["pressure"].clip(lower=5.0)
             chlorine_df = res.node["quality"]
             demand_df = res.node.get("demand")
             pump_df = res.link["setting"][wn.pump_name_list]
