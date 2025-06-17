@@ -132,9 +132,11 @@ running the MPC controller.  The validation script executes a 24‑hour
 simulation with EPANET feedback applied every hour (``--feedback-interval`` is
 ``1`` by default) which keeps predictions from the surrogate model from
 diverging over long horizons.  It now also reports mean absolute error (MAE)
-and the maximum absolute error for pressure and chlorine.  Predictions and
-ground truth are denormalized and chlorine values are exponentiated so the
-resulting errors are reported in physical units.  All metrics are written to
+ and the maximum absolute error for pressure and chlorine.  Predictions and
+ ground truth are denormalized and chlorine values are exponentiated so the
+ resulting errors are reported in physical units.  Pressures below 5 m are
+ clipped to this lower bound during validation so metrics match the training
+ distribution.  All metrics are written to
 ``logs/surrogate_metrics.json`` for reproducibility.
 
 ## Running MPC control
