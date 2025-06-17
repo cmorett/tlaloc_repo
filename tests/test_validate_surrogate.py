@@ -21,7 +21,7 @@ class DummyModel(torch.nn.Module):
         self.y_mean = None
         self.y_std = torch.ones(1)
 
-    def forward(self, x, edge_index, edge_attr=None):
+    def forward(self, x, edge_index, edge_attr=None, node_types=None, edge_types=None):
         return torch.zeros(x.size(0), self.out_dim, device=x.device)
 
 def test_validate_surrogate_accepts_tuple():
@@ -35,7 +35,15 @@ def test_validate_surrogate_accepts_tuple():
     res = sim.run_sim(str(TEMP_DIR / "temp"))
     model = DummyModel().to(device)
     metrics, arr, times = validate_surrogate(
-        model, edge_index, None, wn, [(res, {})], device, "test"
+        model,
+        edge_index,
+        None,
+        wn,
+        [(res, {})],
+        device,
+        "test",
+        torch.tensor(node_types, dtype=torch.long),
+        torch.tensor(edge_types, dtype=torch.long),
     )
     assert "pressure_rmse" in metrics
     assert arr.shape[1] == len(wn.node_name_list)

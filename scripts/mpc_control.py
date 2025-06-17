@@ -298,25 +298,14 @@ def load_surrogate_model(
     # older checkpoints that used ``conv1``/``conv2``.  If the latter is
     # detected, rename the keys so ``load_state_dict`` can succeed.
     if any(k.startswith("conv1") for k in state) and not any(k.startswith("layers.0") for k in state):
-        renamed = dict(state)
-        mapping = {
-            "conv1.bias": "layers.0.bias",
-            "conv1.weight": "layers.0.weight",
-            "conv1.lin.weight": "layers.0.lin.weight",
-            "conv1.lin.bias": "layers.0.lin.bias",
-            "conv1.edge_mlp.0.weight": "layers.0.edge_mlp.0.weight",
-            "conv1.edge_mlp.0.bias": "layers.0.edge_mlp.0.bias",
-            "conv2.bias": "layers.1.bias",
-            "conv2.weight": "layers.1.weight",
-            "conv2.lin.weight": "layers.1.lin.weight",
-            "conv2.lin.bias": "layers.1.lin.bias",
-            "conv2.edge_mlp.0.weight": "layers.1.edge_mlp.0.weight",
-            "conv2.edge_mlp.0.bias": "layers.1.edge_mlp.0.bias",
-        }
-        for old, new in mapping.items():
-            if old in state:
-                renamed[new] = state[old]
-                del renamed[old]
+        renamed = {}
+        for k, v in state.items():
+            if k.startswith("conv1."):
+                renamed["layers.0." + k.split(".", 1)[1]] = v
+            elif k.startswith("conv2."):
+                renamed["layers.1." + k.split(".", 1)[1]] = v
+            else:
+                renamed[k] = v
         state = renamed
     elif any(k.startswith("encoder.convs") for k in state):
         # Models trained with ``EnhancedGNNEncoder`` store convolution weights
@@ -383,14 +372,55 @@ def load_surrogate_model(
             w = state[w_key]
             in_dim = w.shape[1]
             out_dim = w.shape[0]
+
             edge_key = None
             if f"layers.{i}.edge_mlp.0.weight" in state:
                 edge_key = f"layers.{i}.edge_mlp.0.weight"
             elif f"layers.{i}.edge_mlps.0.0.weight" in state:
                 edge_key = f"layers.{i}.edge_mlps.0.0.weight"
+
             if edge_key is not None:
                 e_dim = state[edge_key].shape[1]
-                conv_layers.append(HydroConv(in_dim, out_dim, e_dim))
+
+                node_keys = [
+                    k
+                    for k in state
+                    if k.startswith(f"layers.{i}.lin.") and k.endswith("weight")
+                ]
+                if node_keys:
+                    node_indices = []
+                    for k in node_keys:
+                        parts = k.split(".")
+                        if len(parts) > 3 and parts[3].isdigit():
+                            node_indices.append(int(parts[3]))
+                    n_node_types = max(node_indices) + 1 if node_indices else 1
+                else:
+                    n_node_types = 1
+
+                edge_keys = [
+                    k
+                    for k in state
+                    if k.startswith(f"layers.{i}.edge_mlps") and k.endswith("weight")
+                ]
+                if edge_keys:
+                    edge_indices = []
+                    for k in edge_keys:
+                        parts = k.split(".")
+                        if len(parts) > 3 and parts[3].isdigit():
+                            edge_indices.append(int(parts[3]))
+                    n_edge_types = max(edge_indices) + 1 if edge_indices else 1
+                else:
+                    n_edge_types = 1
+
+                conv_layers.append(
+                    HydroConv(
+                        in_dim,
+                        out_dim,
+                        e_dim,
+                        num_node_types=n_node_types,
+                        num_edge_types=n_edge_types,
+                    )
+                )
             else:
                 conv_layers.append(GCNConv(in_dim, out_dim))
     else:
@@ -444,6 +474,8 @@ def load_surrogate_model(
             dropout=0.0,
             residual=False,
             rnn_hidden_dim=rnn_hidden_dim,
+            num_node_types=getattr(conv_layers[0], "num_node_types", 1),
+            num_edge_types=getattr(conv_layers[0], "num_edge_types", 1),
         ).to(device)
     elif has_rnn:
         out_dim, rnn_hidden_dim = state["decoder.weight"].shape
@@ -458,6 +490,8 @@ def load_surrogate_model(
             dropout=0.0,
             residual=False,
             rnn_hidden_dim=rnn_hidden_dim,
+            num_node_types=getattr(conv_layers[0], "num_node_types", 1),
+            num_edge_types=getattr(conv_layers[0], "num_edge_types", 1),
         ).to(device)
     else:
         model = GNNSurrogate(conv_layers, fc_out=fc_layer).to(device)
