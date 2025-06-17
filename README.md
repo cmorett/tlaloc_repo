@@ -187,7 +187,7 @@ comp_df = computational_metrics(inference_times, optimisation_times)
 
 # export to CSV
 export_table(acc_df, "logs/accuracy.csv")
-
+```
 
 Tables use clear labels and units so results can be understood at a glance.  The
 same metrics can also be exported to Excel or JSON by passing a path ending in
