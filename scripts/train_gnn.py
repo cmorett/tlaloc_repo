@@ -1014,7 +1014,9 @@ def main(args: argparse.Namespace):
     edge_attr_raw = torch.tensor(edge_attr, dtype=torch.float32)
     edge_types = build_edge_type(wn, edge_index_np)
     node_types = build_node_type(wn)
-    num_node_types = int(np.max(node_types)) + 1
+    # Always allocate a distinct node type for tanks even if they are absent
+    # from the network to ensure ``HydroConv`` learns a dedicated transform.
+    num_node_types = max(int(np.max(node_types)) + 1, 2)
     num_edge_types = int(np.max(edge_types)) + 1
     edge_mean, edge_std = compute_edge_attr_stats(edge_attr)
     X_raw = np.load(args.x_path, allow_pickle=True)
