@@ -147,6 +147,8 @@ The surrogate model is compiled with TorchScript during loading for faster
 inference.  Use ``--no-jit`` to disable this.  ``propagate_with_surrogate`` can
 also accept lists of pressure/chlorine dictionaries to evaluate multiple
 scenarios in parallel.
+TorchScript is automatically skipped when the surrogate uses ``GATConv`` layers
+as they are not yet scriptable.
 ```
 
 By default the controller loads the most recent ``.pth`` file found in the
