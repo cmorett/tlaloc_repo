@@ -278,10 +278,16 @@ def validate_surrogate(
                         flow_pred = None
                 if hasattr(model, "y_mean") and model.y_mean is not None:
                     node_pred = node_pred * model.y_std + model.y_mean
+                pred_p = node_pred[:, 0].cpu().numpy()
+                pred_c = node_pred[:, 1].cpu().numpy()
                 y_true_p = pressures_df.iloc[i + 1].to_numpy()
                 y_true_c = chlorine_df.iloc[i + 1].to_numpy()
-                diff_p = node_pred[:, 0].cpu().numpy() - y_true_p
-                diff_c = node_pred[:, 1].cpu().numpy() - y_true_c
+                # chlorine predictions were trained in log space so convert
+                # predictions back to mg/L before computing errors
+                pred_c = np.expm1(pred_c)
+
+                diff_p = pred_p - y_true_p
+                diff_c = pred_c - y_true_c
                 err_p_all.extend(diff_p.tolist())
                 err_c_all.extend(diff_c.tolist())
                 for idx, name in enumerate(wn.node_name_list):

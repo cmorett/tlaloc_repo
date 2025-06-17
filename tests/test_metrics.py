@@ -37,3 +37,28 @@ def test_computational_metrics_basic():
     df = computational_metrics(inf, opt)
     assert np.isclose(df.loc["Inference Time per Simulation Step", "Average Time (ms)"], 15.0)
     assert np.isclose(df.loc["Optimization Time per Control Step", "Average Time (ms)"], 110.0)
+
+def test_accuracy_metrics_consistent_after_normalization():
+    true_p = np.array([15.0, 25.0, 30.0])
+    pred_p = np.array([14.0, 26.0, 31.0])
+    true_c = np.array([0.6, 0.4, 0.5])
+    pred_c = np.array([0.55, 0.38, 0.52])
+
+    base_df = accuracy_metrics(true_p, pred_p, true_c, pred_c)
+
+    p_mean, p_std = true_p.mean(), true_p.std() + 1e-8
+    c_mean, c_std = true_c.mean(), true_c.std() + 1e-8
+
+    tp_norm = (true_p - p_mean) / p_std
+    pp_norm = (pred_p - p_mean) / p_std
+    tc_norm = (true_c - c_mean) / c_std
+    pc_norm = (pred_c - c_mean) / c_std
+
+    tp_denorm = tp_norm * p_std + p_mean
+    pp_denorm = pp_norm * p_std + p_mean
+    tc_denorm = tc_norm * c_std + c_mean
+    pc_denorm = pc_norm * c_std + c_mean
+
+    norm_df = accuracy_metrics(tp_denorm, pp_denorm, tc_denorm, pc_denorm)
+
+    assert np.allclose(base_df.values, norm_df.values)
