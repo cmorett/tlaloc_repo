@@ -13,7 +13,8 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import warnings
-from torch_geometric.nn import GCNConv
+import inspect
+from torch_geometric.nn import GCNConv, GATConv
 from sklearn.preprocessing import MinMaxScaler
 # Import ``HydroConv`` from the training module located in the same
 # directory.  Using a plain module import keeps the file executable both when
@@ -422,11 +423,20 @@ def load_surrogate_model(
 
     if use_jit:
         try:
-            # Compile with TorchScript for efficient inference
-            scripted = torch.jit.script(model)
-            model = torch.jit.optimize_for_inference(scripted)
-        except Exception as e:  # pragma: no cover - optional optimisation
-            warnings.warn(f"TorchScript compilation failed: {e}")
+            source = inspect.getsource(getattr(model, "encoder", model).__class__)
+        except (OSError, TypeError):  # pragma: no cover - source unavailable
+            source = ""
+
+        if "GATConv" in source or any(isinstance(m, GATConv) for m in model.modules()):
+            warnings.warn(
+                "GATConv layers are not TorchScript compatible – skipping JIT compilation"
+            )
+        else:
+            try:
+                scripted = torch.jit.script(model)
+                model = torch.jit.optimize_for_inference(scripted)
+            except Exception as e:  # pragma: no cover - optional optimisation
+                warnings.warn(f"TorchScript compilation failed: {e}")
 
     return model
 

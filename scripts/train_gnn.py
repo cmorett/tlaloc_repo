@@ -163,7 +163,7 @@ class EnhancedGNNEncoder(nn.Module):
             identity = x
             if isinstance(conv, HydroConv):
                 x = conv(x, edge_index, edge_attr, node_type, edge_type)
-            elif isinstance(conv, GATConv):
+            elif conv.__class__.__name__ == "GATConv":
                 x = conv(x, edge_index, edge_attr)
             else:
                 x = conv(x, edge_index)
