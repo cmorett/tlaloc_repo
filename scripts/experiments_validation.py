@@ -198,6 +198,8 @@ def validate_surrogate(
     test_results: List,
     device: torch.device,
     run_name: str,
+    node_types_tensor: Optional[torch.Tensor] = None,
+    edge_types_tensor: Optional[torch.Tensor] = None,
 ) -> tuple[Dict[str, float], np.ndarray, List[int]]:
     """Compute RMSE of surrogate predictions.
 
@@ -261,7 +263,13 @@ def validate_surrogate(
                     x = (x - model.x_mean) / model.x_std
                 if hasattr(model, "rnn"):
                     seq_in = x.unsqueeze(0).unsqueeze(0)
-                    pred = model(seq_in, edge_index, edge_attr)
+                    pred = model(
+                        seq_in,
+                        edge_index,
+                        edge_attr,
+                        node_types_tensor,
+                        edge_types_tensor,
+                    )
                     if isinstance(pred, dict):
                         node_pred = pred.get("node_outputs")[0, 0]
                         flow_pred = pred.get("edge_outputs")[0, 0].squeeze()
@@ -269,7 +277,13 @@ def validate_surrogate(
                         node_pred = pred
                         flow_pred = None
                 else:
-                    pred = model(x, edge_index, edge_attr)
+                    pred = model(
+                        x,
+                        edge_index,
+                        edge_attr,
+                        node_types_tensor,
+                        edge_types_tensor,
+                    )
                     if isinstance(pred, dict):
                         node_pred = pred.get("node_outputs")
                         flow_pred = pred.get("edge_outputs").squeeze()
@@ -590,7 +604,15 @@ def main() -> None:
         with open(args.test_pkl, "rb") as f:
             test_res = pickle.load(f)
         metrics, err_arr, err_times = validate_surrogate(
-            model, edge_index, edge_attr, wn, test_res, device, args.run_name or ""
+            model,
+            edge_index,
+            edge_attr,
+            wn,
+            test_res,
+            device,
+            args.run_name or "",
+            torch.tensor(node_types, dtype=torch.long, device=device),
+            torch.tensor(edge_types, dtype=torch.long, device=device),
         )
         pd.DataFrame([metrics]).to_csv(
             os.path.join(DATA_DIR, "surrogate_validation.csv"), index=False

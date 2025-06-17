@@ -116,6 +116,8 @@ class EnhancedGNNEncoder(nn.Module):
         use_attention: bool = False,
         gat_heads: int = 4,
         share_weights: bool = False,
+        num_node_types: int = 1,
+        num_edge_types: int = 1,
     ) -> None:
         super().__init__()
 
@@ -124,12 +126,20 @@ class EnhancedGNNEncoder(nn.Module):
         self.residual = residual
         self.act_fn = getattr(F, activation)
         self.share_weights = share_weights
+        self.num_node_types = num_node_types
+        self.num_edge_types = num_edge_types
 
         def make_conv(in_c: int, out_c: int):
             if use_attention:
                 return GATConv(in_c, out_c // gat_heads, heads=gat_heads, edge_dim=edge_dim)
             if edge_dim is not None:
-                return HydroConv(in_c, out_c, edge_dim)
+                return HydroConv(
+                    in_c,
+                    out_c,
+                    edge_dim,
+                    num_node_types=self.num_node_types,
+                    num_edge_types=self.num_edge_types,
+                )
             return GCNConv(in_c, out_c)
 
         self.convs = nn.ModuleList()
@@ -195,6 +205,8 @@ class RecurrentGNNSurrogate(nn.Module):
         residual: bool,
         rnn_hidden_dim: int,
         share_weights: bool = False,
+        num_node_types: int = 1,
+        num_edge_types: int = 1,
     ) -> None:
         super().__init__()
         self.encoder = EnhancedGNNEncoder(
@@ -208,6 +220,8 @@ class RecurrentGNNSurrogate(nn.Module):
             use_attention=use_attention,
             gat_heads=gat_heads,
             share_weights=share_weights,
+            num_node_types=num_node_types,
+            num_edge_types=num_edge_types,
         )
         self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
         self.decoder = nn.Linear(rnn_hidden_dim, output_dim)
@@ -275,6 +289,8 @@ class MultiTaskGNNSurrogate(nn.Module):
         residual: bool,
         rnn_hidden_dim: int,
         share_weights: bool = False,
+        num_node_types: int = 1,
+        num_edge_types: int = 1,
     ) -> None:
         super().__init__()
         self.encoder = EnhancedGNNEncoder(
@@ -288,6 +304,8 @@ class MultiTaskGNNSurrogate(nn.Module):
             use_attention=use_attention,
             gat_heads=gat_heads,
             share_weights=share_weights,
+            num_node_types=num_node_types,
+            num_edge_types=num_edge_types,
         )
         self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
         self.node_decoder = nn.Linear(rnn_hidden_dim, node_output_dim)
@@ -996,6 +1014,8 @@ def main(args: argparse.Namespace):
     edge_attr_raw = torch.tensor(edge_attr, dtype=torch.float32)
     edge_types = build_edge_type(wn, edge_index_np)
     node_types = build_node_type(wn)
+    num_node_types = int(np.max(node_types)) + 1
+    num_edge_types = int(np.max(edge_types)) + 1
     edge_mean, edge_std = compute_edge_attr_stats(edge_attr)
     X_raw = np.load(args.x_path, allow_pickle=True)
     Y_raw = np.load(args.y_path, allow_pickle=True)
@@ -1156,6 +1176,8 @@ def main(args: argparse.Namespace):
                 residual=args.residual,
                 rnn_hidden_dim=args.rnn_hidden_dim,
                 share_weights=args.share_weights,
+                num_node_types=num_node_types,
+                num_edge_types=num_edge_types,
             ).to(device)
         else:
             model = RecurrentGNNSurrogate(
@@ -1170,6 +1192,8 @@ def main(args: argparse.Namespace):
                 residual=args.residual,
                 rnn_hidden_dim=args.rnn_hidden_dim,
                 share_weights=args.share_weights,
+                num_node_types=num_node_types,
+                num_edge_types=num_edge_types,
             ).to(device)
     else:
         sample = data_list[0]
@@ -1191,6 +1215,8 @@ def main(args: argparse.Namespace):
             use_attention=args.use_attention,
             gat_heads=args.gat_heads,
             share_weights=args.share_weights,
+            num_node_types=num_node_types,
+            num_edge_types=num_edge_types,
         ).to(device)
 
     # expose normalization stats on the model for later un-normalisation
