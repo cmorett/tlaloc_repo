@@ -65,6 +65,7 @@ python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy 
     --early-stop-patience 5 --edge-index-path data/edge_index.npy \
     --inp-path CTown.inp
 ```
+To disable the physics penalties pass ``--no-physics-loss``.
 
 For large graphs you can reduce memory usage by training on subgraphs.
 Passing ``--cluster-batch-size <N>`` partitions the network into clusters of
@@ -74,12 +75,12 @@ nodes and their neighbors on-the-fly instead of deterministic clusters.
 During inference on very large networks the same clusters can be evaluated
 sequentially to keep memory usage low.
 
-Use the ``--physics_loss`` flag to enable a physics-informed penalty that
-encourages mass conservation of predicted flows.  This adds a lightweight loss
-term based on Kirchhoff's law as described by Ashraf et al. (AAAI 2024).
-An additional ``--pressure_loss`` option enforces pressure-headloss
-consistency using the Hazen--Williams equation.  The weights of both physics
-terms can be tuned via ``--w_mass`` and ``--w_head``.
+A physics-informed mass balance penalty is applied by default to encourage
+conservation of predicted flows.  Disable it with ``--no-physics-loss`` if
+necessary.  An additional ``--pressure_loss`` option enforces
+pressure–headloss consistency using the Hazen--Williams equation.  The
+relative importance of both penalties can be tuned via ``--w_mass`` and
+``--w_head``.
 
 The trained model now supports validation loss tracking and early stopping.
 Normalization is applied automatically so the ``--normalize`` flag is optional.

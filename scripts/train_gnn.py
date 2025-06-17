@@ -1547,9 +1547,17 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--physics_loss",
+        dest="physics_loss",
         action="store_true",
-        help="Add mass conservation loss to training",
+        help="Enable mass conservation loss (default)",
     )
+    parser.add_argument(
+        "--no-physics-loss",
+        dest="physics_loss",
+        action="store_false",
+        help="Disable mass conservation loss",
+    )
+    parser.set_defaults(physics_loss=True)
     parser.add_argument(
         "--pressure_loss",
         action="store_true",
