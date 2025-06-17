@@ -63,11 +63,14 @@ class HydroConv(MessagePassing):
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
-        edge_attr: torch.Tensor,
+        edge_attr: Optional[torch.Tensor] = None,
         node_type: Optional[torch.Tensor] = None,
         edge_type: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run convolution with optional node/edge type information."""
+
+        if edge_attr is None:
+            raise ValueError("edge_attr cannot be None for HydroConv")
 
         if node_type is None:
             node_type = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
