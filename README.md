@@ -75,9 +75,11 @@ python scripts/train_gnn.py \
     --x-val-path data/X_val.npy --y-val-path data/Y_val.npy \
     --edge-index-path data/edge_index.npy --inp-path CTown.inp \
     --epochs 100 --batch-size 32 --hidden-dim 64 --num-layers 4 \
-    --dropout 0.1 --residual --early-stop-patience 10 --pressure_loss
+    --dropout 0.1 --residual --early-stop-patience 10
 ```
-To disable the physics penalties pass ``--no-physics-loss``.
+Pressure–headloss consistency is now enforced by default.  Pass
+``--no-pressure_loss`` if this coupling should be disabled.  To remove the
+mass balance penalty use ``--no-physics-loss``.
 
 For large graphs you can reduce memory usage by training on subgraphs.
 Passing ``--cluster-batch-size <N>`` partitions the network into clusters of
@@ -91,10 +93,10 @@ A physics-informed mass balance penalty is applied by default to encourage
 conservation of predicted flows.  Because each pipe appears twice in the graph
 (forward and reverse), the loss divides the imbalance by two so that equal and
 opposite flows cancel correctly.  Disable the term with ``--no-physics-loss``
-if necessary.  An additional ``--pressure_loss`` option enforces
-pressure–headloss consistency using the Hazen--Williams equation.  The
-relative importance of both penalties can be tuned via ``--w_mass`` and
-``--w_head``.
+if necessary.  ``--pressure_loss`` is enabled by default to enforce
+pressure–headloss consistency via the Hazen--Williams equation.  The
+relative importance of the penalties can be tuned via ``--w_mass``,
+``--w_head`` and the new ``--w_edge`` coefficient controlling the flow loss.
 
 The trained model now supports validation loss tracking and early stopping.
 Normalization is applied automatically so the ``--normalize`` flag is optional.
