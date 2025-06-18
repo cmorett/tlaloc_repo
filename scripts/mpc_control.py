@@ -512,6 +512,13 @@ def load_surrogate_model(
             model.y_std = torch.tensor(arr["y_std_node"], dtype=torch.float32, device=device)
         else:
             model.y_mean = model.y_std = None
+
+        if "y_mean_energy" in arr:
+            model.y_mean_energy = torch.tensor(arr["y_mean_energy"], dtype=torch.float32, device=device)
+            model.y_std_energy = torch.tensor(arr["y_std_energy"], dtype=torch.float32, device=device)
+        else:
+            model.y_mean_energy = None
+            model.y_std_energy = None
     else:
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
 
@@ -643,15 +650,28 @@ def compute_mpc_cost(
         x = prepare_node_features(feature_template, cur_p, cur_c, u[t], model, d)
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
-            pred = model(seq_in, edge_index, edge_attr, node_types, edge_types)
-            if isinstance(pred, dict):
-                pred = pred.get("node_outputs")[0, 0]
+            out = model(seq_in, edge_index, edge_attr, node_types, edge_types)
+            if isinstance(out, dict):
+                pred = out.get("node_outputs")[0, 0]
+                energy_pred = out.get("pump_energy")
+                if energy_pred is not None:
+                    energy_pred = energy_pred[0, 0]
+            else:
+                pred = out[0, 0]
+                energy_pred = None
         else:
-            pred = model(x, edge_index, edge_attr, node_types, edge_types)
-            if isinstance(pred, dict):
-                pred = pred.get("node_outputs")
+            out = model(x, edge_index, edge_attr, node_types, edge_types)
+            if isinstance(out, dict):
+                pred = out.get("node_outputs")
+                energy_pred = out.get("pump_energy")
+            else:
+                pred = out
+                energy_pred = None
+
         if getattr(model, "y_mean", None) is not None:
             pred = pred * model.y_std + model.y_mean
+        if energy_pred is not None and getattr(model, "y_mean_energy", None) is not None:
+            energy_pred = energy_pred * model.y_std_energy + model.y_mean_energy
         assert not torch.isnan(pred).any(), "NaN prediction"
         pred_p = pred[:, 0]
         pred_c = pred[:, 1]
@@ -671,7 +691,10 @@ def compute_mpc_cost(
         pressure_penalty = torch.sum(psf ** 3)
         chlorine_penalty = torch.sum(csf ** 3)
 
-        energy_term = torch.sum(u[t] ** 2)
+        if energy_pred is not None:
+            energy_term = torch.sum(energy_pred)
+        else:
+            energy_term = torch.sum(u[t] ** 2)
 
         step_cost = (
             w_p * pressure_penalty
