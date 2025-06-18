@@ -900,6 +900,9 @@ def propagate_with_surrogate(
         b_node_type = node_types.repeat(batch_size) if node_types is not None else None
         b_edge_type = edge_types.repeat(batch_size) if edge_types is not None else None
 
+    if hasattr(model, "reset_tank_levels"):
+        model.reset_tank_levels(batch_size, device)
+
     with torch.no_grad():
         for t, u in enumerate(control_seq):
             if u.dim() == 1:
@@ -996,6 +999,9 @@ def simulate_closed_loop(
         .pin_memory() if torch.cuda.is_available() else torch.from_numpy(c_arr)
     )
     cur_c = cur_c.to(device, non_blocking=True)
+
+    if hasattr(model, "reset_tank_levels"):
+        model.reset_tank_levels(1, device)
 
     base_demands = {
         j: wn.get_node(j).demand_timeseries_list[0].base_value

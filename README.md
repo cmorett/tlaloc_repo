@@ -67,6 +67,10 @@ Optionally, the same convolution layer can be reused for all message passing
 steps by passing ``--share-weights`` to ``train_gnn.py``. This reduces the
 number of parameters and can speed up optimisation.
 
+The surrogate now applies temporal self-attention after the LSTM to re-weight
+each node's history and updates tank pressures explicitly from predicted
+flows. Tank levels are reset automatically at the start of each MPC run.
+
 Example usage:
 
 ```bash

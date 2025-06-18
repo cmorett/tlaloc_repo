@@ -36,7 +36,7 @@ def test_multitask_gnn_forward_shapes():
         gat_heads=1,
         dropout=0.0,
         residual=False,
-        rnn_hidden_dim=5,
+        rnn_hidden_dim=8,
     )
     X_seq = torch.ones(1, 3, 2, 2)
     out = model(X_seq, edge_index, edge_attr)
