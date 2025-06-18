@@ -859,6 +859,7 @@ def train_sequence(
     pressure_loss: bool = False,
     w_mass: float = 0.5,
     w_head: float = 0.1,
+    w_edge: float = 1.0,
 ) -> tuple[float, float, float, float, float, float]:
     model.train()
     total_loss = 0.0
@@ -883,11 +884,19 @@ def train_sequence(
             loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
             loss_energy = F.mse_loss(preds['pump_energy'], Y_seq['pump_energy'].to(device))
             if physics_loss:
-                flows_mb = preds['edge_outputs'].squeeze(-1).permute(2, 0, 1)
+                flows_mb = (
+                    preds['edge_outputs'].squeeze(-1).permute(2, 0, 1).reshape(
+                        edge_index.size(1), -1
+                    )
+                )
+                demand_mb = (
+                    X_seq[..., 0].permute(2, 0, 1).reshape(node_count, -1)
+                )
                 mass_loss = compute_mass_balance_loss(
                     flows_mb,
                     edge_index.to(device),
                     node_count,
+                    demand=demand_mb,
                 )
             else:
                 mass_loss = torch.tensor(0.0, device=device)
@@ -900,7 +909,7 @@ def train_sequence(
                 )
             else:
                 head_loss = torch.tensor(0.0, device=device)
-            loss = loss_node + 0.5 * loss_edge + 0.1 * loss_energy
+            loss = loss_node + w_edge * loss_edge + 0.1 * loss_energy
             if physics_loss:
                 loss = loss + w_mass * mass_loss
             if pressure_loss:
@@ -942,6 +951,7 @@ def evaluate_sequence(
     pressure_loss: bool = False,
     w_mass: float = 0.5,
     w_head: float = 0.1,
+    w_edge: float = 1.0,
 ) -> tuple[float, float, float, float, float]:
     model.eval()
     total_loss = 0.0
@@ -969,11 +979,19 @@ def evaluate_sequence(
                     Y_seq['pump_energy'].to(device)
                 )
                 if physics_loss:
-                    flows_mb = preds['edge_outputs'].squeeze(-1).permute(2, 0, 1)
+                    flows_mb = (
+                        preds['edge_outputs'].squeeze(-1).permute(2, 0, 1).reshape(
+                            edge_index.size(1), -1
+                        )
+                    )
+                    demand_mb = (
+                        X_seq[..., 0].permute(2, 0, 1).reshape(node_count, -1)
+                    )
                     mass_loss = compute_mass_balance_loss(
                         flows_mb,
                         edge_index.to(device),
                         node_count,
+                        demand=demand_mb,
                     )
                 else:
                     mass_loss = torch.tensor(0.0, device=device)
@@ -986,7 +1004,7 @@ def evaluate_sequence(
                     )
                 else:
                     head_loss = torch.tensor(0.0, device=device)
-                loss = loss_node + 0.5 * loss_edge + 0.1 * loss_energy
+                loss = loss_node + w_edge * loss_edge + 0.1 * loss_energy
                 if physics_loss:
                     loss = loss + w_mass * mass_loss
                 if pressure_loss:
@@ -1284,6 +1302,7 @@ def main(args: argparse.Namespace):
                     pressure_loss=args.pressure_loss,
                     w_mass=args.w_mass,
                     w_head=args.w_head,
+                    w_edge=args.w_edge,
                 )
                 loss = loss_tuple[0]
                 node_l, edge_l, energy_l, mass_l, head_l = loss_tuple[1:]
@@ -1301,6 +1320,7 @@ def main(args: argparse.Namespace):
                         pressure_loss=args.pressure_loss,
                         w_mass=args.w_mass,
                         w_head=args.w_head,
+                        w_edge=args.w_edge,
                     )
                     val_loss = val_tuple[0]
                 else:
@@ -1611,6 +1631,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Add pressure-headloss consistency penalty",
     )
+    parser.set_defaults(pressure_loss=True)
     parser.add_argument(
         "--w_mass",
         type=float,
@@ -1622,6 +1643,12 @@ if __name__ == "__main__":
         type=float,
         default=0.1,
         help="Weight of the head loss consistency term",
+    )
+    parser.add_argument(
+        "--w_edge",
+        type=float,
+        default=1.0,
+        help="Weight of the edge (flow) loss term",
     )
     parser.add_argument(
         "--cluster-batch-size",

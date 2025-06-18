@@ -4,7 +4,12 @@ from typing import Optional
 # Inspired by Ashraf et al. (AAAI 2024): Physics-Informed Graph Neural Networks for Water Distribution Systems
 # See: https://arxiv.org/pdf/2403.18570
 
-def compute_mass_balance_loss(pred_flows: torch.Tensor, edge_index: torch.Tensor, node_count: int) -> torch.Tensor:
+def compute_mass_balance_loss(
+    pred_flows: torch.Tensor,
+    edge_index: torch.Tensor,
+    node_count: int,
+    demand: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
     """Return mean squared node imbalance for predicted flows.
 
     Parameters
@@ -36,6 +41,10 @@ def compute_mass_balance_loss(pred_flows: torch.Tensor, edge_index: torch.Tensor
     # inflates the loss for perfectly conserved flows. Halving the imbalance
     # restores a correct zero-loss for flows ``(+Q, -Q)`` on paired edges.
     node_balance = node_balance / 2.0
+
+    if demand is not None:
+        dem = demand.reshape(node_count, -1)
+        node_balance[:, : dem.shape[1]] -= dem
 
     return torch.mean(node_balance ** 2)
 
