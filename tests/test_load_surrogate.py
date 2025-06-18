@@ -87,3 +87,5 @@ def test_load_surrogate_handles_multitask_norm(tmp_path):
     )
     model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
     assert model.y_mean is not None
+    assert model.y_mean_energy is not None
+    assert model.y_std_energy is not None

@@ -186,6 +186,11 @@ inference.  Use ``--no-jit`` to disable this.  ``propagate_with_surrogate`` can
 also accept lists of pressure/chlorine dictionaries to evaluate multiple
 scenarios in parallel.
 
+Pump energy usage in the MPC cost function is estimated from the surrogate
+predictions. When the model was trained with ``pump_energy`` targets these
+predicted energy values are penalised directly; otherwise the controller falls
+back to the previous ``u[t]**2`` term.
+
 By default the controller loads the most recent ``.pth`` file found in the
 ``models`` directory so retraining will automatically use the newest weights.
 
