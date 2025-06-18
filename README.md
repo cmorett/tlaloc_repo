@@ -101,6 +101,8 @@ Normalization is applied automatically so the ``--normalize`` flag is optional.
 Each run is stored with a unique timestamp to avoid overwriting previous
 checkpoints.  Normalization statistics are saved alongside the weights and
 automatically applied by the inference scripts.
+You may cancel training early with ``Ctrl+C``.  The loop exits gracefully,
+keeping the best model on disk and producing the usual plots.
 
 To achieve good predictive accuracy the surrogate should be trained on a large
 collection of EPANET simulations.  The data generation script accepts a
