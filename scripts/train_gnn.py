@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.nn import MultiheadAttention
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch.utils.data import Dataset, DataLoader as TorchLoader
@@ -309,9 +310,17 @@ class MultiTaskGNNSurrogate(nn.Module):
             num_edge_types=num_edge_types,
         )
         self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
+        self.time_att = MultiheadAttention(rnn_hidden_dim, num_heads=4, batch_first=True)
         self.node_decoder = nn.Linear(rnn_hidden_dim, node_output_dim)
         self.edge_decoder = nn.Linear(rnn_hidden_dim * 2, edge_output_dim)
         self.energy_decoder = nn.Linear(rnn_hidden_dim, energy_output_dim)
+
+    def reset_tank_levels(self, batch_size: int = 1, device: Optional[torch.device] = None) -> None:
+        if not hasattr(self, "tank_indices"):
+            return
+        if device is None:
+            device = next(self.parameters()).device
+        self.tank_levels = torch.zeros(batch_size, len(self.tank_indices), device=device)
 
     def forward(
         self,
@@ -362,6 +371,24 @@ class MultiTaskGNNSurrogate(nn.Module):
         edge_emb = torch.cat([h_src, h_tgt], dim=-1)
         edge_pred = self.edge_decoder(edge_emb)
         energy_pred = self.energy_decoder(rnn_out.mean(dim=2))
+
+        if hasattr(self, "tank_indices") and len(getattr(self, "tank_indices")) > 0:
+            if not hasattr(self, "tank_levels") or self.tank_levels.size(0) != batch_size:
+                self.tank_levels = torch.zeros(batch_size, len(self.tank_indices), device=device)
+            flows = edge_pred[..., 0]  # [B, T, E]
+            for t in range(T):
+                net = []
+                for edges, signs in zip(self.tank_edges, self.tank_signs):
+                    if edges.numel() == 0:
+                        net.append(torch.zeros(batch_size, device=device))
+                    else:
+                        net.append((flows[:, t, edges] * signs).sum(dim=1))
+                net_flow = torch.stack(net, dim=1)
+                delta_vol = net_flow * 3600.0
+                self.tank_levels += delta_vol
+                delta_h = delta_vol / self.tank_areas
+                for i, tank_idx in enumerate(self.tank_indices):
+                    node_pred[:, t, tank_idx, 0] = node_pred[:, t, tank_idx, 0] + delta_h[:, i]
 
         return {
             "node_outputs": node_pred,
@@ -867,6 +894,8 @@ def train_sequence(
     node_count = int(edge_index.max()) + 1
     for X_seq, Y_seq in loader:
         X_seq = X_seq.to(device)
+        if hasattr(model, "reset_tank_levels"):
+            model.reset_tank_levels(X_seq.size(0), device)
         optimizer.zero_grad()
         preds = model(
             X_seq,
@@ -960,6 +989,8 @@ def evaluate_sequence(
     with torch.no_grad():
         for X_seq, Y_seq in loader:
             X_seq = X_seq.to(device)
+            if hasattr(model, "reset_tank_levels"):
+                model.reset_tank_levels(X_seq.size(0), device)
             preds = model(
                 X_seq,
                 edge_index.to(device),
@@ -1215,6 +1246,25 @@ def main(args: argparse.Namespace):
                 num_node_types=num_node_types,
                 num_edge_types=num_edge_types,
             ).to(device)
+            tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
+            model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
+            areas = []
+            for name in wn.tank_name_list:
+                node = wn.get_node(name)
+                diam = getattr(node, "diameter", 0.0)
+                areas.append(np.pi * (float(diam) ** 2) / 4.0)
+            model.tank_areas = torch.tensor(areas, device=device)
+            tank_edges = []
+            tank_signs = []
+            for idx in tank_indices:
+                src = np.where(edge_index_np[0] == idx)[0]
+                tgt = np.where(edge_index_np[1] == idx)[0]
+                tank_edges.append(torch.tensor(np.concatenate([src, tgt]), dtype=torch.long, device=device))
+                signs = np.concatenate([-np.ones(len(src)), np.ones(len(tgt))])
+                tank_signs.append(torch.tensor(signs, dtype=torch.float32, device=device))
+            model.tank_edges = tank_edges
+            model.tank_signs = tank_signs
+            model.reset_tank_levels(1, device)
         else:
             model = RecurrentGNNSurrogate(
                 in_channels=sample_dim,
@@ -1231,6 +1281,25 @@ def main(args: argparse.Namespace):
                 num_node_types=num_node_types,
                 num_edge_types=num_edge_types,
             ).to(device)
+            tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
+            model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
+            areas = []
+            for name in wn.tank_name_list:
+                node = wn.get_node(name)
+                diam = getattr(node, "diameter", 0.0)
+                areas.append(np.pi * (float(diam) ** 2) / 4.0)
+            model.tank_areas = torch.tensor(areas, device=device)
+            tank_edges = []
+            tank_signs = []
+            for idx in tank_indices:
+                src = np.where(edge_index_np[0] == idx)[0]
+                tgt = np.where(edge_index_np[1] == idx)[0]
+                tank_edges.append(torch.tensor(np.concatenate([src, tgt]), dtype=torch.long, device=device))
+                signs = np.concatenate([-np.ones(len(src)), np.ones(len(tgt))])
+                tank_signs.append(torch.tensor(signs, dtype=torch.float32, device=device))
+            model.tank_edges = tank_edges
+            model.tank_signs = tank_signs
+            model.reset_tank_levels(1, device)
     else:
         sample = data_list[0]
         if sample.num_node_features != expected_in_dim:
