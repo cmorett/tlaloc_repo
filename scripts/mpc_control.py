@@ -537,14 +537,43 @@ def load_surrogate_model(
     return model
 
 
+def compute_demand_vectors(
+    wn: wntr.network.WaterNetworkModel,
+    node_to_index: Dict[str, int],
+    base_demands: Dict[str, float],
+    start_hour: int,
+    horizon: int,
+) -> torch.Tensor:
+    """Compute per-node demand vectors for each hour of the horizon."""
+    num_nodes = len(node_to_index)
+    out = torch.zeros(horizon, num_nodes, dtype=torch.float32)
+    for t in range(horizon):
+        t_sec = (start_hour + t) * 3600
+        for j in wn.junction_name_list:
+            pat_name = wn.get_node(j).demand_timeseries_list[0].pattern_name
+            mult = 1.0
+            if pat_name:
+                mult = wn.get_pattern(pat_name).at(t_sec)
+            out[t, node_to_index[j]] = base_demands[j] * mult
+    return out
+
+
 def prepare_node_features(
     template: torch.Tensor,
     pressures: torch.Tensor,
     chlorine: torch.Tensor,
     pump_controls: torch.Tensor,
     model: GNNSurrogate,
+    demands: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Assemble node features using precomputed static attributes."""
+    """Assemble node features using precomputed static attributes.
+
+    Parameters
+    ----------
+    demands : torch.Tensor, optional
+        Per-node demand values for the current time step. When ``None`` the
+        base demand stored in ``template`` is used.
+    """
     num_nodes = template.size(0)
     num_pumps = pump_controls.size(-1)
     pump_controls = pump_controls.to(dtype=torch.float32, device=template.device)
@@ -552,6 +581,8 @@ def prepare_node_features(
     if pressures.dim() == 2:
         batch_size = pressures.size(0)
         feats = template.expand(batch_size, num_nodes, template.size(1)).clone()
+        if demands is not None:
+            feats[:, :, 0] = demands
         feats[:, :, 1] = pressures
         feats[:, :, 2] = chlorine
         feats[:, :, 4 : 4 + num_pumps] = pump_controls.view(batch_size, 1, -1).expand(batch_size, num_nodes, num_pumps)
@@ -563,6 +594,8 @@ def prepare_node_features(
         return feats.view(batch_size * num_nodes, -1)
 
     feats = template.clone()
+    if demands is not None:
+        feats[:, 0] = demands
     feats[:, 1] = pressures
     feats[:, 2] = chlorine
     feats[:, 4 : 4 + num_pumps] = pump_controls.view(1, -1).expand(num_nodes, num_pumps)
@@ -589,13 +622,16 @@ def compute_mpc_cost(
     device: torch.device,
     Pmin: float,
     Cmin: float,
+    demands: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Return the MPC cost for a sequence of pump controls.
 
     The cost combines pressure and chlorine constraint violations, pump
-    energy use and a smoothness term on control differences. Violations are
-    penalized cubically to strongly discourage operating below the specified
-    minimum thresholds.
+    energy use and a smoothness term on control differences. ``demands`` can be
+    used to provide per-node demand values for each step which keeps the
+    surrogate inputs consistent with training.
+    Violations are penalized cubically to strongly discourage operating below
+    the specified minimum thresholds.
     """
     cur_p = pressures.to(device)
     cur_c = chlorine.to(device)
@@ -603,7 +639,8 @@ def compute_mpc_cost(
     smoothness_penalty = torch.tensor(0.0, device=device)
 
     for t in range(horizon):
-        x = prepare_node_features(feature_template, cur_p, cur_c, u[t], model)
+        d = demands[t] if demands is not None else None
+        x = prepare_node_features(feature_template, cur_p, cur_c, u[t], model, d)
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
             pred = model(seq_in, edge_index, edge_attr, node_types, edge_types)
@@ -673,6 +710,7 @@ def run_mpc_step(
     device: torch.device,
     Pmin: float,
     Cmin: float,
+    demands: Optional[torch.Tensor] = None,
     u_warm: Optional[torch.Tensor] = None,
     profile: bool = False,
 ) -> tuple[torch.Tensor, List[float]]:
@@ -686,6 +724,8 @@ def run_mpc_step(
 
     Parameters
     ----------
+    demands : torch.Tensor, optional
+        Horizon x num_nodes demand values used when assembling node features.
     u_warm : torch.Tensor, optional
         Previous control sequence to warm start the optimization.
     """
@@ -732,6 +772,7 @@ def run_mpc_step(
             device,
             Pmin,
             Cmin,
+            demands,
         )
         cost.backward()
         adam_opt.step()
@@ -761,6 +802,7 @@ def run_mpc_step(
             device,
             Pmin,
             Cmin,
+            demands,
         )
         c.backward()
         return c
@@ -792,6 +834,7 @@ def propagate_with_surrogate(
     chlorine: Dict[str, float],
     control_seq: torch.Tensor,
     device: torch.device,
+    demands: Optional[torch.Tensor] = None,
 ) -> tuple[Dict[str, float], Dict[str, float]]:
     """Propagate the network state using the surrogate model.
 
@@ -835,12 +878,15 @@ def propagate_with_surrogate(
         b_edge_type = edge_types.repeat(batch_size) if edge_types is not None else None
 
     with torch.no_grad():
-        for u in control_seq:
+        for t, u in enumerate(control_seq):
             if u.dim() == 1:
                 u_in = u.view(1, -1).expand(batch_size, -1)
             else:
                 u_in = u
-            x = prepare_node_features(feature_template, cur_p, cur_c, u_in, model)
+            d = demands[t] if demands is not None else None
+            x = prepare_node_features(
+                feature_template, cur_p, cur_c, u_in, model, d
+            )
             if hasattr(model, "rnn"):
                 seq_in = x.view(batch_size, 1, feature_template.size(0), x.size(-1))
                 pred = model(seq_in, b_edge_index, b_edge_attr, b_node_type, b_edge_type)
@@ -937,6 +983,9 @@ def simulate_closed_loop(
 
     for hour in range(24):
         start = time.time()
+        demands = compute_demand_vectors(
+            wn, node_to_index, base_demands, hour, horizon
+        ).to(device)
         u_opt, costs = run_mpc_step(
             wn,
             model,
@@ -952,6 +1001,7 @@ def simulate_closed_loop(
             device,
             Pmin,
             Cmin,
+            demands,
             prev_u,
         )
         all_costs.extend(costs)
@@ -967,7 +1017,7 @@ def simulate_closed_loop(
                 link.initial_status = wntr.network.base.LinkStatus.Open
                 link.base_speed = float(first_controls[i].item())
 
-        # update demands based on patterns and random variation
+        # update demands based on the diurnal pattern
         t = hour * 3600
         for j in wn.junction_name_list:
             junc = wn.get_node(j)
@@ -975,8 +1025,7 @@ def simulate_closed_loop(
             pat_name = junc.demand_timeseries_list[0].pattern_name
             if pat_name:
                 mult = wn.get_pattern(pat_name).at(t)
-            noise = np.random.normal(1.0, 0.05)
-            junc.demand_timeseries_list[0].base_value = base_demands[j] * mult * noise
+            junc.demand_timeseries_list[0].base_value = base_demands[j] * mult
 
         if feedback_interval > 0 and hour % feedback_interval == 0:
             # Periodic ground truth synchronization using EPANET
@@ -1020,6 +1069,7 @@ def simulate_closed_loop(
                 chlorine,
                 u_opt,
                 device,
+                demands,
             )
             cur_p = torch.tensor([pressures[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
             cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], dtype=torch.float32, device=device)

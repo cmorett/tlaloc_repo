@@ -196,6 +196,9 @@ running entirely on a CUDA device.  Results are written to
 `data/mpc_history.csv`.  A summary listing constraint violations and total
 energy consumption is printed at the end of the run and saved to
 ``logs/mpc_summary.json``.
+The controller updates node demands each hour using the diurnal patterns
+specified in ``CTown.inp`` so the surrogate remains aligned with its training
+distribution.
 
 **Important:** the surrogate must be trained on datasets that include pump
 control inputs (the additional features appended by `scripts/data_generation.py`).
