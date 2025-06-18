@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 import sys
+import signal
 
 import numpy as np
 import torch
@@ -698,6 +699,20 @@ def build_node_type(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
     return np.array(types, dtype=np.int64)
 
 
+interrupted = False
+
+
+def _signal_handler(signum, frame):
+    global interrupted
+    interrupted = True
+    print("Received interrupt signal. Stopping after current epoch...")
+
+
+def handle_keyboard_interrupt(model_path: str) -> None:
+    """Notify user that training was interrupted."""
+    print(f"Training interrupted. Using best weights saved to {model_path}")
+
+
 def partition_graph_greedy(edge_index: np.ndarray, num_nodes: int, cluster_size: int) -> list[np.ndarray]:
     """Split ``edge_index`` into clusters using greedy modularity heuristics."""
     G = nx.Graph()
@@ -1007,6 +1022,7 @@ PLOTS_DIR = REPO_ROOT / "plots"
 def main(args: argparse.Namespace):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+    signal.signal(signal.SIGINT, _signal_handler)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
@@ -1339,8 +1355,12 @@ def main(args: argparse.Namespace):
                         )
             else:
                 patience += 1
+            if interrupted:
+                break
             if patience >= args.early_stop_patience:
                 break
+        if interrupted:
+            handle_keyboard_interrupt(model_path)
 
     os.makedirs(PLOTS_DIR, exist_ok=True)
     # plot loss curve
