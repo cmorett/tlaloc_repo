@@ -507,6 +507,11 @@ def predicted_vs_actual_scatter(
     tc = _to_numpy(true_chlorine)
     pc = _to_numpy(pred_chlorine)
 
+    # chlorine values are stored in log space (log1p). Convert back to mg/L
+    # before plotting so the axes reflect physical units.
+    tc = np.expm1(tc)
+    pc = np.expm1(pc)
+
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
     axes[0].scatter(tp, pp, label="Pressure", color="tab:blue", alpha=0.7)
