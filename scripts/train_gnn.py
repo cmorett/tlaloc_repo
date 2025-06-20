@@ -311,9 +311,7 @@ class MultiTaskGNNSurrogate(nn.Module):
         self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
         self.time_att = MultiheadAttention(rnn_hidden_dim, num_heads=4, batch_first=True)
         self.node_decoder = nn.Linear(rnn_hidden_dim, node_output_dim)
-        codex/improve-flow-decoder-with-physics-aware-model
         self.edge_decoder = nn.Linear(rnn_hidden_dim * 3, edge_output_dim)
-        self.energy_decoder = nn.Linear(rnn_hidden_dim, energy_output_dim)
 
 
     def reset_tank_levels(
@@ -918,7 +916,16 @@ def train_sequence(
     w_mass: float = 1.0,
     w_head: float = 1.0,
     w_edge: float = 1.0,
+    node_mask: Optional[torch.Tensor] = None,
 ) -> tuple[float, float, float, float, float, float]:
+    """Train ``model`` on a sequence dataset.
+
+    Parameters
+    ----------
+    node_mask : torch.Tensor, optional
+        Boolean mask indicating which nodes contribute to the loss. This
+        can be used to exclude reservoirs from the objective.
+    """
     model.train()
     total_loss = 0.0
     node_total = edge_total = mass_total = head_total = 0.0
@@ -938,10 +945,13 @@ def train_sequence(
             edge_type,
         )
         if isinstance(Y_seq, dict):
-            loss_node = F.mse_loss(
-                preds['node_outputs'],
-                Y_seq['node_outputs'].to(device)
-            )
+            tgt_nodes = Y_seq['node_outputs'].to(device)
+            pred_nodes = preds['node_outputs']
+            if node_mask is not None:
+                nm = node_mask.to(device)
+                pred_nodes = pred_nodes[:, :, nm, :]
+                tgt_nodes = tgt_nodes[:, :, nm, :]
+            loss_node = F.mse_loss(pred_nodes, tgt_nodes)
             edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
             loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
             if physics_loss:
@@ -1011,7 +1021,9 @@ def evaluate_sequence(
     w_mass: float = 1.0,
     w_head: float = 1.0,
     w_edge: float = 1.0,
+    node_mask: Optional[torch.Tensor] = None,
 ) -> tuple[float, float, float, float, float]:
+    """Evaluate ``model`` on a sequence dataset using ``node_mask`` if given."""
     model.eval()
     total_loss = 0.0
     node_total = edge_total = mass_total = head_total = 0.0
@@ -1031,10 +1043,13 @@ def evaluate_sequence(
                 edge_type,
             )
             if isinstance(Y_seq, dict):
-                loss_node = F.mse_loss(
-                    preds['node_outputs'],
-                    Y_seq['node_outputs'].to(device)
-                )
+                tgt_nodes = Y_seq['node_outputs'].to(device)
+                pred_nodes = preds['node_outputs']
+                if node_mask is not None:
+                    nm = node_mask.to(device)
+                    pred_nodes = pred_nodes[:, :, nm, :]
+                    tgt_nodes = tgt_nodes[:, :, nm, :]
+                loss_node = F.mse_loss(pred_nodes, tgt_nodes)
                 edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
                 loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
                 if physics_loss:
@@ -1105,6 +1120,10 @@ def main(args: argparse.Namespace):
     edge_attr_raw = torch.tensor(edge_attr, dtype=torch.float32)
     edge_types = build_edge_type(wn, edge_index_np)
     node_types = build_node_type(wn)
+    non_reservoir_mask = torch.tensor(
+        [n not in wn.reservoir_name_list for n in wn.node_name_list],
+        dtype=torch.bool,
+    )
     # Always allocate a distinct node type for tanks even if they are absent
     # from the network to ensure ``HydroConv`` learns a dedicated transform.
     num_node_types = max(int(np.max(node_types)) + 1, 2)
@@ -1397,6 +1416,7 @@ def main(args: argparse.Namespace):
                     w_mass=args.w_mass,
                     w_head=args.w_head,
                     w_edge=args.w_edge,
+                    node_mask=non_reservoir_mask,
                 )
                 loss = loss_tuple[0]
                 node_l, edge_l, mass_l, head_l = loss_tuple[1:]
@@ -1415,6 +1435,7 @@ def main(args: argparse.Namespace):
                         w_mass=args.w_mass,
                         w_head=args.w_head,
                         w_edge=args.w_edge,
+                        node_mask=non_reservoir_mask,
                     )
                     val_loss = val_tuple[0]
                 else:
