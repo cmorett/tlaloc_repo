@@ -10,7 +10,6 @@ def test_tank_pressure_update():
         edge_dim=3,
         node_output_dim=2,
         edge_output_dim=1,
-        energy_output_dim=1,
         num_layers=1,
         use_attention=False,
         gat_heads=1,
