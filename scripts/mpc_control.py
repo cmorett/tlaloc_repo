@@ -679,8 +679,11 @@ def compute_mpc_cost(
 
         w_p, w_c, w_e, w_s = 10.0, 5.0, 1.0, 0.01
 
-        psf = torch.clamp(Pmin - pred_p, min=0.0)
-        csf = torch.clamp(Cmin - pred_c, min=0.0)
+        Pmin_safe = Pmin + 3.0
+        Cmin_safe = Cmin + 0.05
+
+        psf = torch.clamp(Pmin_safe - pred_p, min=0.0)
+        csf = torch.clamp(Cmin_safe - pred_c, min=0.0)
         pressure_penalty = torch.sum(psf ** 3)
         chlorine_penalty = torch.sum(csf ** 3)
 
