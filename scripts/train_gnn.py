@@ -910,8 +910,8 @@ def train_sequence(
     device,
     physics_loss: bool = False,
     pressure_loss: bool = False,
-    w_mass: float = 0.5,
-    w_head: float = 0.1,
+    w_mass: float = 1.0,
+    w_head: float = 1.0,
     w_edge: float = 1.0,
 ) -> tuple[float, float, float, float, float, float]:
     model.train()
@@ -1006,8 +1006,8 @@ def evaluate_sequence(
     device,
     physics_loss: bool = False,
     pressure_loss: bool = False,
-    w_mass: float = 0.5,
-    w_head: float = 0.1,
+    w_mass: float = 1.0,
+    w_head: float = 1.0,
     w_edge: float = 1.0,
 ) -> tuple[float, float, float, float, float]:
     model.eval()
@@ -1734,13 +1734,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--w_mass",
         type=float,
-        default=0.5,
+        default=1.0,
         help="Weight of the mass conservation loss term",
     )
     parser.add_argument(
         "--w_head",
         type=float,
-        default=0.1,
+        default=1.0,
         help="Weight of the head loss consistency term",
     )
     parser.add_argument(

@@ -82,9 +82,9 @@ python scripts/train_gnn.py \
     --epochs 100 --batch-size 32 --hidden-dim 64 --num-layers 4 \
     --dropout 0.1 --residual --early-stop-patience 10
 ```
-Pressure–headloss consistency is now enforced by default.  Pass
-``--no-pressure_loss`` if this coupling should be disabled.  To remove the
-mass balance penalty use ``--no-physics-loss``.
+Pressure–headloss consistency is now enforced by default with a unit weight.
+Pass ``--no-pressure_loss`` if this coupling should be disabled.  To remove the
+mass balance penalty (also weighted by ``1.0`` by default) use ``--no-physics-loss``.
 
 For large graphs you can reduce memory usage by training on subgraphs.
 Passing ``--cluster-batch-size <N>`` partitions the network into clusters of
@@ -99,9 +99,10 @@ conservation of predicted flows.  Because each pipe appears twice in the graph
 (forward and reverse), the loss divides the imbalance by two so that equal and
 opposite flows cancel correctly.  Disable the term with ``--no-physics-loss``
 if necessary.  ``--pressure_loss`` is enabled by default to enforce
-pressure–headloss consistency via the Hazen--Williams equation.  The
-relative importance of the penalties can be tuned via ``--w_mass``,
-``--w_head`` and the new ``--w_edge`` coefficient controlling the flow loss.
+pressure–headloss consistency via the Hazen--Williams equation.  By default
+both penalties have a weight of ``1.0``. The relative importance can be tuned via
+``--w_mass`` and ``--w_head`` along with the ``--w_edge`` coefficient controlling
+the flow loss.
 
 The trained model now supports validation loss tracking and early stopping.
 Normalization is applied automatically so the ``--normalize`` flag is optional.
