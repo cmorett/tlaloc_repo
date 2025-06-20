@@ -900,8 +900,13 @@ def propagate_with_surrogate(
         b_node_type = node_types.repeat(batch_size) if node_types is not None else None
         b_edge_type = edge_types.repeat(batch_size) if edge_types is not None else None
 
-    if hasattr(model, "reset_tank_levels"):
-        model.reset_tank_levels(batch_size, device)
+    if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
+        if batch_size == 1:
+            init_press = cur_p[model.tank_indices].unsqueeze(0)
+        else:
+            init_press = cur_p[:, model.tank_indices]
+        init_levels = init_press * model.tank_areas
+        model.reset_tank_levels(init_levels)
 
     with torch.no_grad():
         for t, u in enumerate(control_seq):
@@ -1000,8 +1005,10 @@ def simulate_closed_loop(
     )
     cur_c = cur_c.to(device, non_blocking=True)
 
-    if hasattr(model, "reset_tank_levels"):
-        model.reset_tank_levels(1, device)
+    if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
+        init_press = cur_p[model.tank_indices].unsqueeze(0)
+        init_levels = init_press * model.tank_areas
+        model.reset_tank_levels(init_levels)
 
     base_demands = {
         j: wn.get_node(j).demand_timeseries_list[0].base_value
