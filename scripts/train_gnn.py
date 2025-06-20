@@ -627,10 +627,10 @@ class SequenceDataset(Dataset):
             self.multi = True
             self.Y = {
                 "node_outputs": torch.stack(
-                    torch.tensor(y["node_outputs"], dtype=torch.float32) for y in Y
+                    [torch.tensor(y["node_outputs"], dtype=torch.float32) for y in Y]
                 ),
                 "edge_outputs": torch.stack(
-                    torch.tensor(y["edge_outputs"], dtype=torch.float32) for y in Y
+                    [torch.tensor(y["edge_outputs"], dtype=torch.float32) for y in Y]
                 ),
             }
         else:
@@ -910,6 +910,7 @@ def train_sequence(
     device,
     physics_loss: bool = False,
     pressure_loss: bool = False,
+    node_mask: Optional[torch.Tensor] = None,
     w_mass: float = 1.0,
     w_head: float = 1.0,
     w_edge: float = 1.0,
@@ -933,10 +934,12 @@ def train_sequence(
             edge_type,
         )
         if isinstance(Y_seq, dict):
-            loss_node = F.mse_loss(
-                preds['node_outputs'],
-                Y_seq['node_outputs'].to(device)
-            )
+            target_nodes = Y_seq['node_outputs'].to(device)
+            pred_nodes = preds['node_outputs']
+            if node_mask is not None:
+                pred_nodes = pred_nodes[:, :, node_mask, :]
+                target_nodes = target_nodes[:, :, node_mask, :]
+            loss_node = F.mse_loss(pred_nodes, target_nodes)
             edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
             loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
             if physics_loss:
@@ -1003,6 +1006,7 @@ def evaluate_sequence(
     device,
     physics_loss: bool = False,
     pressure_loss: bool = False,
+    node_mask: Optional[torch.Tensor] = None,
     w_mass: float = 1.0,
     w_head: float = 1.0,
     w_edge: float = 1.0,
@@ -1026,10 +1030,12 @@ def evaluate_sequence(
                 edge_type,
             )
             if isinstance(Y_seq, dict):
-                loss_node = F.mse_loss(
-                    preds['node_outputs'],
-                    Y_seq['node_outputs'].to(device)
-                )
+                target_nodes = Y_seq['node_outputs'].to(device)
+                pred_nodes = preds['node_outputs']
+                if node_mask is not None:
+                    pred_nodes = pred_nodes[:, :, node_mask, :]
+                    target_nodes = target_nodes[:, :, node_mask, :]
+                loss_node = F.mse_loss(pred_nodes, target_nodes)
                 edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
                 loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
                 if physics_loss:
