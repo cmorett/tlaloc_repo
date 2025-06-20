@@ -315,12 +315,33 @@ class MultiTaskGNNSurrogate(nn.Module):
         self.edge_decoder = nn.Linear(rnn_hidden_dim * 2, edge_output_dim)
         self.energy_decoder = nn.Linear(rnn_hidden_dim, energy_output_dim)
 
-    def reset_tank_levels(self, batch_size: int = 1, device: Optional[torch.device] = None) -> None:
+    def reset_tank_levels(
+        self,
+        init_levels: Optional[torch.Tensor] = None,
+        batch_size: int = 1,
+        device: Optional[torch.device] = None,
+    ) -> None:
+        """Initialize internal tank volumes.
+
+        Parameters
+        ----------
+        init_levels : torch.Tensor, optional
+            Tensor of initial tank volumes (``[B, num_tanks]``).  When ``None``
+            the levels are reset to zero.
+        batch_size : int
+            Number of sequences in the batch when ``init_levels`` is ``None``.
+        device : torch.device, optional
+            Target device for the tensor.
+        """
         if not hasattr(self, "tank_indices"):
             return
         if device is None:
             device = next(self.parameters()).device
-        self.tank_levels = torch.zeros(batch_size, len(self.tank_indices), device=device)
+        if init_levels is None:
+            init_levels = torch.zeros(batch_size, len(self.tank_indices), device=device)
+        else:
+            init_levels = init_levels.to(device)
+        self.tank_levels = init_levels
 
     def forward(
         self,
@@ -899,8 +920,10 @@ def train_sequence(
     node_count = int(edge_index.max()) + 1
     for X_seq, Y_seq in loader:
         X_seq = X_seq.to(device)
-        if hasattr(model, "reset_tank_levels"):
-            model.reset_tank_levels(X_seq.size(0), device)
+        if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
+            init_press = X_seq[:, 0, model.tank_indices, 1]
+            init_levels = init_press * model.tank_areas
+            model.reset_tank_levels(init_levels)
         optimizer.zero_grad()
         preds = model(
             X_seq,
@@ -994,8 +1017,10 @@ def evaluate_sequence(
     with torch.no_grad():
         for X_seq, Y_seq in loader:
             X_seq = X_seq.to(device)
-            if hasattr(model, "reset_tank_levels"):
-                model.reset_tank_levels(X_seq.size(0), device)
+            if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
+                init_press = X_seq[:, 0, model.tank_indices, 1]
+                init_levels = init_press * model.tank_areas
+                model.reset_tank_levels(init_levels)
             preds = model(
                 X_seq,
                 edge_index.to(device),
@@ -1269,7 +1294,7 @@ def main(args: argparse.Namespace):
                 tank_signs.append(torch.tensor(signs, dtype=torch.float32, device=device))
             model.tank_edges = tank_edges
             model.tank_signs = tank_signs
-            model.reset_tank_levels(1, device)
+            model.reset_tank_levels(batch_size=1, device=device)
         else:
             model = RecurrentGNNSurrogate(
                 in_channels=sample_dim,
@@ -1304,7 +1329,7 @@ def main(args: argparse.Namespace):
                 tank_signs.append(torch.tensor(signs, dtype=torch.float32, device=device))
             model.tank_edges = tank_edges
             model.tank_signs = tank_signs
-            model.reset_tank_levels(1, device)
+            model.reset_tank_levels(batch_size=1, device=device)
     else:
         sample = data_list[0]
         if sample.num_node_features != expected_in_dim:

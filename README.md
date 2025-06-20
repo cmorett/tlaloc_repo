@@ -69,7 +69,8 @@ number of parameters and can speed up optimisation.
 
 The surrogate now applies temporal self-attention after the LSTM to re-weight
 each node's history and updates tank pressures explicitly from predicted
-flows. Tank levels are reset automatically at the start of each MPC run.
+flows. Before predicting a sequence the current tank volumes must be passed to
+``model.reset_tank_levels`` which the MPC script handles automatically.
 
 Example usage:
 
