@@ -58,6 +58,7 @@ def test_train_sequence_with_physics_losses():
         torch.device("cpu"),
         physics_loss=True,
         pressure_loss=True,
+        node_mask=None,
     )
     # mass and head losses should be finite numbers
     assert torch.isfinite(torch.tensor(loss_tuple[3]))
