@@ -30,7 +30,6 @@ def test_multitask_gnn_forward_shapes():
         edge_dim=3,
         node_output_dim=2,
         edge_output_dim=1,
-        energy_output_dim=1,
         num_layers=2,
         use_attention=False,
         gat_heads=1,
@@ -42,4 +41,3 @@ def test_multitask_gnn_forward_shapes():
     out = model(X_seq, edge_index, edge_attr)
     assert out['node_outputs'].shape == (1, 3, 2, 2)
     assert out['edge_outputs'].shape == (1, 3, 2, 1)
-    assert out['pump_energy'].shape == (1, 3, 1)

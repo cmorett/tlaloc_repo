@@ -26,7 +26,6 @@ def test_train_sequence_with_physics_losses():
             {
                 "node_outputs": np.zeros((T, N, 2), dtype=np.float32),
                 "edge_outputs": np.zeros((T, E), dtype=np.float32),
-                "pump_energy": np.zeros((T, 1), dtype=np.float32),
             }
         ],
         dtype=object,
@@ -39,7 +38,6 @@ def test_train_sequence_with_physics_losses():
         edge_dim=3,
         node_output_dim=2,
         edge_output_dim=1,
-        energy_output_dim=1,
         num_layers=2,
         use_attention=False,
         gat_heads=1,
@@ -62,5 +60,5 @@ def test_train_sequence_with_physics_losses():
         pressure_loss=True,
     )
     # mass and head losses should be finite numbers
+    assert torch.isfinite(torch.tensor(loss_tuple[3]))
     assert torch.isfinite(torch.tensor(loss_tuple[4]))
-    assert torch.isfinite(torch.tensor(loss_tuple[5]))

@@ -51,10 +51,9 @@ loading the EPANET network (``--inp-path``).  If the dimension does not match
 continuous targets are predicted per node.
 
 When datasets were generated with ``scripts/data_generation.py`` after this
-update, each time step also stores pipe flow rates and pump energy
-consumption. ``train_gnn.py`` automatically detects such multi-task arrays and
-switches to a ``MultiTaskGNNSurrogate`` model which optimizes a weighted loss
-over all targets.
+update, each time step also stores pipe flow rates. ``train_gnn.py``
+automatically detects such multi-task arrays and switches to a
+``MultiTaskGNNSurrogate`` model which optimizes node and edge losses.
 
 The GNN architecture has been refactored to support **heterogeneous graphs**.
 Node embeddings are now conditioned on the component type (junction, tank,
@@ -192,10 +191,9 @@ inference.  Use ``--no-jit`` to disable this.  ``propagate_with_surrogate`` can
 also accept lists of pressure/chlorine dictionaries to evaluate multiple
 scenarios in parallel.
 
-Pump energy usage in the MPC cost function is estimated from the surrogate
-predictions. When the model was trained with ``pump_energy`` targets these
-predicted energy values are penalised directly; otherwise the controller falls
-back to the previous ``u[t]**2`` term.
+Pump energy usage in the MPC cost function is computed from predicted flows and
+head gains using the EPANET power equations. This removes the need for a
+dedicated energy output and ties the optimisation to physical principles.
 
 By default the controller loads the most recent ``.pth`` file found in the
 ``models`` directory so retraining will automatically use the newest weights.

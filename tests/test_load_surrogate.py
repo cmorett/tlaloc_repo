@@ -82,10 +82,8 @@ def test_load_surrogate_handles_multitask_norm(tmp_path):
         y_std_node=np.ones(1),
         y_mean_edge=np.zeros(1),
         y_std_edge=np.ones(1),
-        y_mean_energy=np.zeros(1),
-        y_std_energy=np.ones(1),
     )
     model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
     assert model.y_mean is not None
-    assert model.y_mean_energy is not None
-    assert model.y_std_energy is not None
+    assert model.y_mean_energy is None
+    assert model.y_std_energy is None
