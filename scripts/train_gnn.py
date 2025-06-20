@@ -312,7 +312,7 @@ class MultiTaskGNNSurrogate(nn.Module):
         self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
         self.time_att = MultiheadAttention(rnn_hidden_dim, num_heads=4, batch_first=True)
         self.node_decoder = nn.Linear(rnn_hidden_dim, node_output_dim)
-        self.edge_decoder = nn.Linear(rnn_hidden_dim * 2, edge_output_dim)
+        self.edge_decoder = nn.Linear(rnn_hidden_dim * 3, edge_output_dim)
         self.energy_decoder = nn.Linear(rnn_hidden_dim, energy_output_dim)
 
     def reset_tank_levels(
@@ -389,7 +389,8 @@ class MultiTaskGNNSurrogate(nn.Module):
         tgt = edge_index[1]
         h_src = rnn_out[:, :, src, :]
         h_tgt = rnn_out[:, :, tgt, :]
-        edge_emb = torch.cat([h_src, h_tgt], dim=-1)
+        h_diff = h_src - h_tgt
+        edge_emb = torch.cat([h_src, h_tgt, h_diff], dim=-1)
         edge_pred = self.edge_decoder(edge_emb)
         energy_pred = self.energy_decoder(rnn_out.mean(dim=2))
 
