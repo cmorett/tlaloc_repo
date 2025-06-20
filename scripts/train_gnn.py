@@ -625,17 +625,13 @@ class SequenceDataset(Dataset):
         if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
             self.multi = True
             self.Y = {
-                "node_outputs": torch.stack([
-                    torch.tensor(y["node_outputs"], dtype=torch.float32) for y in Y
-                ]),
-                "edge_outputs": torch.stack([
-                    torch.tensor(y["edge_outputs"], dtype=torch.float32) for y in Y
-                ]),
+                "node_outputs": torch.stack(
+                    [torch.tensor(y["node_outputs"], dtype=torch.float32) for y in Y]
+                ),
+                "edge_outputs": torch.stack(
+                    [torch.tensor(y["edge_outputs"], dtype=torch.float32) for y in Y]
+                ),
             }
-            if "pump_energy" in first:
-                self.Y["pump_energy"] = torch.stack([
-                    torch.tensor(y["pump_energy"], dtype=torch.float32) for y in Y
-                ])
         else:
             self.multi = False
             self.Y = torch.tensor(Y, dtype=torch.float32)
