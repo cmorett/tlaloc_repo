@@ -283,7 +283,6 @@ class MultiTaskGNNSurrogate(nn.Module):
         edge_dim: int,
         node_output_dim: int,
         edge_output_dim: int,
-        energy_output_dim: int,
         num_layers: int,
         use_attention: bool,
         gat_heads: int,
@@ -313,7 +312,6 @@ class MultiTaskGNNSurrogate(nn.Module):
         self.time_att = MultiheadAttention(rnn_hidden_dim, num_heads=4, batch_first=True)
         self.node_decoder = nn.Linear(rnn_hidden_dim, node_output_dim)
         self.edge_decoder = nn.Linear(rnn_hidden_dim * 2, edge_output_dim)
-        self.energy_decoder = nn.Linear(rnn_hidden_dim, energy_output_dim)
 
     def reset_tank_levels(
         self,
@@ -391,7 +389,6 @@ class MultiTaskGNNSurrogate(nn.Module):
         h_tgt = rnn_out[:, :, tgt, :]
         edge_emb = torch.cat([h_src, h_tgt], dim=-1)
         edge_pred = self.edge_decoder(edge_emb)
-        energy_pred = self.energy_decoder(rnn_out.mean(dim=2))
 
         if hasattr(self, "tank_indices") and len(getattr(self, "tank_indices")) > 0:
             if not hasattr(self, "tank_levels") or self.tank_levels.size(0) != batch_size:
@@ -414,7 +411,6 @@ class MultiTaskGNNSurrogate(nn.Module):
         return {
             "node_outputs": node_pred,
             "edge_outputs": edge_pred,
-            "pump_energy": energy_pred,
         }
 
 
@@ -627,10 +623,17 @@ class SequenceDataset(Dataset):
         if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
             self.multi = True
             self.Y = {
-                "node_outputs": torch.stack([torch.tensor(y["node_outputs"], dtype=torch.float32) for y in Y]),
-                "edge_outputs": torch.stack([torch.tensor(y["edge_outputs"], dtype=torch.float32) for y in Y]),
-                "pump_energy": torch.stack([torch.tensor(y["pump_energy"], dtype=torch.float32) for y in Y]),
+                "node_outputs": torch.stack([
+                    torch.tensor(y["node_outputs"], dtype=torch.float32) for y in Y
+                ]),
+                "edge_outputs": torch.stack([
+                    torch.tensor(y["edge_outputs"], dtype=torch.float32) for y in Y
+                ]),
             }
+            if "pump_energy" in first:
+                self.Y["pump_energy"] = torch.stack([
+                    torch.tensor(y["pump_energy"], dtype=torch.float32) for y in Y
+                ])
         else:
             self.multi = False
             self.Y = torch.tensor(Y, dtype=torch.float32)
@@ -655,16 +658,13 @@ def compute_sequence_norm_stats(X: np.ndarray, Y: np.ndarray):
     if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
         node = np.concatenate([y["node_outputs"].reshape(-1, y["node_outputs"].shape[-1]) for y in Y], axis=0)
         edge = np.concatenate([y["edge_outputs"].reshape(-1, y["edge_outputs"].shape[-1]) for y in Y], axis=0)
-        energy = np.concatenate([y["pump_energy"].reshape(-1, y["pump_energy"].shape[-1]) for y in Y], axis=0)
         y_mean = {
             "node_outputs": torch.tensor(node.mean(axis=0), dtype=torch.float32),
             "edge_outputs": torch.tensor(edge.mean(axis=0), dtype=torch.float32),
-            "pump_energy": torch.tensor(energy.mean(axis=0), dtype=torch.float32),
         }
         y_std = {
             "node_outputs": torch.tensor(node.std(axis=0) + 1e-8, dtype=torch.float32),
             "edge_outputs": torch.tensor(edge.std(axis=0) + 1e-8, dtype=torch.float32),
-            "pump_energy": torch.tensor(energy.std(axis=0) + 1e-8, dtype=torch.float32),
         }
     else:
         y_flat = Y.reshape(-1, Y.shape[-1])
@@ -686,7 +686,8 @@ def apply_sequence_normalization(
     dataset.X = (dataset.X - x_mean) / x_std
     if dataset.multi:
         for k in dataset.Y:
-            dataset.Y[k] = (dataset.Y[k] - y_mean[k]) / y_std[k]
+            if k in y_mean:
+                dataset.Y[k] = (dataset.Y[k] - y_mean[k]) / y_std[k]
     else:
         dataset.Y = (dataset.Y - y_mean) / y_std
     if edge_attr_mean is not None and dataset.edge_attr is not None:
@@ -916,7 +917,7 @@ def train_sequence(
 ) -> tuple[float, float, float, float, float, float]:
     model.train()
     total_loss = 0.0
-    node_total = edge_total = energy_total = mass_total = head_total = 0.0
+    node_total = edge_total = mass_total = head_total = 0.0
     node_count = int(edge_index.max()) + 1
     for X_seq, Y_seq in loader:
         X_seq = X_seq.to(device)
@@ -939,7 +940,6 @@ def train_sequence(
             )
             edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
             loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
-            loss_energy = F.mse_loss(preds['pump_energy'], Y_seq['pump_energy'].to(device))
             if physics_loss:
                 flows_mb = (
                     preds['edge_outputs'].squeeze(-1).permute(2, 0, 1).reshape(
@@ -966,14 +966,14 @@ def train_sequence(
                 )
             else:
                 head_loss = torch.tensor(0.0, device=device)
-            loss = loss_node + w_edge * loss_edge + 0.1 * loss_energy
+            loss = loss_node + w_edge * loss_edge
             if physics_loss:
                 loss = loss + w_mass * mass_loss
             if pressure_loss:
                 loss = loss + w_head * head_loss
         else:
             Y_seq = Y_seq.to(device)
-            loss_node = loss_edge = loss_energy = mass_loss = torch.tensor(0.0, device=device)
+            loss_node = loss_edge = mass_loss = torch.tensor(0.0, device=device)
             loss = F.mse_loss(preds, Y_seq.float())
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -981,7 +981,6 @@ def train_sequence(
         total_loss += loss.item() * X_seq.size(0)
         node_total += loss_node.item() * X_seq.size(0)
         edge_total += loss_edge.item() * X_seq.size(0)
-        energy_total += loss_energy.item() * X_seq.size(0)
         mass_total += mass_loss.item() * X_seq.size(0)
         head_total += head_loss.item() * X_seq.size(0)
     denom = len(loader.dataset)
@@ -989,7 +988,6 @@ def train_sequence(
         total_loss / denom,
         node_total / denom,
         edge_total / denom,
-        energy_total / denom,
         mass_total / denom,
         head_total / denom,
     )
@@ -1012,7 +1010,7 @@ def evaluate_sequence(
 ) -> tuple[float, float, float, float, float]:
     model.eval()
     total_loss = 0.0
-    node_total = edge_total = energy_total = mass_total = head_total = 0.0
+    node_total = edge_total = mass_total = head_total = 0.0
     node_count = int(edge_index.max()) + 1
     with torch.no_grad():
         for X_seq, Y_seq in loader:
@@ -1035,10 +1033,6 @@ def evaluate_sequence(
                 )
                 edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
                 loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
-                loss_energy = F.mse_loss(
-                    preds['pump_energy'],
-                    Y_seq['pump_energy'].to(device)
-                )
                 if physics_loss:
                     flows_mb = (
                         preds['edge_outputs'].squeeze(-1).permute(2, 0, 1).reshape(
@@ -1065,27 +1059,25 @@ def evaluate_sequence(
                     )
                 else:
                     head_loss = torch.tensor(0.0, device=device)
-                loss = loss_node + w_edge * loss_edge + 0.1 * loss_energy
+                loss = loss_node + w_edge * loss_edge
                 if physics_loss:
                     loss = loss + w_mass * mass_loss
                 if pressure_loss:
                     loss = loss + w_head * head_loss
             else:
                 Y_seq = Y_seq.to(device)
-                loss_node = loss_edge = loss_energy = mass_loss = torch.tensor(0.0, device=device)
+                loss_node = loss_edge = mass_loss = torch.tensor(0.0, device=device)
                 loss = F.mse_loss(preds, Y_seq.float())
             total_loss += loss.item() * X_seq.size(0)
             node_total += loss_node.item() * X_seq.size(0)
-            edge_total += loss_edge.item() * X_seq.size(0)
-            energy_total += loss_energy.item() * X_seq.size(0)
-            mass_total += mass_loss.item() * X_seq.size(0)
-            head_total += head_loss.item() * X_seq.size(0)
+        edge_total += loss_edge.item() * X_seq.size(0)
+        mass_total += mass_loss.item() * X_seq.size(0)
+        head_total += head_loss.item() * X_seq.size(0)
     denom = len(loader.dataset)
     return (
         total_loss / denom,
         node_total / denom,
         edge_total / denom,
-        energy_total / denom,
         mass_total / denom,
         head_total / denom,
     )
@@ -1265,7 +1257,6 @@ def main(args: argparse.Namespace):
                 edge_dim=edge_attr.shape[1],
                 node_output_dim=2,
                 edge_output_dim=1,
-                energy_output_dim=len(wn.pump_name_list),
                 num_layers=args.num_layers,
                 use_attention=args.use_attention,
                 gat_heads=args.gat_heads,
@@ -1404,7 +1395,7 @@ def main(args: argparse.Namespace):
                     w_edge=args.w_edge,
                 )
                 loss = loss_tuple[0]
-                node_l, edge_l, energy_l, mass_l, head_l = loss_tuple[1:]
+                node_l, edge_l, mass_l, head_l = loss_tuple[1:]
                 if val_loader is not None:
                     val_tuple = evaluate_sequence(
                         model,
@@ -1437,7 +1428,7 @@ def main(args: argparse.Namespace):
             if args.physics_loss and seq_mode:
                 msg = (
                     f"Epoch {epoch}: node={node_l:.3f}, edge={edge_l:.3f}, "
-                    f"energy={energy_l:.3f}, mass={mass_l:.3f}"
+                    f"mass={mass_l:.3f}"
                 )
                 if args.pressure_loss:
                     msg += f", head={head_l:.3f}"
@@ -1457,8 +1448,6 @@ def main(args: argparse.Namespace):
                             y_std_node=y_std["node_outputs"].numpy(),
                             y_mean_edge=y_mean["edge_outputs"].numpy(),
                             y_std_edge=y_std["edge_outputs"].numpy(),
-                            y_mean_energy=y_mean["pump_energy"].numpy(),
-                            y_std_energy=y_std["pump_energy"].numpy(),
                             edge_mean=edge_mean.numpy(),
                             edge_std=edge_std.numpy(),
                         )

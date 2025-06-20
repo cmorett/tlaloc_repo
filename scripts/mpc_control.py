@@ -460,14 +460,12 @@ def load_surrogate_model(
     if multitask:
         node_out_dim, rnn_hidden_dim = state["node_decoder.weight"].shape
         edge_out_dim = state["edge_decoder.weight"].shape[0]
-        energy_out_dim = state["energy_decoder.weight"].shape[0]
         model = MultiTaskGNNSurrogate(
             in_channels=conv_layers[0].in_channels,
             hidden_channels=conv_layers[0].out_channels,
             edge_dim=edge_dim if edge_dim is not None else 0,
             node_output_dim=node_out_dim,
             edge_output_dim=edge_out_dim,
-            energy_output_dim=energy_out_dim,
             num_layers=len(conv_layers),
             use_attention=False,
             gat_heads=1,
@@ -513,12 +511,8 @@ def load_surrogate_model(
         else:
             model.y_mean = model.y_std = None
 
-        if "y_mean_energy" in arr:
-            model.y_mean_energy = torch.tensor(arr["y_mean_energy"], dtype=torch.float32, device=device)
-            model.y_std_energy = torch.tensor(arr["y_std_energy"], dtype=torch.float32, device=device)
-        else:
-            model.y_mean_energy = None
-            model.y_std_energy = None
+        model.y_mean_energy = None
+        model.y_std_energy = None
     else:
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
 
@@ -630,7 +624,9 @@ def compute_mpc_cost(
     Pmin: float,
     Cmin: float,
     demands: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
+    pump_info: Optional[list[tuple[int, int, int]]] = None,
+    return_energy: bool = False,
+) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
     """Return the MPC cost for a sequence of pump controls.
 
     The cost combines pressure and chlorine constraint violations, pump
@@ -644,6 +640,7 @@ def compute_mpc_cost(
     cur_c = chlorine.to(device)
     total_cost = torch.tensor(0.0, device=device)
     smoothness_penalty = torch.tensor(0.0, device=device)
+    energy_first = torch.tensor(0.0, device=device) if return_energy else None
 
     for t in range(horizon):
         d = demands[t] if demands is not None else None
@@ -653,25 +650,21 @@ def compute_mpc_cost(
             out = model(seq_in, edge_index, edge_attr, node_types, edge_types)
             if isinstance(out, dict):
                 pred = out.get("node_outputs")[0, 0]
-                energy_pred = out.get("pump_energy")
-                if energy_pred is not None:
-                    energy_pred = energy_pred[0, 0]
+                flows = out.get("edge_outputs")[0, 0].squeeze(-1)
             else:
                 pred = out[0, 0]
-                energy_pred = None
+                flows = None
         else:
             out = model(x, edge_index, edge_attr, node_types, edge_types)
             if isinstance(out, dict):
                 pred = out.get("node_outputs")
-                energy_pred = out.get("pump_energy")
+                flows = out.get("edge_outputs").squeeze(-1)
             else:
                 pred = out
-                energy_pred = None
+                flows = None
 
         if getattr(model, "y_mean", None) is not None:
             pred = pred * model.y_std + model.y_mean
-        if energy_pred is not None and getattr(model, "y_mean_energy", None) is not None:
-            energy_pred = energy_pred * model.y_std_energy + model.y_mean_energy
         assert not torch.isnan(pred).any(), "NaN prediction"
         pred_p = pred[:, 0]
         pred_c = pred[:, 1]
@@ -691,8 +684,17 @@ def compute_mpc_cost(
         pressure_penalty = torch.sum(psf ** 3)
         chlorine_penalty = torch.sum(csf ** 3)
 
-        if energy_pred is not None:
-            energy_term = torch.sum(energy_pred)
+        if flows is not None and pump_info is not None:
+            head = pred_p + feature_template[:, 3]
+            energy_term = torch.tensor(0.0, device=device)
+            eff = wn.options.energy.global_efficiency / 100.0
+            for idx, s_idx, e_idx in pump_info:
+                f = flows[idx]
+                hl = head[e_idx] - head[s_idx]
+                e = 1000.0 * 9.81 * hl * f / eff * 3600.0
+                energy_term = energy_term + e
+                if t == 0 and return_energy:
+                    energy_first = energy_first + e
         else:
             energy_term = torch.sum(u[t] ** 2)
 
@@ -715,7 +717,9 @@ def compute_mpc_cost(
 
     total_cost = total_cost + w_s * smoothness_penalty
 
-    return total_cost
+    if return_energy:
+        return total_cost, energy_first
+    return total_cost, None
 
 
 def run_mpc_step(
@@ -735,8 +739,9 @@ def run_mpc_step(
     Cmin: float,
     demands: Optional[torch.Tensor] = None,
     u_warm: Optional[torch.Tensor] = None,
+    pump_info: Optional[list[tuple[int, int, int]]] = None,
     profile: bool = False,
-) -> tuple[torch.Tensor, List[float]]:
+) -> tuple[torch.Tensor, List[float], float]:
     """Optimize pump controls for one hour using gradient-based MPC.
 
     The optimization is performed in two phases: a short warm start with
@@ -780,7 +785,7 @@ def run_mpc_step(
 
     for _ in range(adam_steps):
         adam_opt.zero_grad()
-        cost = compute_mpc_cost(
+        cost, _ = compute_mpc_cost(
             u,
             wn,
             model,
@@ -796,7 +801,8 @@ def run_mpc_step(
             Pmin,
             Cmin,
             demands,
-        )
+            pump_info,
+            )
         cost.backward()
         adam_opt.step()
         with torch.no_grad():
@@ -810,7 +816,7 @@ def run_mpc_step(
 
     def closure():
         lbfgs_opt.zero_grad()
-        c = compute_mpc_cost(
+        c, _ = compute_mpc_cost(
             u,
             wn,
             model,
@@ -826,12 +832,32 @@ def run_mpc_step(
             Pmin,
             Cmin,
             demands,
-        )
+            pump_info,
+            )
         c.backward()
         return c
 
     final_cost = lbfgs_opt.step(closure)
     cost_history.append(float(final_cost))
+    _, energy_first = compute_mpc_cost(
+        u,
+        wn,
+        model,
+        edge_index,
+        edge_attr,
+        node_types,
+        edge_types,
+        feature_template,
+        pressures,
+        chlorine,
+        1,
+        device,
+        Pmin,
+        Cmin,
+        demands[:1] if demands is not None else None,
+        pump_info,
+        return_energy=True,
+    )
     with torch.no_grad():
         u.data.clamp_(0.0, 1.0)
 
@@ -842,7 +868,7 @@ def run_mpc_step(
         end_time = time.time()
         print(f"[profile] run_mpc_step: {end_time - start_time:.4f}s")
 
-    return u.detach(), cost_history
+    return u.detach(), cost_history, float(energy_first.item()) if energy_first is not None else 0.0
 
 
 def propagate_with_surrogate(
@@ -984,6 +1010,15 @@ def simulate_closed_loop(
     pressure_violations = 0
     chlorine_violations = 0
     total_energy = 0.0
+    pump_info = []
+    node_idx = node_to_index
+    ei_np = edge_index.cpu().numpy()
+    for name in pump_names:
+        pump = wn.get_link(name)
+        s = node_idx[pump.start_node.name]
+        e = node_idx[pump.end_node.name]
+        idx = int(np.where((ei_np[0] == s) & (ei_np[1] == e))[0][0])
+        pump_info.append((idx, s, e))
     # obtain hydraulic state at time zero
     wn.options.time.duration = 0
     wn.options.time.report_timestep = 0
@@ -1022,7 +1057,7 @@ def simulate_closed_loop(
         demands = compute_demand_vectors(
             wn, node_to_index, base_demands, hour, horizon
         ).to(device)
-        u_opt, costs = run_mpc_step(
+        u_opt, costs, energy_first = run_mpc_step(
             wn,
             model,
             edge_index,
@@ -1039,7 +1074,8 @@ def simulate_closed_loop(
             Cmin,
             demands,
             prev_u,
-        )
+            pump_info,
+            )
         all_costs.extend(costs)
         prev_u = u_opt.detach()
 
@@ -1110,7 +1146,7 @@ def simulate_closed_loop(
             cur_p = torch.tensor([pressures[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
             cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
             end = time.time()
-            energy = 0.0
+            energy = energy_first
         min_p = max(
             min(pressures[n] for n in wn.junction_name_list + wn.tank_name_list),
             0.0,
