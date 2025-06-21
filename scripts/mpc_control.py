@@ -994,6 +994,7 @@ def simulate_closed_loop(
     Cmin: float,
     feedback_interval: int = 24,
     run_name: str = "",
+    profile: bool = False,
 ) -> pd.DataFrame:
     """Run 24-hour closed-loop MPC using the surrogate for fast updates.
 
@@ -1078,6 +1079,7 @@ def simulate_closed_loop(
             demands,
             prev_u,
             pump_info,
+            profile,
             )
         all_costs.extend(costs)
         prev_u = u_opt.detach()
@@ -1220,6 +1222,11 @@ def main():
         action="store_true",
         help="Disable TorchScript compilation of the surrogate",
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Print runtime of each MPC optimisation step",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1274,6 +1281,7 @@ def main():
         args.Cmin,
         args.feedback_interval,
         datetime.now().strftime("%Y%m%d_%H%M%S"),
+        args.profile,
     )
 
 
