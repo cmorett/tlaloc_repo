@@ -970,9 +970,19 @@ def train_sequence(
             else:
                 mass_loss = torch.tensor(0.0, device=device)
             if pressure_loss:
+                press = preds['node_outputs'][..., 0]
+                flow = preds['edge_outputs'].squeeze(-1)
+                if hasattr(model, 'y_mean') and model.y_mean is not None:
+                    if isinstance(model.y_mean, dict):
+                        p_mean = model.y_mean['node_outputs'][0].to(device)
+                        p_std = model.y_std['node_outputs'][0].to(device)
+                        q_mean = model.y_mean['edge_outputs'][0].to(device)
+                        q_std = model.y_std['edge_outputs'][0].to(device)
+                        press = press * p_std + p_mean
+                        flow = flow * q_std + q_mean
                 head_loss = pressure_headloss_consistency_loss(
-                    preds['node_outputs'][..., 0],
-                    preds['edge_outputs'].squeeze(-1),
+                    press,
+                    flow,
                     edge_index.to(device),
                     edge_attr_phys.to(device),
                 )
@@ -1066,9 +1076,19 @@ def evaluate_sequence(
                 else:
                     mass_loss = torch.tensor(0.0, device=device)
                 if pressure_loss:
+                    press = preds['node_outputs'][..., 0]
+                    flow = preds['edge_outputs'].squeeze(-1)
+                    if hasattr(model, 'y_mean') and model.y_mean is not None:
+                        if isinstance(model.y_mean, dict):
+                            p_mean = model.y_mean['node_outputs'][0].to(device)
+                            p_std = model.y_std['node_outputs'][0].to(device)
+                            q_mean = model.y_mean['edge_outputs'][0].to(device)
+                            q_std = model.y_std['edge_outputs'][0].to(device)
+                            press = press * p_std + p_mean
+                            flow = flow * q_std + q_mean
                     head_loss = pressure_headloss_consistency_loss(
-                        preds['node_outputs'][..., 0],
-                        preds['edge_outputs'].squeeze(-1),
+                        press,
+                        flow,
                         edge_index.to(device),
                         edge_attr_phys.to(device),
                     )
@@ -1113,7 +1133,10 @@ def main(args: argparse.Namespace):
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     edge_attr = build_edge_attr(wn, edge_index_np)
-    edge_attr_raw = torch.tensor(edge_attr, dtype=torch.float32)
+    # log-transform roughness like in data generation
+    edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
+    # preserve physical units before normalisation
+    edge_attr_phys = torch.tensor(edge_attr.copy(), dtype=torch.float32)
     edge_types = build_edge_type(wn, edge_index_np)
     node_types = build_node_type(wn)
     loss_mask = build_loss_mask(wn).to(device)
@@ -1399,7 +1422,7 @@ def main(args: argparse.Namespace):
                     loader,
                     data_ds.edge_index,
                     data_ds.edge_attr,
-                    edge_attr_raw,
+                    edge_attr_phys,
                     data_ds.node_type,
                     data_ds.edge_type,
                     optimizer,
@@ -1419,7 +1442,7 @@ def main(args: argparse.Namespace):
                         val_loader,
                         data_ds.edge_index,
                         data_ds.edge_attr,
-                        edge_attr_raw,
+                        edge_attr_phys,
                         data_ds.node_type,
                         data_ds.edge_type,
                         device,
