@@ -966,6 +966,7 @@ def train_sequence(
                     edge_index.to(device),
                     node_count,
                     demand=demand_mb,
+                    node_type=node_type,
                 )
             else:
                 mass_loss = torch.tensor(0.0, device=device)
@@ -1072,6 +1073,7 @@ def evaluate_sequence(
                         edge_index.to(device),
                         node_count,
                         demand=demand_mb,
+                        node_type=node_type,
                     )
                 else:
                     mass_loss = torch.tensor(0.0, device=device)

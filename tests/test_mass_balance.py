@@ -26,3 +26,14 @@ def test_mass_balance_with_demand():
     demand = torch.tensor([1.0, 0.0])
     loss = compute_mass_balance_loss(flows, edge_index, 2, demand=demand)
     assert torch.allclose(loss, torch.tensor(2.5))
+
+
+def test_mass_balance_ignore_tank_nodes():
+    """Tank nodes should not contribute to mass loss."""
+    edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
+    flows = torch.tensor([1.0, -1.0])
+    node_type = torch.tensor([0, 1])
+    loss = compute_mass_balance_loss(
+        flows, edge_index, 2, node_type=node_type
+    )
+    assert torch.allclose(loss, torch.tensor(0.5))
