@@ -270,6 +270,12 @@ class RecurrentGNNSurrogate(nn.Module):
         rnn_out, _ = self.rnn(rnn_in)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
         out = self.decoder(rnn_out)
+        # Clamp predictions representing pressure and chlorine to non-negative
+        out = out.clone()
+        if out.size(-1) >= 1:
+            out[..., 0] = torch.clamp(out[..., 0], min=0.0)
+        if out.size(-1) >= 2:
+            out[..., 1] = torch.clamp(out[..., 1], min=0.0)
         return out
 
 
@@ -389,6 +395,7 @@ class MultiTaskGNNSurrogate(nn.Module):
         att_out = att_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
 
         node_pred = self.node_decoder(att_out)
+        node_pred = node_pred.clone()
 
         src = edge_index[0]
         tgt = edge_index[1]
@@ -402,6 +409,7 @@ class MultiTaskGNNSurrogate(nn.Module):
             if not hasattr(self, "tank_levels") or self.tank_levels.size(0) != batch_size:
                 self.tank_levels = torch.zeros(batch_size, len(self.tank_indices), device=device)
             flows = edge_pred[..., 0]  # [B, T, E]
+            updates = torch.zeros(batch_size, T, num_nodes, device=device)
             for t in range(T):
                 net = []
                 for edges, signs in zip(self.tank_edges, self.tank_signs):
@@ -412,9 +420,24 @@ class MultiTaskGNNSurrogate(nn.Module):
                 net_flow = torch.stack(net, dim=1)
                 delta_vol = net_flow * 3600.0
                 self.tank_levels += delta_vol
+                # Prevent negative volumes accumulating
+                self.tank_levels = self.tank_levels.clamp(min=0.0)
                 delta_h = delta_vol / self.tank_areas
                 for i, tank_idx in enumerate(self.tank_indices):
-                    node_pred[:, t, tank_idx, 0] = node_pred[:, t, tank_idx, 0] + delta_h[:, i]
+                    updates[:, t, tank_idx] = delta_h[:, i]
+            update_tensor = torch.zeros_like(node_pred)
+            update_tensor[..., 0] = updates
+            node_pred = node_pred + update_tensor
+        # Enforce non-negative pressure and chlorine predictions
+        pressure = torch.clamp(node_pred[..., 0], min=0.0)
+        if node_pred.size(-1) >= 2:
+            chlorine = torch.clamp(node_pred[..., 1], min=0.0)
+            other = node_pred[..., 2:]
+            node_pred = torch.cat(
+                [pressure.unsqueeze(-1), chlorine.unsqueeze(-1), other], dim=-1
+            )
+        else:
+            node_pred = pressure.unsqueeze(-1)
 
         return {
             "node_outputs": node_pred,
@@ -1410,7 +1433,9 @@ def main(args: argparse.Namespace):
     else:
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 
     # prepare logging
@@ -1748,6 +1773,12 @@ if __name__ == "__main__":
         type=float,
         default=1e-3,
         help="Learning rate",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=1e-5,
+        help="L2 regularization factor for optimizer",
     )
     parser.add_argument(
         "--log-every",
