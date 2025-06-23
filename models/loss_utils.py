@@ -9,6 +9,7 @@ def compute_mass_balance_loss(
     edge_index: torch.Tensor,
     node_count: int,
     demand: Optional[torch.Tensor] = None,
+    node_type: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Return mean squared node imbalance for predicted flows.
 
@@ -22,6 +23,9 @@ def compute_mass_balance_loss(
         Edge index tensor of shape ``[2, E]`` defining flow directions.
     node_count : int
         Total number of nodes in the graph.
+    node_type : torch.Tensor, optional
+        Integer node type array identifying tanks (value ``1``). Tank nodes
+        are ignored in the imbalance calculation when provided.
     """
     if pred_flows.dim() == 1:
         flows = pred_flows.unsqueeze(1)
@@ -45,6 +49,10 @@ def compute_mass_balance_loss(
     if demand is not None:
         dem = demand.reshape(node_count, -1)
         node_balance[:, : dem.shape[1]] -= dem
+
+    if node_type is not None:
+        mask = node_type.reshape(node_count) == 1
+        node_balance[mask] = 0
 
     return torch.mean(node_balance ** 2)
 

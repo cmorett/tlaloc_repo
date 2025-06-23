@@ -323,6 +323,7 @@ def validate_surrogate(
                         flow_pred,
                         edge_index,
                         len(wn.node_name_list),
+                        node_type=node_types_tensor,
                     )
                     mass_total += mass_loss.item()
                     mass_count += 1
