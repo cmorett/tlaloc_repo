@@ -752,6 +752,16 @@ def build_node_type(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
     return np.array(types, dtype=np.int64)
 
 
+def build_loss_mask(wn: wntr.network.WaterNetworkModel) -> torch.Tensor:
+    """Return boolean mask marking nodes included in the loss."""
+
+    mask = torch.ones(len(wn.node_name_list), dtype=torch.bool)
+    for i, name in enumerate(wn.node_name_list):
+        if name in wn.reservoir_name_list:
+            mask[i] = False
+    return mask
+
+
 interrupted = False
 
 
@@ -1106,6 +1116,7 @@ def main(args: argparse.Namespace):
     edge_attr_raw = torch.tensor(edge_attr, dtype=torch.float32)
     edge_types = build_edge_type(wn, edge_index_np)
     node_types = build_node_type(wn)
+    loss_mask = build_loss_mask(wn).to(device)
     # Always allocate a distinct node type for tanks even if they are absent
     # from the network to ensure ``HydroConv`` learns a dedicated transform.
     num_node_types = max(int(np.max(node_types)) + 1, 2)
@@ -1395,6 +1406,7 @@ def main(args: argparse.Namespace):
                     device,
                     physics_loss=args.physics_loss,
                     pressure_loss=args.pressure_loss,
+                    node_mask=loss_mask,
                     w_mass=args.w_mass,
                     w_head=args.w_head,
                     w_edge=args.w_edge,
@@ -1413,6 +1425,7 @@ def main(args: argparse.Namespace):
                         device,
                         physics_loss=args.physics_loss,
                         pressure_loss=args.pressure_loss,
+                        node_mask=loss_mask,
                         w_mass=args.w_mass,
                         w_head=args.w_head,
                         w_edge=args.w_edge,
