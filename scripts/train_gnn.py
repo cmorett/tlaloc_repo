@@ -981,6 +981,8 @@ def train_sequence(
                         q_std = model.y_std['edge_outputs'][0].to(device)
                         press = press * p_std + p_mean
                         flow = flow * q_std + q_mean
+                    else:
+                        press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
                 head_loss = pressure_headloss_consistency_loss(
                     press,
                     flow,
@@ -1088,6 +1090,8 @@ def evaluate_sequence(
                             q_std = model.y_std['edge_outputs'][0].to(device)
                             press = press * p_std + p_mean
                             flow = flow * q_std + q_mean
+                        else:
+                            press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
                     head_loss = pressure_headloss_consistency_loss(
                         press,
                         flow,
@@ -1389,8 +1393,10 @@ def main(args: argparse.Namespace):
     # expose normalization stats on the model for later un-normalisation
     if args.normalize:
         if seq_mode and getattr(data_ds, "multi", False):
-            model.y_mean = y_mean["node_outputs"]
-            model.y_std = y_std["node_outputs"]
+            # for multi-task sequence data retain separate stats for node and
+            # edge outputs so physics losses can un-normalize correctly
+            model.y_mean = y_mean
+            model.y_std = y_std
         else:
             model.y_mean = y_mean
             model.y_std = y_std
@@ -1591,10 +1597,16 @@ def main(args: argparse.Namespace):
                     else:
                         Y_node = Y_seq.to(node_pred.device)
                     if hasattr(model, "y_mean") and model.y_mean is not None:
-                        y_std = model.y_std.to(node_pred.device)
-                        y_mean = model.y_mean.to(node_pred.device)
-                        node_pred = node_pred * y_std + y_mean
-                        Y_node = Y_node * y_std + y_mean
+                        if isinstance(model.y_mean, dict):
+                            y_mean_node = model.y_mean['node_outputs'].to(node_pred.device)
+                            y_std_node = model.y_std['node_outputs'].to(node_pred.device)
+                            node_pred = node_pred * y_std_node + y_mean_node
+                            Y_node = Y_node * y_std_node + y_mean_node
+                        else:
+                            y_std = model.y_std.to(node_pred.device)
+                            y_mean = model.y_mean.to(node_pred.device)
+                            node_pred = node_pred * y_std + y_mean
+                            Y_node = Y_node * y_std + y_mean
                     preds_p.extend(node_pred[..., 0].cpu().numpy().ravel())
                     preds_c.extend(node_pred[..., 1].cpu().numpy().ravel())
                     true_p.extend(Y_node[..., 0].cpu().numpy().ravel())
@@ -1610,10 +1622,16 @@ def main(args: argparse.Namespace):
                         getattr(batch, "edge_type", None),
                     )
                     if hasattr(model, "y_mean") and model.y_mean is not None:
-                        y_std = model.y_std.to(out.device)
-                        y_mean = model.y_mean.to(out.device)
-                        out = out * y_std + y_mean
-                        batch_y = batch.y * y_std + y_mean
+                        if isinstance(model.y_mean, dict):
+                            y_mean_node = model.y_mean['node_outputs'].to(out.device)
+                            y_std_node = model.y_std['node_outputs'].to(out.device)
+                            out = out * y_std_node + y_mean_node
+                            batch_y = batch.y * y_std_node + y_mean_node
+                        else:
+                            y_std = model.y_std.to(out.device)
+                            y_mean = model.y_mean.to(out.device)
+                            out = out * y_std + y_mean
+                            batch_y = batch.y * y_std + y_mean
                     else:
                         batch_y = batch.y
                     preds_p.extend(out[:, 0].cpu().numpy())
