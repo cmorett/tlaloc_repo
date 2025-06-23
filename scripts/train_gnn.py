@@ -765,6 +765,22 @@ def build_edge_type(
     return np.array([type_dict[(int(s), int(t))] for s, t in edge_index.T], dtype=np.int64)
 
 
+def build_edge_pairs(edge_index: np.ndarray) -> list[tuple[int, int]]:
+    """Return list of (i, j) tuples pairing forward and reverse edges."""
+
+    pair_map: dict[tuple[int, int], int] = {}
+    pairs: list[tuple[int, int]] = []
+    for eid in range(edge_index.shape[1]):
+        u = int(edge_index[0, eid])
+        v = int(edge_index[1, eid])
+        if (v, u) in pair_map:
+            j = pair_map[(v, u)]
+            pairs.append((j, eid))
+        else:
+            pair_map[(u, v)] = eid
+    return pairs
+
+
 def build_node_type(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
     """Return integer node type array for the network nodes."""
 
@@ -774,6 +790,8 @@ def build_node_type(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
             types.append(0)
         elif n in wn.tank_name_list:
             types.append(1)
+        elif n in wn.reservoir_name_list:
+            types.append(2)
         else:
             # Pumps and valves are modeled as edges; keep unique index
             types.append(0)
@@ -785,7 +803,7 @@ def build_loss_mask(wn: wntr.network.WaterNetworkModel) -> torch.Tensor:
 
     mask = torch.ones(len(wn.node_name_list), dtype=torch.bool)
     for i, name in enumerate(wn.node_name_list):
-        if name in wn.reservoir_name_list:
+        if name in wn.reservoir_name_list or name in wn.tank_name_list:
             mask[i] = False
     return mask
 
@@ -944,6 +962,7 @@ def train_sequence(
     edge_attr_phys: torch.Tensor,
     node_type: Optional[torch.Tensor],
     edge_type: Optional[torch.Tensor],
+    edge_pairs: list[tuple[int, int]],
     optimizer,
     device,
     physics_loss: bool = False,
@@ -955,10 +974,18 @@ def train_sequence(
 ) -> tuple[float, float, float, float, float, float]:
     model.train()
     total_loss = 0.0
-    node_total = edge_total = mass_total = head_total = 0.0
+    node_total = edge_total = mass_total = head_total = sym_total = 0.0
     node_count = int(edge_index.max()) + 1
     for X_seq, Y_seq in loader:
         X_seq = X_seq.to(device)
+        if node_type is not None:
+            nt = node_type.to(device)
+        else:
+            nt = None
+        if edge_type is not None:
+            et = edge_type.to(device)
+        else:
+            et = None
         if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
             init_press = X_seq[:, 0, model.tank_indices, 1]
             init_levels = init_press * model.tank_areas
@@ -968,8 +995,8 @@ def train_sequence(
             X_seq,
             edge_index.to(device),
             edge_attr.to(device),
-            node_type,
-            edge_type,
+            nt,
+            et,
         )
         if isinstance(Y_seq, dict):
             target_nodes = Y_seq['node_outputs'].to(device)
@@ -994,10 +1021,19 @@ def train_sequence(
                     edge_index.to(device),
                     node_count,
                     demand=demand_mb,
-                    node_type=node_type,
+                    node_type=nt,
                 )
+                sym_errors = []
+                for i, j in edge_pairs:
+                    sym_errors.append(flows_mb[i] + flows_mb[j])
+                if sym_errors:
+                    sym_errors = torch.stack(sym_errors, dim=0)
+                    sym_loss = torch.mean(sym_errors ** 2)
+                else:
+                    sym_loss = torch.tensor(0.0, device=device)
             else:
                 mass_loss = torch.tensor(0.0, device=device)
+                sym_loss = torch.tensor(0.0, device=device)
             if pressure_loss:
                 press = preds['node_outputs'][..., 0]
                 flow = preds['edge_outputs'].squeeze(-1)
@@ -1016,17 +1052,18 @@ def train_sequence(
                     flow,
                     edge_index.to(device),
                     edge_attr_phys.to(device),
+                    edge_type=et,
                 )
             else:
                 head_loss = torch.tensor(0.0, device=device)
             loss = loss_node + w_edge * loss_edge
             if physics_loss:
-                loss = loss + w_mass * mass_loss
+                loss = loss + w_mass * (mass_loss + sym_loss)
             if pressure_loss:
                 loss = loss + w_head * head_loss
         else:
             Y_seq = Y_seq.to(device)
-            loss_node = loss_edge = mass_loss = torch.tensor(0.0, device=device)
+            loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
             loss = F.mse_loss(preds, Y_seq.float())
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -1036,6 +1073,7 @@ def train_sequence(
         edge_total += loss_edge.item() * X_seq.size(0)
         mass_total += mass_loss.item() * X_seq.size(0)
         head_total += head_loss.item() * X_seq.size(0)
+        sym_total += sym_loss.item() * X_seq.size(0)
     denom = len(loader.dataset)
     return (
         total_loss / denom,
@@ -1043,6 +1081,7 @@ def train_sequence(
         edge_total / denom,
         mass_total / denom,
         head_total / denom,
+        sym_total / denom,
     )
 
 
@@ -1054,6 +1093,7 @@ def evaluate_sequence(
     edge_attr_phys: torch.Tensor,
     node_type: Optional[torch.Tensor],
     edge_type: Optional[torch.Tensor],
+    edge_pairs: list[tuple[int, int]],
     device,
     physics_loss: bool = False,
     pressure_loss: bool = False,
@@ -1061,14 +1101,22 @@ def evaluate_sequence(
     w_mass: float = 1.0,
     w_head: float = 1.0,
     w_edge: float = 1.0,
-) -> tuple[float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float]:
     model.eval()
     total_loss = 0.0
-    node_total = edge_total = mass_total = head_total = 0.0
+    node_total = edge_total = mass_total = head_total = sym_total = 0.0
     node_count = int(edge_index.max()) + 1
     with torch.no_grad():
         for X_seq, Y_seq in loader:
             X_seq = X_seq.to(device)
+            if node_type is not None:
+                nt = node_type.to(device)
+            else:
+                nt = None
+            if edge_type is not None:
+                et = edge_type.to(device)
+            else:
+                et = None
             if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
                 init_press = X_seq[:, 0, model.tank_indices, 1]
                 init_levels = init_press * model.tank_areas
@@ -1077,8 +1125,8 @@ def evaluate_sequence(
                 X_seq,
                 edge_index.to(device),
                 edge_attr.to(device),
-                node_type,
-                edge_type,
+                nt,
+                et,
             )
             if isinstance(Y_seq, dict):
                 target_nodes = Y_seq['node_outputs'].to(device)
@@ -1103,10 +1151,19 @@ def evaluate_sequence(
                         edge_index.to(device),
                         node_count,
                         demand=demand_mb,
-                        node_type=node_type,
+                        node_type=nt,
                     )
+                    sym_errors = []
+                    for i, j in edge_pairs:
+                        sym_errors.append(flows_mb[i] + flows_mb[j])
+                    if sym_errors:
+                        sym_errors = torch.stack(sym_errors, dim=0)
+                        sym_loss = torch.mean(sym_errors ** 2)
+                    else:
+                        sym_loss = torch.tensor(0.0, device=device)
                 else:
                     mass_loss = torch.tensor(0.0, device=device)
+                    sym_loss = torch.tensor(0.0, device=device)
                 if pressure_loss:
                     press = preds['node_outputs'][..., 0]
                     flow = preds['edge_outputs'].squeeze(-1)
@@ -1125,23 +1182,25 @@ def evaluate_sequence(
                         flow,
                         edge_index.to(device),
                         edge_attr_phys.to(device),
+                        edge_type=et,
                     )
                 else:
                     head_loss = torch.tensor(0.0, device=device)
                 loss = loss_node + w_edge * loss_edge
                 if physics_loss:
-                    loss = loss + w_mass * mass_loss
+                    loss = loss + w_mass * (mass_loss + sym_loss)
                 if pressure_loss:
                     loss = loss + w_head * head_loss
             else:
                 Y_seq = Y_seq.to(device)
-                loss_node = loss_edge = mass_loss = torch.tensor(0.0, device=device)
+                loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
                 loss = F.mse_loss(preds, Y_seq.float())
             total_loss += loss.item() * X_seq.size(0)
             node_total += loss_node.item() * X_seq.size(0)
         edge_total += loss_edge.item() * X_seq.size(0)
         mass_total += mass_loss.item() * X_seq.size(0)
         head_total += head_loss.item() * X_seq.size(0)
+        sym_total += sym_loss.item() * X_seq.size(0)
     denom = len(loader.dataset)
     return (
         total_loss / denom,
@@ -1149,6 +1208,7 @@ def evaluate_sequence(
         edge_total / denom,
         mass_total / denom,
         head_total / denom,
+        sym_total / denom,
     )
 
 # Resolve important directories relative to the repository root so that training
@@ -1172,6 +1232,7 @@ def main(args: argparse.Namespace):
     # preserve physical units before normalisation
     edge_attr_phys = torch.tensor(edge_attr.copy(), dtype=torch.float32)
     edge_types = build_edge_type(wn, edge_index_np)
+    edge_pairs = build_edge_pairs(edge_index_np)
     node_types = build_node_type(wn)
     loss_mask = build_loss_mask(wn).to(device)
     # Always allocate a distinct node type for tanks even if they are absent
@@ -1463,6 +1524,7 @@ def main(args: argparse.Namespace):
                     edge_attr_phys,
                     data_ds.node_type,
                     data_ds.edge_type,
+                    edge_pairs,
                     optimizer,
                     device,
                     physics_loss=args.physics_loss,
@@ -1473,7 +1535,7 @@ def main(args: argparse.Namespace):
                     w_edge=args.w_edge,
                 )
                 loss = loss_tuple[0]
-                node_l, edge_l, mass_l, head_l = loss_tuple[1:]
+                node_l, edge_l, mass_l, head_l, sym_l = loss_tuple[1:]
                 if val_loader is not None:
                     val_tuple = evaluate_sequence(
                         model,
@@ -1483,6 +1545,7 @@ def main(args: argparse.Namespace):
                         edge_attr_phys,
                         data_ds.node_type,
                         data_ds.edge_type,
+                        edge_pairs,
                         device,
                         physics_loss=args.physics_loss,
                         pressure_loss=args.pressure_loss,
@@ -1507,7 +1570,7 @@ def main(args: argparse.Namespace):
             if args.physics_loss and seq_mode:
                 msg = (
                     f"Epoch {epoch}: node={node_l:.3f}, edge={edge_l:.3f}, "
-                    f"mass={mass_l:.3f}"
+                    f"mass={mass_l:.3f}, sym={sym_l:.3f}"
                 )
                 if args.pressure_loss:
                     msg += f", head={head_l:.3f}"
