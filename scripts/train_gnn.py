@@ -1895,7 +1895,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--w_edge",
         type=float,
-        default=1.0,
+        default=3.0,
         help="Weight of the edge (flow) loss term",
     )
     parser.add_argument(
