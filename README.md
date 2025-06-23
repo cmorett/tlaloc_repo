@@ -79,11 +79,15 @@ python scripts/train_gnn.py \
     --x-val-path data/X_val.npy --y-val-path data/Y_val.npy \
     --edge-index-path data/edge_index.npy --inp-path CTown.inp \
     --epochs 100 --batch-size 32 --hidden-dim 64 --num-layers 4 \
-    --dropout 0.1 --residual --early-stop-patience 10
+    --dropout 0.1 --residual --early-stop-patience 10 \
+    --weight-decay 1e-5
 ```
 Pressure–headloss consistency is now enforced by default with a unit weight.
 Pass ``--no-pressure_loss`` if this coupling should be disabled.  To remove the
 mass balance penalty (also weighted by ``1.0`` by default) use ``--no-physics-loss``.
+The surrogate clamps predicted pressures and chlorine concentrations to
+non-negative values and applies L2 regularization controlled by
+``--weight-decay`` (default ``1e-5``) to avoid degenerate solutions.
 
 For large graphs you can reduce memory usage by training on subgraphs.
 Passing ``--cluster-batch-size <N>`` partitions the network into clusters of
