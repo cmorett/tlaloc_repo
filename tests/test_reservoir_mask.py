@@ -6,7 +6,13 @@ from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from scripts.train_gnn import SequenceDataset, MultiTaskGNNSurrogate, train_sequence
+from scripts.train_gnn import (
+    SequenceDataset,
+    MultiTaskGNNSurrogate,
+    train_sequence,
+    build_loss_mask,
+)
+import wntr
 
 
 def test_reservoir_node_excluded_from_loss():
@@ -62,4 +68,13 @@ def test_reservoir_node_excluded_from_loss():
         node_mask=mask,
     )
     assert abs(loss_tuple[1] - expected) < 1e-6
+
+
+def test_build_loss_mask_ctown():
+    wn = wntr.network.WaterNetworkModel('CTown.inp')
+    mask = build_loss_mask(wn)
+    res_idx = [i for i, n in enumerate(wn.node_name_list) if n in wn.reservoir_name_list]
+    for idx in res_idx:
+        assert not mask[idx]
+    assert mask.dtype == torch.bool
 
