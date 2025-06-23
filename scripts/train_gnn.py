@@ -383,12 +383,17 @@ class MultiTaskGNNSurrogate(nn.Module):
         rnn_out, _ = self.rnn(rnn_in)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
 
-        node_pred = self.node_decoder(rnn_out)
+        # apply temporal self-attention so each node can weigh its history
+        att_in = rnn_out.reshape(batch_size * num_nodes, T, -1)
+        att_out, _ = self.time_att(att_in, att_in, att_in)
+        att_out = att_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
+
+        node_pred = self.node_decoder(att_out)
 
         src = edge_index[0]
         tgt = edge_index[1]
-        h_src = rnn_out[:, :, src, :]
-        h_tgt = rnn_out[:, :, tgt, :]
+        h_src = att_out[:, :, src, :]
+        h_tgt = att_out[:, :, tgt, :]
         h_diff = h_src - h_tgt
         edge_emb = torch.cat([h_src, h_tgt, h_diff], dim=-1)
         edge_pred = self.edge_decoder(edge_emb)
