@@ -46,6 +46,7 @@ def test_train_sequence_with_physics_losses():
         rnn_hidden_dim=4,
     )
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    pairs = [(0, 1)]
     loss_tuple = train_sequence(
         model,
         loader,
@@ -54,6 +55,7 @@ def test_train_sequence_with_physics_losses():
         edge_attr,
         None,
         None,
+        pairs,
         opt,
         torch.device("cpu"),
         physics_loss=True,

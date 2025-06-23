@@ -100,12 +100,15 @@ sequentially to keep memory usage low.
 A physics-informed mass balance penalty is applied by default to encourage
 conservation of predicted flows.  Because each pipe appears twice in the graph
 (forward and reverse), the loss divides the imbalance by two so that equal and
-opposite flows cancel correctly.  Disable the term with ``--no-physics-loss``
-if necessary.  ``--pressure_loss`` is enabled by default to enforce
-pressure–headloss consistency via the Hazen--Williams equation.  By default
-both penalties have a weight of ``1.0``. The relative importance can be tuned via
-``--w_mass`` and ``--w_head`` along with the ``--w_edge`` coefficient controlling
-the flow loss.
+opposite flows cancel correctly.  A symmetry term further penalises differences
+between forward and reverse edges so paired flows remain equal and opposite.
+Reservoirs and tanks are excluded from the mass balance calculation while tank
+pressures are no longer part of the direct MSE loss.  Disable the physics terms
+with ``--no-physics-loss`` if necessary. ``--pressure_loss`` is enabled by
+default to enforce pressure–headloss consistency via the Hazen--Williams
+equation.  By default all penalties have a weight of ``1.0``. The relative
+importance can be tuned via ``--w_mass`` and ``--w_head`` along with the
+``--w_edge`` coefficient controlling the flow loss.
 
 The trained model now supports validation loss tracking and early stopping.
 Normalization is applied automatically so the ``--normalize`` flag is optional.

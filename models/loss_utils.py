@@ -24,8 +24,9 @@ def compute_mass_balance_loss(
     node_count : int
         Total number of nodes in the graph.
     node_type : torch.Tensor, optional
-        Integer node type array identifying tanks (value ``1``). Tank nodes
-        are ignored in the imbalance calculation when provided.
+        Integer node type array identifying tanks (value ``1``) and reservoirs
+        (value ``2``). These nodes are ignored in the imbalance calculation
+        when provided.
     """
     if pred_flows.dim() == 1:
         flows = pred_flows.unsqueeze(1)
@@ -51,7 +52,8 @@ def compute_mass_balance_loss(
         node_balance[:, : dem.shape[1]] -= dem
 
     if node_type is not None:
-        mask = node_type.reshape(node_count) == 1
+        node_type = node_type.reshape(node_count)
+        mask = (node_type == 1) | (node_type == 2)
         node_balance[mask] = 0
 
     return torch.mean(node_balance ** 2)
@@ -64,6 +66,7 @@ def pressure_headloss_consistency_loss(
     edge_attr: torch.Tensor,
     edge_attr_mean: Optional[torch.Tensor] = None,
     edge_attr_std: Optional[torch.Tensor] = None,
+    edge_type: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Return MSE between predicted and Hazen-Williams head losses.
 
@@ -101,16 +104,25 @@ def pressure_headloss_consistency_loss(
     p = pred_pressures.reshape(-1, pred_pressures.shape[-1])
     q = pred_flows.reshape(-1, pred_flows.shape[-1])
 
-    src = edge_index[0]
-    tgt = edge_index[1]
+    if edge_type is not None:
+        edge_type = edge_type.flatten()
+        pipe_mask = edge_type == 0
+    else:
+        pipe_mask = torch.ones(edge_index.size(1), dtype=torch.bool, device=p.device)
+
+    src = edge_index[0, pipe_mask]
+    tgt = edge_index[1, pipe_mask]
     p_src = p[:, src]
     p_tgt = p[:, tgt]
     pred_hl = (p_src - p_tgt).abs()
 
     # Hazen--Williams head loss formula (SI units)
     const = 10.67
-    hw_hl = const * length * q.abs().pow(1.852) / (
+    length = length[pipe_mask]
+    diam = diam[pipe_mask]
+    rough = rough[pipe_mask]
+    hw_hl = const * length * q.abs()[:, pipe_mask].pow(1.852) / (
         rough.pow(1.852) * diam.pow(4.87)
     )
 
-    return torch.mean((pred_hl - hw_hl) ** 2)
+    return torch.mean((pred_hl - hw_hl) ** 2) if pred_hl.numel() > 0 else torch.tensor(0.0)

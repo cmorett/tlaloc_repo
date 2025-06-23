@@ -61,6 +61,7 @@ def test_reservoir_node_excluded_from_loss():
         edge_attr,
         None,
         None,
+        [(0, 1)],
         opt,
         torch.device("cpu"),
         physics_loss=False,
@@ -75,6 +76,9 @@ def test_build_loss_mask_ctown():
     mask = build_loss_mask(wn)
     res_idx = [i for i, n in enumerate(wn.node_name_list) if n in wn.reservoir_name_list]
     for idx in res_idx:
+        assert not mask[idx]
+    tank_idx = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
+    for idx in tank_idx:
         assert not mask[idx]
     assert mask.dtype == torch.bool
 
