@@ -302,6 +302,13 @@ def validate_surrogate(
 
                 diff_p = pred_p - y_true_p
                 diff_c = pred_c - y_true_c
+                if node_types_tensor is not None:
+                    mask = (node_types_tensor == 0).cpu().numpy()
+                    diff_p_masked = diff_p[mask]
+                    diff_c_masked = diff_c[mask]
+                else:
+                    diff_p_masked = diff_p
+                    diff_c_masked = diff_c
                 err_p_all.extend(diff_p.tolist())
                 err_c_all.extend(diff_c.tolist())
                 for idx, name in enumerate(wn.node_name_list):
@@ -311,13 +318,15 @@ def validate_surrogate(
                 if first:
                     err_matrix.append(diff_p)
                     err_times.append(int(times[i + 1]))
-                rmse_p += float((diff_p ** 2).sum())
-                rmse_c += float((diff_c ** 2).sum())
-                mae_p += float(np.abs(diff_p).sum())
-                mae_c += float(np.abs(diff_c).sum())
-                max_err_p = max(max_err_p, float(np.max(np.abs(diff_p))))
-                max_err_c = max(max_err_c, float(np.max(np.abs(diff_c))))
-                count += len(y_true_p)
+                rmse_p += float((diff_p_masked ** 2).sum())
+                rmse_c += float((diff_c_masked ** 2).sum())
+                mae_p += float(np.abs(diff_p_masked).sum())
+                mae_c += float(np.abs(diff_c_masked).sum())
+                if diff_p_masked.size > 0:
+                    max_err_p = max(max_err_p, float(np.max(np.abs(diff_p_masked))))
+                if diff_c_masked.size > 0:
+                    max_err_c = max(max_err_c, float(np.max(np.abs(diff_c_masked))))
+                count += len(diff_p_masked)
                 if flow_pred is not None:
                     mass_loss = compute_mass_balance_loss(
                         flow_pred,
