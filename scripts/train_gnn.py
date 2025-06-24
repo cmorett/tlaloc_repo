@@ -270,12 +270,36 @@ class RecurrentGNNSurrogate(nn.Module):
         rnn_out, _ = self.rnn(rnn_in)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
         out = self.decoder(rnn_out)
-        # Clamp predictions representing pressure and chlorine to non-negative
+        # Clamp pressure and chlorine in the normalized domain so that 0
+        # corresponds to 0 in physical units when denormalised.
         out = out.clone()
+        min_p = min_c = 0.0
+        if getattr(self, "y_mean", None) is not None:
+            if isinstance(self.y_mean, dict):
+                p_mean = self.y_mean["node_outputs"][0]
+                p_std = self.y_std["node_outputs"][0]
+                if self.y_mean["node_outputs"].numel() > 1:
+                    c_mean = self.y_mean["node_outputs"][1]
+                    c_std = self.y_std["node_outputs"][1]
+                else:
+                    c_mean = torch.tensor(0.0, device=out.device)
+                    c_std = torch.tensor(1.0, device=out.device)
+            else:
+                p_mean = self.y_mean[0]
+                p_std = self.y_std[0]
+                if self.y_mean.numel() > 1:
+                    c_mean = self.y_mean[1]
+                    c_std = self.y_std[1]
+                else:
+                    c_mean = torch.tensor(0.0, device=out.device)
+                    c_std = torch.tensor(1.0, device=out.device)
+            min_p = -p_mean / p_std
+            min_c = -c_mean / c_std
+
         if out.size(-1) >= 1:
-            out[..., 0] = torch.clamp(out[..., 0], min=0.0)
+            out[..., 0] = torch.clamp(out[..., 0], min=min_p)
         if out.size(-1) >= 2:
-            out[..., 1] = torch.clamp(out[..., 1], min=0.0)
+            out[..., 1] = torch.clamp(out[..., 1], min=min_c)
         return out
 
 
@@ -428,10 +452,34 @@ class MultiTaskGNNSurrogate(nn.Module):
             update_tensor = torch.zeros_like(node_pred)
             update_tensor[..., 0] = updates
             node_pred = node_pred + update_tensor
-        # Enforce non-negative pressure and chlorine predictions
-        pressure = torch.clamp(node_pred[..., 0], min=0.0)
+        # Clamp pressure and chlorine in normalized units so that the lower
+        # bound corresponds to 0 in physical units.
+        min_p = min_c = 0.0
+        if getattr(self, "y_mean", None) is not None:
+            if isinstance(self.y_mean, dict):
+                p_mean = self.y_mean["node_outputs"][0]
+                p_std = self.y_std["node_outputs"][0]
+                if self.y_mean["node_outputs"].numel() > 1:
+                    c_mean = self.y_mean["node_outputs"][1]
+                    c_std = self.y_std["node_outputs"][1]
+                else:
+                    c_mean = torch.tensor(0.0, device=node_pred.device)
+                    c_std = torch.tensor(1.0, device=node_pred.device)
+            else:
+                p_mean = self.y_mean[0]
+                p_std = self.y_std[0]
+                if self.y_mean.numel() > 1:
+                    c_mean = self.y_mean[1]
+                    c_std = self.y_std[1]
+                else:
+                    c_mean = torch.tensor(0.0, device=node_pred.device)
+                    c_std = torch.tensor(1.0, device=node_pred.device)
+            min_p = -p_mean / p_std
+            min_c = -c_mean / c_std
+
+        pressure = torch.clamp(node_pred[..., 0], min=min_p)
         if node_pred.size(-1) >= 2:
-            chlorine = torch.clamp(node_pred[..., 1], min=0.0)
+            chlorine = torch.clamp(node_pred[..., 1], min=min_c)
             other = node_pred[..., 2:]
             node_pred = torch.cat(
                 [pressure.unsqueeze(-1), chlorine.unsqueeze(-1), other], dim=-1
