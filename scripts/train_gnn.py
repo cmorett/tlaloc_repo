@@ -1085,6 +1085,10 @@ def train_sequence(
                 )
                 sym_errors = []
                 for i, j in edge_pairs:
+                    if et is not None:
+                        # only enforce symmetry for pipes (edge_type 0)
+                        if et[i] != 0 or et[j] != 0:
+                            continue
                     sym_errors.append(flows_mb[i] + flows_mb[j])
                 if sym_errors:
                     sym_errors = torch.stack(sym_errors, dim=0)
@@ -1227,6 +1231,10 @@ def evaluate_sequence(
                     )
                     sym_errors = []
                     for i, j in edge_pairs:
+                        if et is not None:
+                            # only enforce symmetry for pipes (edge_type 0)
+                            if et[i] != 0 or et[j] != 0:
+                                continue
                         sym_errors.append(flows_mb[i] + flows_mb[j])
                     if sym_errors:
                         sym_errors = torch.stack(sym_errors, dim=0)
