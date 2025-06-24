@@ -145,6 +145,8 @@ scenarios may be slightly smaller than requested.
 Set ``--extreme-event-prob`` to inject rare scenarios such as fire flows,
 pump failures or source quality changes.  Scenario labels are stored alongside
 the sequence arrays when ``--sequence-length`` is greater than one.
+Initial tank levels are now drawn from a Gaussian around the values in
+``CTown.inp`` so each scenario begins with slightly different volumes.
 
 To create sequence datasets for the recurrent surrogate specify ``--sequence-length``:
 
