@@ -72,6 +72,17 @@ def _build_randomized_network(
     wn.options.time.report_timestep = 3600
     wn.options.quality.parameter = "CHEMICAL"
 
+    # Randomize initial tank levels while keeping values within the
+    # feasible range.  Sample from a Gaussian centred on the original
+    # value so typical operating conditions remain likely.
+    for tname in wn.tank_name_list:
+        tank = wn.get_node(tname)
+        span = max(tank.max_level - tank.min_level, 1e-6)
+        std = 0.1 * span
+        level = random.gauss(tank.init_level, std)
+        level = min(max(level, tank.min_level), tank.max_level)
+        tank.init_level = level
+
     hours = int(wn.options.time.duration // wn.options.time.hydraulic_timestep)
 
     scale_dict: Dict[str, np.ndarray] = {}
