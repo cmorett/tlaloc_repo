@@ -314,7 +314,10 @@ def build_sequence_dataset(
 
     for sim_results, _scale_dict, pump_ctrl in results:
         scenario_types.append(getattr(sim_results, "scenario_type", "normal"))
-        pressures = sim_results.node["pressure"].clip(lower=5.0, upper=80.0)
+        # Clamp to avoid negative pressures but keep the full range otherwise
+        # Older versions limited pressures to [5, 80] m which could hide
+        # extreme values.  Drop the upper bound and only enforce non-negativity.
+        pressures = sim_results.node["pressure"].clip(lower=0.0)
         quality = np.log1p(
             sim_results.node["quality"].clip(lower=0.0, upper=4.0)
         )
@@ -397,7 +400,9 @@ def build_dataset(
     pumps = wn_template.pump_name_list
 
     for sim_results, _scale_dict, pump_ctrl in results:
-        pressures = sim_results.node["pressure"].clip(lower=5.0, upper=80.0)
+        # Drop the previous [5, 80] m clamp in favour of only enforcing
+        # non-negative pressures
+        pressures = sim_results.node["pressure"].clip(lower=0.0)
         quality = np.log1p(
             sim_results.node["quality"].clip(lower=0.0, upper=4.0)
         )
