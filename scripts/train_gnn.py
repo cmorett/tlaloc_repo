@@ -1064,6 +1064,18 @@ def train_sequence(
                 demand_mb = (
                     X_seq[..., 0].permute(2, 0, 1).reshape(node_count, -1)
                 )
+                if hasattr(model, "y_mean") and model.y_mean is not None:
+                    if isinstance(model.y_mean, dict):
+                        q_mean = model.y_mean["edge_outputs"][0].to(device)
+                        q_std = model.y_std["edge_outputs"][0].to(device)
+                    else:
+                        q_mean = model.y_mean[-1].to(device)
+                        q_std = model.y_std[-1].to(device)
+                    flows_mb = flows_mb * q_std + q_mean
+                if hasattr(model, "x_mean") and model.x_mean is not None:
+                    dem_mean = model.x_mean[0].to(device)
+                    dem_std = model.x_std[0].to(device)
+                    demand_mb = demand_mb * dem_std + dem_mean
                 mass_loss = compute_mass_balance_loss(
                     flows_mb,
                     edge_index.to(device),
@@ -1194,6 +1206,18 @@ def evaluate_sequence(
                     demand_mb = (
                         X_seq[..., 0].permute(2, 0, 1).reshape(node_count, -1)
                     )
+                    if hasattr(model, "y_mean") and model.y_mean is not None:
+                        if isinstance(model.y_mean, dict):
+                            q_mean = model.y_mean["edge_outputs"][0].to(device)
+                            q_std = model.y_std["edge_outputs"][0].to(device)
+                        else:
+                            q_mean = model.y_mean[-1].to(device)
+                            q_std = model.y_std[-1].to(device)
+                        flows_mb = flows_mb * q_std + q_mean
+                    if hasattr(model, "x_mean") and model.x_mean is not None:
+                        dem_mean = model.x_mean[0].to(device)
+                        dem_std = model.x_std[0].to(device)
+                        demand_mb = demand_mb * dem_std + dem_mean
                     mass_loss = compute_mass_balance_loss(
                         flows_mb,
                         edge_index.to(device),
