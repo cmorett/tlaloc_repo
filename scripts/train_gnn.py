@@ -1066,12 +1066,13 @@ def train_sequence(
                 )
                 if hasattr(model, "y_mean") and model.y_mean is not None:
                     if isinstance(model.y_mean, dict):
-                        q_mean = model.y_mean["edge_outputs"][0].to(device)
-                        q_std = model.y_std["edge_outputs"][0].to(device)
+                        q_mean = model.y_mean["edge_outputs"].to(device)
+                        q_std = model.y_std["edge_outputs"].to(device)
+                        flows_mb = flows_mb * q_std.unsqueeze(1) + q_mean.unsqueeze(1)
                     else:
                         q_mean = model.y_mean[-1].to(device)
                         q_std = model.y_std[-1].to(device)
-                    flows_mb = flows_mb * q_std + q_mean
+                        flows_mb = flows_mb * q_std + q_mean
                 if hasattr(model, "x_mean") and model.x_mean is not None:
                     dem_mean = model.x_mean[0].to(device)
                     dem_std = model.x_std[0].to(device)
@@ -1105,8 +1106,8 @@ def train_sequence(
                     if isinstance(model.y_mean, dict):
                         p_mean = model.y_mean['node_outputs'][0].to(device)
                         p_std = model.y_std['node_outputs'][0].to(device)
-                        q_mean = model.y_mean['edge_outputs'][0].to(device)
-                        q_std = model.y_std['edge_outputs'][0].to(device)
+                        q_mean = model.y_mean['edge_outputs'].to(device)
+                        q_std = model.y_std['edge_outputs'].to(device)
                         press = press * p_std + p_mean
                         flow = flow * q_std + q_mean
                     else:
@@ -1212,12 +1213,13 @@ def evaluate_sequence(
                     )
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         if isinstance(model.y_mean, dict):
-                            q_mean = model.y_mean["edge_outputs"][0].to(device)
-                            q_std = model.y_std["edge_outputs"][0].to(device)
+                            q_mean = model.y_mean["edge_outputs"].to(device)
+                            q_std = model.y_std["edge_outputs"].to(device)
+                            flows_mb = flows_mb * q_std.unsqueeze(1) + q_mean.unsqueeze(1)
                         else:
                             q_mean = model.y_mean[-1].to(device)
                             q_std = model.y_std[-1].to(device)
-                        flows_mb = flows_mb * q_std + q_mean
+                            flows_mb = flows_mb * q_std + q_mean
                     if hasattr(model, "x_mean") and model.x_mean is not None:
                         dem_mean = model.x_mean[0].to(device)
                         dem_std = model.x_std[0].to(device)
@@ -1251,8 +1253,8 @@ def evaluate_sequence(
                         if isinstance(model.y_mean, dict):
                             p_mean = model.y_mean['node_outputs'][0].to(device)
                             p_std = model.y_std['node_outputs'][0].to(device)
-                            q_mean = model.y_mean['edge_outputs'][0].to(device)
-                            q_std = model.y_std['edge_outputs'][0].to(device)
+                            q_mean = model.y_mean['edge_outputs'].to(device)
+                            q_std = model.y_std['edge_outputs'].to(device)
                             press = press * p_std + p_mean
                             flow = flow * q_std + q_mean
                         else:
