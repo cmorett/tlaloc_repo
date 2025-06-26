@@ -102,8 +102,9 @@ def _build_randomized_network(
         else:
             base_mult = np.array(ts.pattern.multipliers, dtype=float)
         multipliers = base_mult.copy()
-        noise = 1.0 + np.random.normal(0.0, 0.05, size=len(multipliers))
-        multipliers = multipliers * noise
+        # Sample demand multipliers uniformly in [0.8, 1.2] for broader variation
+        scale_factors = np.random.uniform(0.8, 1.2, size=len(multipliers))
+        multipliers = multipliers * scale_factors
         multipliers = np.clip(multipliers, a_min=0.0, a_max=None)
         pat_name = f"{jname}_pat_{idx}"
         wn.add_pattern(pat_name, wntr.network.elements.Pattern(pat_name, multipliers))
