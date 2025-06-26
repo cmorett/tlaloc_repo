@@ -72,6 +72,14 @@ def _build_randomized_network(
     wn.options.time.report_timestep = 3600
     wn.options.quality.parameter = "CHEMICAL"
 
+    # Randomize pipe roughness coefficients (Hazen--Williams C)
+    # to expose the surrogate to varied headloss scenarios.  Each
+    # pipe's base value is scaled by a factor between 0.7 and 1.3.
+    for pname in wn.pipe_name_list:
+        pipe = wn.get_link(pname)
+        base_c = pipe.roughness
+        pipe.roughness = base_c * random.uniform(0.7, 1.3)
+
     # Randomize initial tank levels while keeping values within the
     # feasible range.  Sample from a Gaussian centred on the original
     # value so typical operating conditions remain likely.
