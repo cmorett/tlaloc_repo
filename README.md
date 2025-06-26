@@ -82,9 +82,9 @@ python scripts/train_gnn.py \
     --dropout 0.1 --residual --early-stop-patience 10 \
     --weight-decay 1e-5
 ```
-Pressure–headloss consistency is now enforced by default with a unit weight.
+Pressure–headloss consistency is now enforced by default with a weight of ``0.5``.
 Pass ``--no-pressure_loss`` if this coupling should be disabled.  To remove the
-mass balance penalty (also weighted by ``1.0`` by default) use ``--no-physics-loss``.
+mass balance penalty (still weighted ``1.0`` by default) use ``--no-physics-loss``.
 The surrogate clamps predicted pressures and chlorine concentrations to
 non-negative values and applies L2 regularization controlled by
 ``--weight-decay`` (default ``1e-5``) to avoid degenerate solutions.
@@ -106,9 +106,10 @@ Reservoirs and tanks are excluded from the mass balance calculation while tank
 pressures are no longer part of the direct MSE loss.  Disable the physics terms
 with ``--no-physics-loss`` if necessary. ``--pressure_loss`` is enabled by
 default to enforce pressure–headloss consistency via the Hazen--Williams
-equation.  By default all penalties have a weight of ``1.0``. The relative
-importance can be tuned via ``--w_mass`` and ``--w_head`` along with the
-``--w_edge`` coefficient controlling the flow loss.
+equation.  The mass and edge penalties keep a default weight of ``1.0`` while
+the headloss term uses ``0.5``. The relative importance can still be tuned via
+``--w_mass`` and ``--w_head`` along with the ``--w_edge`` coefficient
+controlling the flow loss.
 
 The trained model now supports validation loss tracking and early stopping.
 Normalization is applied automatically so the ``--normalize`` flag is optional.

@@ -1580,7 +1580,7 @@ def main(args: argparse.Namespace):
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=6)
 
     # prepare logging
     run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1972,7 +1972,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--w_head",
         type=float,
-        default=1.0,
+        default=0.5,
         help="Weight of the head loss consistency term",
     )
     parser.add_argument(
