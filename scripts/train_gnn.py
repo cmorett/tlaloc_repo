@@ -1309,10 +1309,11 @@ def main(args: argparse.Namespace):
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     edge_attr = build_edge_attr(wn, edge_index_np)
+    # Preserve physical units (length, diameter, roughness) for headloss
+    # computations before any normalisation or log transforms.
+    edge_attr_phys = torch.tensor(edge_attr.copy(), dtype=torch.float32)
     # log-transform roughness like in data generation
     edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
-    # preserve physical units before normalisation
-    edge_attr_phys = torch.tensor(edge_attr.copy(), dtype=torch.float32)
     edge_types = build_edge_type(wn, edge_index_np)
     edge_pairs = build_edge_pairs(edge_index_np)
     node_types = build_node_type(wn)
