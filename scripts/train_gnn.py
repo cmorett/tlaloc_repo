@@ -731,15 +731,21 @@ def compute_sequence_norm_stats(X: np.ndarray, Y: np.ndarray):
 
     first = Y[0]
     if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
-        node = np.concatenate([y["node_outputs"].reshape(-1, y["node_outputs"].shape[-1]) for y in Y], axis=0)
-        edge = np.concatenate([y["edge_outputs"].reshape(-1, y["edge_outputs"].shape[-1]) for y in Y], axis=0)
+        node = np.concatenate(
+            [y["node_outputs"].reshape(-1, y["node_outputs"].shape[-1]) for y in Y],
+            axis=0,
+        )
+        edge = np.concatenate(
+            [y["edge_outputs"].reshape(-1) for y in Y],
+            axis=0,
+        )
         y_mean = {
             "node_outputs": torch.tensor(node.mean(axis=0), dtype=torch.float32),
-            "edge_outputs": torch.tensor(edge.mean(axis=0), dtype=torch.float32),
+            "edge_outputs": torch.tensor(edge.mean(), dtype=torch.float32),
         }
         y_std = {
             "node_outputs": torch.tensor(node.std(axis=0) + 1e-8, dtype=torch.float32),
-            "edge_outputs": torch.tensor(edge.std(axis=0) + 1e-8, dtype=torch.float32),
+            "edge_outputs": torch.tensor(edge.std() + 1e-8, dtype=torch.float32),
         }
     else:
         y_flat = Y.reshape(-1, Y.shape[-1])
@@ -1068,7 +1074,7 @@ def train_sequence(
                     if isinstance(model.y_mean, dict):
                         q_mean = model.y_mean["edge_outputs"].to(device)
                         q_std = model.y_std["edge_outputs"].to(device)
-                        flows_mb = flows_mb * q_std.unsqueeze(1) + q_mean.unsqueeze(1)
+                        flows_mb = flows_mb * q_std + q_mean
                     else:
                         q_mean = model.y_mean[-1].to(device)
                         q_std = model.y_std[-1].to(device)
@@ -1215,7 +1221,7 @@ def evaluate_sequence(
                         if isinstance(model.y_mean, dict):
                             q_mean = model.y_mean["edge_outputs"].to(device)
                             q_std = model.y_std["edge_outputs"].to(device)
-                            flows_mb = flows_mb * q_std.unsqueeze(1) + q_mean.unsqueeze(1)
+                            flows_mb = flows_mb * q_std + q_mean
                         else:
                             q_mean = model.y_mean[-1].to(device)
                             q_std = model.y_std[-1].to(device)
