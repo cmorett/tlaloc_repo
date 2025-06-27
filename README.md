@@ -19,9 +19,11 @@ The repository provides a simple training script `scripts/train_gnn.py` which
 expects feature and label data saved in the `data/` directory as NumPy arrays.
 Each node feature vector has the layout
 ``[base_demand, pressure, chlorine, elevation, pump_1, ..., pump_N]`` where the
-additional elements represent the speeds of all pumps in the network.  The
-helper script `scripts/data_generation.py` generates these arrays as well as the
-graph ``edge_index``.  Two dataset formats are
+additional elements represent the speeds of all pumps in the network. Reservoir
+nodes use their constant hydraulic head in the ``pressure`` slot so the model is
+given the correct supply level. The helper script `scripts/data_generation.py`
+generates these arrays as well as the graph ``edge_index``.  Two dataset formats
+are
 supported:
 
 1. **Dictionary format** – each entry of ``X`` is a dictionary containing the
