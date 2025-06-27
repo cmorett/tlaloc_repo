@@ -362,7 +362,13 @@ def build_sequence_dataset(
             feat_nodes = []
             for node in wn_template.node_name_list:
                 idx = pressures.columns.get_loc(node)
-                p_t = float(pressures.iat[t, idx])
+                if node in wn_template.reservoir_name_list:
+                    # Reservoir nodes report ~0 pressure from EPANET. Use their
+                    # fixed hydraulic head instead so the surrogate is aware of
+                    # the supply level.
+                    p_t = float(wn_template.get_node(node).base_head)
+                else:
+                    p_t = float(pressures.iat[t, idx])
                 c_t = float(quality.iat[t, idx])
                 if demands is not None and node in wn_template.junction_name_list:
                     d_t = float(demands.iat[t, idx])
@@ -441,7 +447,11 @@ def build_dataset(
             feat_nodes = []
             for node in wn_template.node_name_list:
                 idx = pressures.columns.get_loc(node)
-                p_t = max(pressures.iat[i, idx], 0.0)
+                if node in wn_template.reservoir_name_list:
+                    # Use the reservoir's constant head as the pressure input
+                    p_t = float(wn_template.get_node(node).base_head)
+                else:
+                    p_t = max(pressures.iat[i, idx], 0.0)
                 c_t = max(quality.iat[i, idx], 0.0)
                 if demands is not None and node in wn_template.junction_name_list:
                     d_t = demands.iat[i, idx]
