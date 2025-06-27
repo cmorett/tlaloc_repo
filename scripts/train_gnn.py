@@ -1067,9 +1067,10 @@ def train_sequence(
                         edge_index.size(1), -1
                     )
                 )
-                demand_mb = (
-                    X_seq[..., 0].permute(2, 0, 1).reshape(node_count, -1)
-                )
+                dem_seq = X_seq[..., 0]
+                if dem_seq.size(1) > 1:
+                    dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
+                demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
                 if hasattr(model, "y_mean") and model.y_mean is not None:
                     if isinstance(model.y_mean, dict):
                         q_mean = model.y_mean["edge_outputs"].to(device)
@@ -1214,9 +1215,10 @@ def evaluate_sequence(
                             edge_index.size(1), -1
                         )
                     )
-                    demand_mb = (
-                        X_seq[..., 0].permute(2, 0, 1).reshape(node_count, -1)
-                    )
+                    dem_seq = X_seq[..., 0]
+                    if dem_seq.size(1) > 1:
+                        dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
+                    demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         if isinstance(model.y_mean, dict):
                             q_mean = model.y_mean["edge_outputs"].to(device)
