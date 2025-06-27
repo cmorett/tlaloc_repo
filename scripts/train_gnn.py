@@ -819,8 +819,14 @@ def build_edge_type(
     return np.array([type_dict[(int(s), int(t))] for s, t in edge_index.T], dtype=np.int64)
 
 
-def build_edge_pairs(edge_index: np.ndarray) -> list[tuple[int, int]]:
-    """Return list of (i, j) tuples pairing forward and reverse edges."""
+def build_edge_pairs(
+    edge_index: np.ndarray, edge_type: Optional[np.ndarray] = None
+) -> list[tuple[int, int]]:
+    """Return list of ``(i, j)`` tuples pairing forward and reverse edges.
+
+    When ``edge_type`` is provided, only edges with type ``0`` (pipes) are
+    paired.  This avoids including pumps or valves in the symmetry penalty.
+    """
 
     pair_map: dict[tuple[int, int], int] = {}
     pairs: list[tuple[int, int]] = []
@@ -829,7 +835,8 @@ def build_edge_pairs(edge_index: np.ndarray) -> list[tuple[int, int]]:
         v = int(edge_index[1, eid])
         if (v, u) in pair_map:
             j = pair_map[(v, u)]
-            pairs.append((j, eid))
+            if edge_type is None or (edge_type[eid] == 0 and edge_type[j] == 0):
+                pairs.append((j, eid))
         else:
             pair_map[(u, v)] = eid
     return pairs
@@ -1323,7 +1330,7 @@ def main(args: argparse.Namespace):
     # log-transform roughness like in data generation
     edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
     edge_types = build_edge_type(wn, edge_index_np)
-    edge_pairs = build_edge_pairs(edge_index_np)
+    edge_pairs = build_edge_pairs(edge_index_np, edge_types)
     node_types = build_node_type(wn)
     loss_mask = build_loss_mask(wn).to(device)
     # Always allocate a distinct node type for tanks even if they are absent
