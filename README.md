@@ -81,6 +81,7 @@ python scripts/train_gnn.py \
     --x-val-path data/X_val.npy --y-val-path data/Y_val.npy \
     --edge-index-path data/edge_index.npy --inp-path CTown.inp \
     --epochs 100 --batch-size 32 --hidden-dim 64 --num-layers 4 \
+    --workers 8 \
     --dropout 0.1 --residual --early-stop-patience 10 \
     --weight-decay 1e-5
 ```
@@ -120,6 +121,8 @@ checkpoints.  Normalization statistics are saved alongside the weights and
 automatically applied by the inference scripts.
 You may cancel training early with ``Ctrl+C``.  The loop exits gracefully,
 keeping the best model on disk and producing the usual plots.
+Data is loaded in parallel using multiple worker processes; pass ``--workers``
+to adjust the number (default ``5``).
 
 To achieve good predictive accuracy the surrogate should be trained on a large
 collection of EPANET simulations.  The data generation script accepts a
