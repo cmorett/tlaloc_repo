@@ -976,7 +976,7 @@ def train(model, loader, optimizer, device, check_negative=True, amp=False):
     scaler = GradScaler(enabled=amp)
     total_loss = 0
     for batch in loader:
-        batch = batch.to(device)
+        batch = batch.to(device, non_blocking=True)
         if torch.isnan(batch.x).any() or torch.isnan(batch.y).any():
             raise ValueError("NaN detected in training batch")
         if check_negative and ((batch.x[:, 1] < 0).any() or (batch.y[:, 0] < 0).any()):
@@ -1012,7 +1012,7 @@ def evaluate(model, loader, device, amp=False):
     total_loss = 0
     with torch.no_grad():
         for batch in loader:
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=True)
             with autocast(enabled=amp):
                 out = model(
                     batch.x,
@@ -1386,7 +1386,14 @@ def main(args: argparse.Namespace):
             node_type=node_types,
             edge_type=edge_types,
         )
-        loader = TorchLoader(data_ds, batch_size=args.batch_size, shuffle=True)
+        loader = TorchLoader(
+            data_ds,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.workers,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=args.workers > 0,
+        )
     else:
         data_list = load_dataset(
             args.x_path,
@@ -1396,7 +1403,14 @@ def main(args: argparse.Namespace):
             node_type=node_types,
             edge_type=edge_types,
         )
-        loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
+        loader = DataLoader(
+            data_list,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.workers,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=args.workers > 0,
+        )
 
 
     if args.x_val_path and os.path.exists(args.x_val_path):
@@ -1414,7 +1428,13 @@ def main(args: argparse.Namespace):
                 node_type=node_types,
                 edge_type=edge_types,
             )
-            val_loader = TorchLoader(val_ds, batch_size=args.batch_size)
+            val_loader = TorchLoader(
+                val_ds,
+                batch_size=args.batch_size,
+                num_workers=args.workers,
+                pin_memory=torch.cuda.is_available(),
+                persistent_workers=args.workers > 0,
+            )
             val_list = val_ds
         else:
             val_list = load_dataset(
@@ -1425,7 +1445,13 @@ def main(args: argparse.Namespace):
                 node_type=node_types,
                 edge_type=edge_types,
             )
-            val_loader = DataLoader(val_list, batch_size=args.batch_size)
+            val_loader = DataLoader(
+                val_list,
+                batch_size=args.batch_size,
+                num_workers=args.workers,
+                pin_memory=torch.cuda.is_available(),
+                persistent_workers=args.workers > 0,
+            )
     else:
         val_list = []
         val_loader = None
@@ -1486,15 +1512,41 @@ def main(args: argparse.Namespace):
         if args.neighbor_sampling:
             sample_size = args.cluster_batch_size or max(1, int(0.2 * data_list[0].num_nodes))
             data_list = NeighborSampleDataset(data_list, edge_index_np, sample_size)
-            loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
-            if val_loader is not None:
-                val_loader = DataLoader(NeighborSampleDataset(val_list, edge_index_np, sample_size), batch_size=args.batch_size)
+        loader = DataLoader(
+            data_list,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.workers,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=args.workers > 0,
+        )
+        if val_loader is not None:
+            val_loader = DataLoader(
+                NeighborSampleDataset(val_list, edge_index_np, sample_size),
+                batch_size=args.batch_size,
+                num_workers=args.workers,
+                pin_memory=torch.cuda.is_available(),
+                persistent_workers=args.workers > 0,
+            )
         elif args.cluster_batch_size > 0:
             clusters = partition_graph_greedy(edge_index_np, data_list[0].num_nodes, args.cluster_batch_size)
             data_list = ClusterSampleDataset(data_list, clusters)
-            loader = DataLoader(data_list, batch_size=args.batch_size, shuffle=True)
+            loader = DataLoader(
+                data_list,
+                batch_size=args.batch_size,
+                shuffle=True,
+                num_workers=args.workers,
+                pin_memory=torch.cuda.is_available(),
+                persistent_workers=args.workers > 0,
+            )
             if val_loader is not None:
-                val_loader = DataLoader(ClusterSampleDataset(val_list, clusters), batch_size=args.batch_size)
+                val_loader = DataLoader(
+                    ClusterSampleDataset(val_list, clusters),
+                    batch_size=args.batch_size,
+                    num_workers=args.workers,
+                    pin_memory=torch.cuda.is_available(),
+                    persistent_workers=args.workers > 0,
+                )
 
     expected_in_dim = 4 + len(wn.pump_name_list)
 
@@ -1784,7 +1836,13 @@ def main(args: argparse.Namespace):
                     edge_mean,
                     edge_std,
                 )
-            test_loader = TorchLoader(test_ds, batch_size=args.batch_size)
+            test_loader = TorchLoader(
+                test_ds,
+                batch_size=args.batch_size,
+                num_workers=args.workers,
+                pin_memory=torch.cuda.is_available(),
+                persistent_workers=args.workers > 0,
+            )
         else:
             test_list = load_dataset(
                 args.x_test_path,
@@ -1796,7 +1854,13 @@ def main(args: argparse.Namespace):
             )
             if args.normalize:
                 apply_normalization(test_list, x_mean, x_std, y_mean, y_std, edge_mean, edge_std)
-            test_loader = DataLoader(test_list, batch_size=args.batch_size)
+            test_loader = DataLoader(
+                test_list,
+                batch_size=args.batch_size,
+                num_workers=args.workers,
+                pin_memory=torch.cuda.is_available(),
+                persistent_workers=args.workers > 0,
+            )
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.eval()
         preds_p = []
@@ -1838,7 +1902,8 @@ def main(args: argparse.Namespace):
                     true_c.extend(Y_node[..., 1].cpu().numpy().ravel())
             else:
                 for batch in test_loader:
-                    batch = batch.to(device)
+
+                    batch = batch.to(device, non_blocking=True)
                     with autocast(enabled=args.amp):
                         out = model(
                             batch.x,
@@ -1922,6 +1987,12 @@ if __name__ == "__main__":
         type=int,
         default=32,
         help="Training batch size",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=5,
+        help="Number of DataLoader workers",
     )
     parser.add_argument(
         "--hidden-dim",
