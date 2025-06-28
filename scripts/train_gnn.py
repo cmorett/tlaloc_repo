@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn import MultiheadAttention
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch.utils.data import Dataset, DataLoader as TorchLoader
@@ -973,7 +973,7 @@ class NeighborSampleDataset(Dataset):
 
 def train(model, loader, optimizer, device, check_negative=True, amp=False):
     model.train()
-    scaler = GradScaler(enabled=amp)
+    scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = 0
     for batch in loader:
         batch = batch.to(device, non_blocking=True)
@@ -982,7 +982,7 @@ def train(model, loader, optimizer, device, check_negative=True, amp=False):
         if check_negative and ((batch.x[:, 1] < 0).any() or (batch.y[:, 0] < 0).any()):
             raise ValueError("Negative pressures encountered in training batch")
         optimizer.zero_grad()
-        with autocast(enabled=amp):
+        with autocast(device_type=device.type, enabled=amp):
             out = model(
                 batch.x,
                 batch.edge_index,
@@ -1014,7 +1014,7 @@ def evaluate(model, loader, device, amp=False):
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device, non_blocking=True)
-            with autocast(enabled=amp):
+            with autocast(device_type=device.type, enabled=amp):
                 out = model(
                     batch.x,
                     batch.edge_index,
@@ -1047,7 +1047,7 @@ def train_sequence(
     amp: bool = False,
 ) -> tuple[float, float, float, float, float, float]:
     model.train()
-    scaler = GradScaler(enabled=amp)
+    scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = 0.0
     node_total = edge_total = mass_total = head_total = sym_total = 0.0
     node_count = int(edge_index.max()) + 1
@@ -1066,7 +1066,7 @@ def train_sequence(
             init_levels = init_press * model.tank_areas
             model.reset_tank_levels(init_levels)
         optimizer.zero_grad()
-        with autocast(enabled=amp):
+        with autocast(device_type=device.type, enabled=amp):
             preds = model(
                 X_seq,
                 edge_index.to(device),
@@ -1158,7 +1158,7 @@ def train_sequence(
         else:
             Y_seq = Y_seq.to(device)
             loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
-            with autocast(enabled=amp):
+            with autocast(device_type=device.type, enabled=amp):
                 loss = F.mse_loss(preds, Y_seq.float())
         if amp:
             scaler.scale(loss).backward()
@@ -1875,7 +1875,7 @@ def main(args: argparse.Namespace):
                 et = test_ds.edge_type.to(device) if test_ds.edge_type is not None else None
                 for X_seq, Y_seq in test_loader:
                     X_seq = X_seq.to(device)
-                    with autocast(enabled=args.amp):
+                    with autocast(device_type=device.type, enabled=args.amp):
                         out = model(X_seq, ei, ea, nt, et)
                     if isinstance(out, dict):
                         node_pred = out["node_outputs"]
@@ -1904,7 +1904,7 @@ def main(args: argparse.Namespace):
                 for batch in test_loader:
 
                     batch = batch.to(device, non_blocking=True)
-                    with autocast(enabled=args.amp):
+                    with autocast(device_type=device.type, enabled=args.amp):
                         out = model(
                             batch.x,
                             batch.edge_index,
