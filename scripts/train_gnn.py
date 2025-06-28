@@ -993,6 +993,7 @@ def train(model, loader, optimizer, device, check_negative=True, amp=False):
             loss = F.mse_loss(out, batch.y.float())
         if amp:
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
         else:
             loss.backward()
         # Clip gradients to mitigate exploding gradients that could otherwise
@@ -1066,14 +1067,13 @@ def train_sequence(
             model.reset_tank_levels(init_levels)
         optimizer.zero_grad()
         with autocast(enabled=amp):
-            with autocast(enabled=amp):
-                preds = model(
-                    X_seq,
-                    edge_index.to(device),
-                    edge_attr.to(device),
-                    nt,
-                    et,
-                )
+            preds = model(
+                X_seq,
+                edge_index.to(device),
+                edge_attr.to(device),
+                nt,
+                et,
+            )
         if isinstance(Y_seq, dict):
             target_nodes = Y_seq['node_outputs'].to(device)
             pred_nodes = preds['node_outputs']
@@ -1159,10 +1159,10 @@ def train_sequence(
             Y_seq = Y_seq.to(device)
             loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
             with autocast(enabled=amp):
-                with autocast(enabled=amp):
-                    loss = F.mse_loss(preds, Y_seq.float())
+                loss = F.mse_loss(preds, Y_seq.float())
         if amp:
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
