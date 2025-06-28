@@ -85,7 +85,7 @@ class HydroConv(MessagePassing):
         for t, lin in enumerate(self.lin):
             idx = node_type == t
             if torch.any(idx):
-                out[idx] = lin(aggr[idx])
+                out[idx] = lin(aggr[idx]).to(out.dtype)
         return out
 
     def message(self, x_i: torch.Tensor, x_j: torch.Tensor, edge_attr: torch.Tensor, edge_type: torch.Tensor) -> torch.Tensor:
