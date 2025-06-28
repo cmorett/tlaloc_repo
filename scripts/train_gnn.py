@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn import MultiheadAttention
+from torch.cuda.amp import autocast, GradScaler
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch.utils.data import Dataset, DataLoader as TorchLoader
@@ -970,8 +971,9 @@ class NeighborSampleDataset(Dataset):
         return data
 
 
-def train(model, loader, optimizer, device, check_negative=True):
+def train(model, loader, optimizer, device, check_negative=True, amp=False):
     model.train()
+    scaler = GradScaler(enabled=amp)
     total_loss = 0
     for batch in loader:
         batch = batch.to(device)
@@ -980,29 +982,7 @@ def train(model, loader, optimizer, device, check_negative=True):
         if check_negative and ((batch.x[:, 1] < 0).any() or (batch.y[:, 0] < 0).any()):
             raise ValueError("Negative pressures encountered in training batch")
         optimizer.zero_grad()
-        out = model(
-            batch.x,
-            batch.edge_index,
-            getattr(batch, "edge_attr", None),
-            getattr(batch, "node_type", None),
-            getattr(batch, "edge_type", None),
-        )
-        loss = F.mse_loss(out, batch.y.float())
-        loss.backward()
-        # Clip gradients to mitigate exploding gradients that could otherwise
-        # result in ``NaN`` loss values when the optimizer updates the weights.
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        total_loss += loss.item() * batch.num_graphs
-    return total_loss / len(loader.dataset)
-
-
-def evaluate(model, loader, device):
-    model.eval()
-    total_loss = 0
-    with torch.no_grad():
-        for batch in loader:
-            batch = batch.to(device)
+        with autocast(enabled=amp):
             out = model(
                 batch.x,
                 batch.edge_index,
@@ -1011,6 +991,37 @@ def evaluate(model, loader, device):
                 getattr(batch, "edge_type", None),
             )
             loss = F.mse_loss(out, batch.y.float())
+        if amp:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+        # Clip gradients to mitigate exploding gradients that could otherwise
+        # result in ``NaN`` loss values when the optimizer updates the weights.
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if amp:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
+        total_loss += loss.item() * batch.num_graphs
+    return total_loss / len(loader.dataset)
+
+
+def evaluate(model, loader, device, amp=False):
+    model.eval()
+    total_loss = 0
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device)
+            with autocast(enabled=amp):
+                out = model(
+                    batch.x,
+                    batch.edge_index,
+                    getattr(batch, "edge_attr", None),
+                    getattr(batch, "node_type", None),
+                    getattr(batch, "edge_type", None),
+                )
+                loss = F.mse_loss(out, batch.y.float())
             total_loss += loss.item() * batch.num_graphs
     return total_loss / len(loader.dataset)
 
@@ -1032,8 +1043,10 @@ def train_sequence(
     w_mass: float = 1.0,
     w_head: float = 1.0,
     w_edge: float = 1.0,
+    amp: bool = False,
 ) -> tuple[float, float, float, float, float, float]:
     model.train()
+    scaler = GradScaler(enabled=amp)
     total_loss = 0.0
     node_total = edge_total = mass_total = head_total = sym_total = 0.0
     node_count = int(edge_index.max()) + 1
@@ -1052,13 +1065,15 @@ def train_sequence(
             init_levels = init_press * model.tank_areas
             model.reset_tank_levels(init_levels)
         optimizer.zero_grad()
-        preds = model(
-            X_seq,
-            edge_index.to(device),
-            edge_attr.to(device),
-            nt,
-            et,
-        )
+        with autocast(enabled=amp):
+            with autocast(enabled=amp):
+                preds = model(
+                    X_seq,
+                    edge_index.to(device),
+                    edge_attr.to(device),
+                    nt,
+                    et,
+                )
         if isinstance(Y_seq, dict):
             target_nodes = Y_seq['node_outputs'].to(device)
             pred_nodes = preds['node_outputs']
@@ -1143,10 +1158,18 @@ def train_sequence(
         else:
             Y_seq = Y_seq.to(device)
             loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
-            loss = F.mse_loss(preds, Y_seq.float())
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+            with autocast(enabled=amp):
+                with autocast(enabled=amp):
+                    loss = F.mse_loss(preds, Y_seq.float())
+        if amp:
+            scaler.scale(loss).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
         total_loss += loss.item() * X_seq.size(0)
         node_total += loss_node.item() * X_seq.size(0)
         edge_total += loss_edge.item() * X_seq.size(0)
@@ -1180,6 +1203,7 @@ def evaluate_sequence(
     w_mass: float = 1.0,
     w_head: float = 1.0,
     w_edge: float = 1.0,
+    amp: bool = False,
 ) -> tuple[float, float, float, float, float, float]:
     model.eval()
     total_loss = 0.0
@@ -1631,6 +1655,7 @@ def main(args: argparse.Namespace):
                     w_mass=args.w_mass,
                     w_head=args.w_head,
                     w_edge=args.w_edge,
+                    amp=args.amp,
                 )
                 loss = loss_tuple[0]
                 node_l, edge_l, mass_l, head_l, sym_l = loss_tuple[1:]
@@ -1651,14 +1676,22 @@ def main(args: argparse.Namespace):
                         w_mass=args.w_mass,
                         w_head=args.w_head,
                         w_edge=args.w_edge,
+                        amp=args.amp,
                     )
                     val_loss = val_tuple[0]
                 else:
                     val_loss = loss
             else:
-                loss = train(model, loader, optimizer, device, check_negative=not args.normalize)
+                loss = train(
+                    model,
+                    loader,
+                    optimizer,
+                    device,
+                    check_negative=not args.normalize,
+                    amp=args.amp,
+                )
                 if val_loader is not None:
-                    val_loss = evaluate(model, val_loader, device)
+                    val_loss = evaluate(model, val_loader, device, amp=args.amp)
                 else:
                     val_loss = loss
             scheduler.step(val_loss)
@@ -1778,7 +1811,8 @@ def main(args: argparse.Namespace):
                 et = test_ds.edge_type.to(device) if test_ds.edge_type is not None else None
                 for X_seq, Y_seq in test_loader:
                     X_seq = X_seq.to(device)
-                    out = model(X_seq, ei, ea, nt, et)
+                    with autocast(enabled=args.amp):
+                        out = model(X_seq, ei, ea, nt, et)
                     if isinstance(out, dict):
                         node_pred = out["node_outputs"]
                     else:
@@ -1805,13 +1839,14 @@ def main(args: argparse.Namespace):
             else:
                 for batch in test_loader:
                     batch = batch.to(device)
-                    out = model(
-                        batch.x,
-                        batch.edge_index,
-                        getattr(batch, "edge_attr", None),
-                        getattr(batch, "node_type", None),
-                        getattr(batch, "edge_type", None),
-                    )
+                    with autocast(enabled=args.amp):
+                        out = model(
+                            batch.x,
+                            batch.edge_index,
+                            getattr(batch, "edge_attr", None),
+                            getattr(batch, "node_type", None),
+                            getattr(batch, "edge_type", None),
+                        )
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         if isinstance(model.y_mean, dict):
                             y_mean_node = model.y_mean['node_outputs'].to(out.device)
@@ -2007,6 +2042,19 @@ if __name__ == "__main__":
         action="store_true",
         help="Use random neighbor sampling instead of clustering",
     )
+    parser.add_argument(
+        "--amp",
+        dest="amp",
+        action="store_true",
+        help="Enable mixed precision training",
+    )
+    parser.add_argument(
+        "--no-amp",
+        dest="amp",
+        action="store_false",
+        help="Disable mixed precision training",
+    )
+    parser.set_defaults(amp=True)
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--run-name", default="", help="Optional run name")
     parser.add_argument(

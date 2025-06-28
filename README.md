@@ -99,6 +99,10 @@ nodes and their neighbors on-the-fly instead of deterministic clusters.
 During inference on very large networks the same clusters can be evaluated
 sequentially to keep memory usage low.
 
+Mixed precision training is enabled by default via the ``--amp`` flag which
+wraps model evaluations in ``torch.cuda.amp.autocast`` and scales the loss for
+improved GPU throughput. Use ``--no-amp`` to run exclusively in full precision.
+
 A physics-informed mass balance penalty is applied by default to encourage
 conservation of predicted flows.  Because each pipe appears twice in the graph
 (forward and reverse), the loss divides the imbalance by two so that equal and
