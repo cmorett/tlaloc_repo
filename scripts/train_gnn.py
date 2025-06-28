@@ -1076,18 +1076,19 @@ def train_sequence(
             )
         if isinstance(Y_seq, dict):
             target_nodes = Y_seq['node_outputs'].to(device)
-            pred_nodes = preds['node_outputs']
+            pred_nodes = preds['node_outputs'].float()
             if node_mask is not None:
                 pred_nodes = pred_nodes[:, :, node_mask, :]
                 target_nodes = target_nodes[:, :, node_mask, :]
-            loss_node = F.mse_loss(pred_nodes, target_nodes)
+            loss_node = F.mse_loss(pred_nodes, target_nodes.float())
             edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
-            loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
+            edge_preds = preds['edge_outputs'].float()
+            loss_edge = F.mse_loss(edge_preds, edge_target.float())
             if physics_loss:
                 flows_mb = (
-                    preds['edge_outputs'].squeeze(-1).permute(2, 0, 1).reshape(
-                        edge_index.size(1), -1
-                    )
+                    edge_preds.squeeze(-1)
+                    .permute(2, 0, 1)
+                    .reshape(edge_index.size(1), -1)
                 )
                 dem_seq = X_seq[..., 0]
                 if dem_seq.size(1) > 1:
@@ -1129,8 +1130,8 @@ def train_sequence(
                 mass_loss = torch.tensor(0.0, device=device)
                 sym_loss = torch.tensor(0.0, device=device)
             if pressure_loss:
-                press = preds['node_outputs'][..., 0]
-                flow = preds['edge_outputs'].squeeze(-1)
+                press = preds['node_outputs'][..., 0].float()
+                flow = edge_preds.squeeze(-1)
                 if hasattr(model, 'y_mean') and model.y_mean is not None:
                     if isinstance(model.y_mean, dict):
                         p_mean = model.y_mean['node_outputs'][0].to(device)
@@ -1233,18 +1234,19 @@ def evaluate_sequence(
             )
             if isinstance(Y_seq, dict):
                 target_nodes = Y_seq['node_outputs'].to(device)
-                pred_nodes = preds['node_outputs']
+                pred_nodes = preds['node_outputs'].float()
                 if node_mask is not None:
                     pred_nodes = pred_nodes[:, :, node_mask, :]
                     target_nodes = target_nodes[:, :, node_mask, :]
-                loss_node = F.mse_loss(pred_nodes, target_nodes)
+                loss_node = F.mse_loss(pred_nodes, target_nodes.float())
                 edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
-                loss_edge = F.mse_loss(preds['edge_outputs'], edge_target)
+                edge_preds = preds['edge_outputs'].float()
+                loss_edge = F.mse_loss(edge_preds, edge_target.float())
                 if physics_loss:
                     flows_mb = (
-                        preds['edge_outputs'].squeeze(-1).permute(2, 0, 1).reshape(
-                            edge_index.size(1), -1
-                        )
+                        edge_preds.squeeze(-1)
+                        .permute(2, 0, 1)
+                        .reshape(edge_index.size(1), -1)
                     )
                     dem_seq = X_seq[..., 0]
                     if dem_seq.size(1) > 1:
@@ -1286,8 +1288,8 @@ def evaluate_sequence(
                     mass_loss = torch.tensor(0.0, device=device)
                     sym_loss = torch.tensor(0.0, device=device)
                 if pressure_loss:
-                    press = preds['node_outputs'][..., 0]
-                    flow = preds['edge_outputs'].squeeze(-1)
+                    press = preds['node_outputs'][..., 0].float()
+                    flow = edge_preds.squeeze(-1)
                     if hasattr(model, 'y_mean') and model.y_mean is not None:
                         if isinstance(model.y_mean, dict):
                             p_mean = model.y_mean['node_outputs'][0].to(device)
