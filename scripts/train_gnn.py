@@ -1009,10 +1009,20 @@ def train(model, loader, optimizer, device, check_negative=True, amp=False):
 
 
 def evaluate(model, loader, device, amp=False):
+    global interrupted
     model.eval()
     total_loss = 0
+    data_iter = iter(loader)
     with torch.no_grad():
-        for batch in loader:
+        while True:
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                break
+            except RuntimeError as e:
+                if interrupted and "DataLoader worker" in str(e):
+                    break
+                raise
             batch = batch.to(device, non_blocking=True)
             with autocast(device_type=device.type, enabled=amp):
                 out = model(
@@ -1024,6 +1034,8 @@ def evaluate(model, loader, device, amp=False):
                 )
                 loss = F.mse_loss(out, batch.y.float())
             total_loss += loss.item() * batch.num_graphs
+            if interrupted:
+                break
     return total_loss / len(loader.dataset)
 
 
@@ -1046,12 +1058,22 @@ def train_sequence(
     w_edge: float = 1.0,
     amp: bool = False,
 ) -> tuple[float, float, float, float, float, float]:
+    global interrupted
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = 0.0
     node_total = edge_total = mass_total = head_total = sym_total = 0.0
     node_count = int(edge_index.max()) + 1
-    for X_seq, Y_seq in loader:
+    data_iter = iter(loader)
+    while True:
+        try:
+            X_seq, Y_seq = next(data_iter)
+        except StopIteration:
+            break
+        except RuntimeError as e:
+            if interrupted and "DataLoader worker" in str(e):
+                break
+            raise
         X_seq = X_seq.to(device)
         if node_type is not None:
             nt = node_type.to(device)
@@ -1177,6 +1199,8 @@ def train_sequence(
         mass_total += mass_loss.item() * X_seq.size(0)
         head_total += head_loss.item() * X_seq.size(0)
         sym_total += sym_loss.item() * X_seq.size(0)
+        if interrupted:
+            break
     denom = len(loader.dataset)
     return (
         total_loss / denom,
@@ -1206,12 +1230,22 @@ def evaluate_sequence(
     w_edge: float = 1.0,
     amp: bool = False,
 ) -> tuple[float, float, float, float, float, float]:
+    global interrupted
     model.eval()
     total_loss = 0.0
     node_total = edge_total = mass_total = head_total = sym_total = 0.0
     node_count = int(edge_index.max()) + 1
+    data_iter = iter(loader)
     with torch.no_grad():
-        for X_seq, Y_seq in loader:
+        while True:
+            try:
+                X_seq, Y_seq = next(data_iter)
+            except StopIteration:
+                break
+            except RuntimeError as e:
+                if interrupted and "DataLoader worker" in str(e):
+                    break
+                raise
             X_seq = X_seq.to(device)
             if node_type is not None:
                 nt = node_type.to(device)
@@ -1320,10 +1354,12 @@ def evaluate_sequence(
                 loss = F.mse_loss(preds, Y_seq.float())
             total_loss += loss.item() * X_seq.size(0)
             node_total += loss_node.item() * X_seq.size(0)
-        edge_total += loss_edge.item() * X_seq.size(0)
-        mass_total += mass_loss.item() * X_seq.size(0)
-        head_total += head_loss.item() * X_seq.size(0)
-        sym_total += sym_loss.item() * X_seq.size(0)
+            edge_total += loss_edge.item() * X_seq.size(0)
+            mass_total += mass_loss.item() * X_seq.size(0)
+            head_total += head_loss.item() * X_seq.size(0)
+            sym_total += sym_loss.item() * X_seq.size(0)
+            if interrupted:
+                break
     denom = len(loader.dataset)
     return (
         total_loss / denom,
