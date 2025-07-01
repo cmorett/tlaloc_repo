@@ -1270,99 +1270,100 @@ def evaluate_sequence(
                 init_press = X_seq[:, 0, model.tank_indices, 1]
                 init_levels = init_press * model.tank_areas
                 model.reset_tank_levels(init_levels)
-            preds = model(
-                X_seq,
-                edge_index.to(device),
-                edge_attr.to(device),
-                nt,
-                et,
-            )
-            if isinstance(Y_seq, dict):
-                target_nodes = Y_seq['node_outputs'].to(device)
-                pred_nodes = preds['node_outputs'].float()
-                if node_mask is not None:
-                    pred_nodes = pred_nodes[:, :, node_mask, :]
-                    target_nodes = target_nodes[:, :, node_mask, :]
-                loss_node = F.mse_loss(pred_nodes, target_nodes.float())
-                edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
-                edge_preds = preds['edge_outputs'].float()
-                loss_edge = F.mse_loss(edge_preds, edge_target.float())
-                if physics_loss:
-                    flows_mb = (
-                        edge_preds.squeeze(-1)
-                        .permute(2, 0, 1)
-                        .reshape(edge_index.size(1), -1)
-                    )
-                    dem_seq = X_seq[..., 0]
-                    if dem_seq.size(1) > 1:
-                        dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
-                    demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
-                    if hasattr(model, "y_mean") and model.y_mean is not None:
-                        if isinstance(model.y_mean, dict):
-                            q_mean = model.y_mean["edge_outputs"].to(device)
-                            q_std = model.y_std["edge_outputs"].to(device)
-                            flows_mb = flows_mb * q_std + q_mean
+            with autocast(device_type=device.type, enabled=amp):
+                preds = model(
+                    X_seq,
+                    edge_index.to(device),
+                    edge_attr.to(device),
+                    nt,
+                    et,
+                )
+                if isinstance(Y_seq, dict):
+                    target_nodes = Y_seq['node_outputs'].to(device)
+                    pred_nodes = preds['node_outputs'].float()
+                    if node_mask is not None:
+                        pred_nodes = pred_nodes[:, :, node_mask, :]
+                        target_nodes = target_nodes[:, :, node_mask, :]
+                    loss_node = F.mse_loss(pred_nodes, target_nodes.float())
+                    edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
+                    edge_preds = preds['edge_outputs'].float()
+                    loss_edge = F.mse_loss(edge_preds, edge_target.float())
+                    if physics_loss:
+                        flows_mb = (
+                            edge_preds.squeeze(-1)
+                            .permute(2, 0, 1)
+                            .reshape(edge_index.size(1), -1)
+                        )
+                        dem_seq = X_seq[..., 0]
+                        if dem_seq.size(1) > 1:
+                            dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
+                        demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
+                        if hasattr(model, "y_mean") and model.y_mean is not None:
+                            if isinstance(model.y_mean, dict):
+                                q_mean = model.y_mean["edge_outputs"].to(device)
+                                q_std = model.y_std["edge_outputs"].to(device)
+                                flows_mb = flows_mb * q_std + q_mean
+                            else:
+                                q_mean = model.y_mean[-1].to(device)
+                                q_std = model.y_std[-1].to(device)
+                                flows_mb = flows_mb * q_std + q_mean
+                        if hasattr(model, "x_mean") and model.x_mean is not None:
+                            dem_mean = model.x_mean[0].to(device)
+                            dem_std = model.x_std[0].to(device)
+                            demand_mb = demand_mb * dem_std + dem_mean
+                        mass_loss = compute_mass_balance_loss(
+                            flows_mb,
+                            edge_index.to(device),
+                            node_count,
+                            demand=demand_mb,
+                            node_type=nt,
+                        )
+                        sym_errors = []
+                        for i, j in edge_pairs:
+                            if et is not None:
+                                # only enforce symmetry for pipes (edge_type 0)
+                                if et[i] != 0 or et[j] != 0:
+                                    continue
+                            sym_errors.append(flows_mb[i] + flows_mb[j])
+                        if sym_errors:
+                            sym_errors = torch.stack(sym_errors, dim=0)
+                            sym_loss = torch.mean(sym_errors ** 2)
                         else:
-                            q_mean = model.y_mean[-1].to(device)
-                            q_std = model.y_std[-1].to(device)
-                            flows_mb = flows_mb * q_std + q_mean
-                    if hasattr(model, "x_mean") and model.x_mean is not None:
-                        dem_mean = model.x_mean[0].to(device)
-                        dem_std = model.x_std[0].to(device)
-                        demand_mb = demand_mb * dem_std + dem_mean
-                    mass_loss = compute_mass_balance_loss(
-                        flows_mb,
-                        edge_index.to(device),
-                        node_count,
-                        demand=demand_mb,
-                        node_type=nt,
-                    )
-                    sym_errors = []
-                    for i, j in edge_pairs:
-                        if et is not None:
-                            # only enforce symmetry for pipes (edge_type 0)
-                            if et[i] != 0 or et[j] != 0:
-                                continue
-                        sym_errors.append(flows_mb[i] + flows_mb[j])
-                    if sym_errors:
-                        sym_errors = torch.stack(sym_errors, dim=0)
-                        sym_loss = torch.mean(sym_errors ** 2)
+                            sym_loss = torch.tensor(0.0, device=device)
                     else:
+                        mass_loss = torch.tensor(0.0, device=device)
                         sym_loss = torch.tensor(0.0, device=device)
+                    if pressure_loss:
+                        press = preds['node_outputs'][..., 0].float()
+                        flow = edge_preds.squeeze(-1)
+                        if hasattr(model, 'y_mean') and model.y_mean is not None:
+                            if isinstance(model.y_mean, dict):
+                                p_mean = model.y_mean['node_outputs'][0].to(device)
+                                p_std = model.y_std['node_outputs'][0].to(device)
+                                q_mean = model.y_mean['edge_outputs'].to(device)
+                                q_std = model.y_std['edge_outputs'].to(device)
+                                press = press * p_std + p_mean
+                                flow = flow * q_std + q_mean
+                            else:
+                                press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                        head_loss = pressure_headloss_consistency_loss(
+                            press,
+                            flow,
+                            edge_index.to(device),
+                            edge_attr_phys.to(device),
+                            edge_type=et,
+                        )
+                    else:
+                        head_loss = torch.tensor(0.0, device=device)
+                    loss = loss_node + w_edge * loss_edge
+                    if physics_loss:
+                        loss = loss + w_mass * (mass_loss + sym_loss)
+                    if pressure_loss:
+                        loss = loss + w_head * head_loss
                 else:
-                    mass_loss = torch.tensor(0.0, device=device)
-                    sym_loss = torch.tensor(0.0, device=device)
-                if pressure_loss:
-                    press = preds['node_outputs'][..., 0].float()
-                    flow = edge_preds.squeeze(-1)
-                    if hasattr(model, 'y_mean') and model.y_mean is not None:
-                        if isinstance(model.y_mean, dict):
-                            p_mean = model.y_mean['node_outputs'][0].to(device)
-                            p_std = model.y_std['node_outputs'][0].to(device)
-                            q_mean = model.y_mean['edge_outputs'].to(device)
-                            q_std = model.y_std['edge_outputs'].to(device)
-                            press = press * p_std + p_mean
-                            flow = flow * q_std + q_mean
-                        else:
-                            press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                    head_loss = pressure_headloss_consistency_loss(
-                        press,
-                        flow,
-                        edge_index.to(device),
-                        edge_attr_phys.to(device),
-                        edge_type=et,
-                    )
-                else:
-                    head_loss = torch.tensor(0.0, device=device)
-                loss = loss_node + w_edge * loss_edge
-                if physics_loss:
-                    loss = loss + w_mass * (mass_loss + sym_loss)
-                if pressure_loss:
-                    loss = loss + w_head * head_loss
-            else:
-                Y_seq = Y_seq.to(device)
-                loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
-                loss = F.mse_loss(preds, Y_seq.float())
+                    Y_seq = Y_seq.to(device)
+                    loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
+                    loss = F.mse_loss(preds, Y_seq.float())
             total_loss += loss.item() * X_seq.size(0)
             node_total += loss_node.item() * X_seq.size(0)
             edge_total += loss_edge.item() * X_seq.size(0)
