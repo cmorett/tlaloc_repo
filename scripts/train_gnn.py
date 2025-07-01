@@ -1749,7 +1749,7 @@ def main(args: argparse.Namespace):
                 )
                 loss = loss_tuple[0]
                 node_l, edge_l, mass_l, head_l, sym_l = loss_tuple[1:]
-                if val_loader is not None:
+                if val_loader is not None and not interrupted:
                     val_tuple = evaluate_sequence(
                         model,
                         val_loader,
@@ -1780,7 +1780,7 @@ def main(args: argparse.Namespace):
                     check_negative=not args.normalize,
                     amp=args.amp,
                 )
-                if val_loader is not None:
+                if val_loader is not None and not interrupted:
                     val_loss = evaluate(model, val_loader, device, amp=args.amp)
                 else:
                     val_loss = loss
