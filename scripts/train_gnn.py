@@ -1861,7 +1861,7 @@ def main(args: argparse.Namespace):
         plt.close()
 
     # scatter plot of predictions vs actual on test set
-    if not interrupted and args.x_test_path and os.path.exists(args.x_test_path):
+    if args.x_test_path and os.path.exists(args.x_test_path):
         if seq_mode:
             Xt = np.load(args.x_test_path, allow_pickle=True)
             Yt = np.load(args.y_test_path, allow_pickle=True)

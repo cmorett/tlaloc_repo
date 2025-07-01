@@ -125,6 +125,8 @@ checkpoints.  Normalization statistics are saved alongside the weights and
 automatically applied by the inference scripts.
 You may cancel training early with ``Ctrl+C``.  The loop exits gracefully,
 keeping the best model on disk and producing the usual plots.
+When interrupted, the current epoch finishes before evaluation so scatter plots
+are still generated from the test set.
 Data is loaded in parallel using multiple worker processes; pass ``--workers``
 to adjust the number (default ``5``).
 
