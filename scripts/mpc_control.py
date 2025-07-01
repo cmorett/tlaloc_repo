@@ -626,6 +626,7 @@ def compute_mpc_cost(
     demands: Optional[torch.Tensor] = None,
     pump_info: Optional[list[tuple[int, int, int]]] = None,
     return_energy: bool = False,
+    init_tank_levels: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
     """Return the MPC cost for a sequence of pump controls.
 
@@ -638,6 +639,14 @@ def compute_mpc_cost(
     """
     cur_p = pressures.to(device)
     cur_c = chlorine.to(device)
+
+    if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
+        if init_tank_levels is None:
+            init_press = cur_p[model.tank_indices].unsqueeze(0)
+            init_levels = init_press * model.tank_areas
+        else:
+            init_levels = init_tank_levels.to(device)
+        model.reset_tank_levels(init_levels)
     total_cost = torch.tensor(0.0, device=device)
     smoothness_penalty = torch.tensor(0.0, device=device)
     energy_first = torch.tensor(0.0, device=device) if return_energy else None
@@ -765,6 +774,10 @@ def run_mpc_step(
     start_time = time.time() if profile else None
     pressures = pressures.to(device)
     chlorine = chlorine.to(device)
+    init_levels = None
+    if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
+        init_press = pressures[model.tank_indices].unsqueeze(0)
+        init_levels = init_press * model.tank_areas
     if u_warm is not None and u_warm.shape[0] >= horizon:
         init = torch.cat([u_warm[1:horizon], u_warm[horizon - 1 : horizon]], dim=0)
     else:
@@ -805,7 +818,9 @@ def run_mpc_step(
             Cmin,
             demands,
             pump_info,
-            )
+            False,
+            init_levels,
+        )
         cost.backward()
         adam_opt.step()
         with torch.no_grad():
@@ -836,7 +851,9 @@ def run_mpc_step(
             Cmin,
             demands,
             pump_info,
-            )
+            False,
+            init_levels,
+        )
         c.backward()
         return c
 
@@ -859,7 +876,8 @@ def run_mpc_step(
         Cmin,
         demands[:1] if demands is not None else None,
         pump_info,
-        return_energy=True,
+        True,
+        init_levels,
     )
     with torch.no_grad():
         u.data.clamp_(0.0, 1.0)
