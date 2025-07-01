@@ -1749,7 +1749,7 @@ def main(args: argparse.Namespace):
                 )
                 loss = loss_tuple[0]
                 node_l, edge_l, mass_l, head_l, sym_l = loss_tuple[1:]
-                if val_loader is not None:
+                if val_loader is not None and not interrupted:
                     val_tuple = evaluate_sequence(
                         model,
                         val_loader,
@@ -1780,7 +1780,7 @@ def main(args: argparse.Namespace):
                     check_negative=not args.normalize,
                     amp=args.amp,
                 )
-                if val_loader is not None:
+                if val_loader is not None and not interrupted:
                     val_loss = evaluate(model, val_loader, device, amp=args.amp)
                 else:
                     val_loss = loss
@@ -1849,7 +1849,7 @@ def main(args: argparse.Namespace):
         plt.close()
 
     # scatter plot of predictions vs actual on test set
-    if args.x_test_path and os.path.exists(args.x_test_path):
+    if not interrupted and args.x_test_path and os.path.exists(args.x_test_path):
         if seq_mode:
             Xt = np.load(args.x_test_path, allow_pickle=True)
             Yt = np.load(args.y_test_path, allow_pickle=True)
