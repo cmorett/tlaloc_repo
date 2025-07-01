@@ -1075,6 +1075,17 @@ def train_sequence(
                 break
             raise
         X_seq = X_seq.to(device)
+        if isinstance(Y_seq, dict):
+            Y_seq = {k: v.to(device) for k, v in Y_seq.items()}
+        else:
+            Y_seq = Y_seq.to(device)
+        if torch.isnan(X_seq).any() or (
+            isinstance(Y_seq, dict)
+            and any(torch.isnan(v).any() for v in Y_seq.values())
+        ) or (
+            not isinstance(Y_seq, dict) and torch.isnan(Y_seq).any()
+        ):
+            raise ValueError("NaN detected in training batch")
         if node_type is not None:
             nt = node_type.to(device)
         else:
