@@ -36,7 +36,8 @@ saved under the top-level ``plots/`` directory.  The scripts automatically
 create this folder if it does not yet exist. After each training run
 ``train_gnn.py`` saves two scatter plots comparing model predictions to
 EPANET results: ``pred_vs_actual_pressure_<run>.png`` and
-``pred_vs_actual_chlorine_<run>.png``.
+``pred_vs_actual_chlorine_<run>.png``. Reservoir nodes are not included in
+these plots since their pressures are fixed.
 When normalization is enabled (the default) the test data is scaled using the
 training statistics. During evaluation both predictions **and** the
 corresponding ground truth labels are transformed back to physical units before
