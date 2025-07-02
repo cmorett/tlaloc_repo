@@ -593,6 +593,7 @@ def predicted_vs_actual_scatter(
     run_name: str,
     plots_dir: Optional[Path] = None,
     return_fig: bool = False,
+    mask: Optional[Sequence[bool]] = None,
 ) -> Optional[plt.Figure]:
     """Scatter plots comparing surrogate predictions with EPANET results."""
     if plots_dir is None:
@@ -603,6 +604,13 @@ def predicted_vs_actual_scatter(
     pp = _to_numpy(pred_pressure)
     tc = _to_numpy(true_chlorine)
     pc = _to_numpy(pred_chlorine)
+
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        tp = tp[m]
+        pp = pp[m]
+        tc = tc[m]
+        pc = pc[m]
 
     # chlorine values are stored in log space (log1p). Convert back to mg/L
     # before plotting so the axes reflect physical units.
@@ -643,7 +651,13 @@ def compute_edge_attr_stats(edge_attr: np.ndarray) -> tuple[torch.Tensor, torch.
 
 
 def save_scatter_plots(
-    true_p, preds_p, true_c, preds_c, run_name: str, plots_dir: Optional[Path] = None
+    true_p,
+    preds_p,
+    true_c,
+    preds_c,
+    run_name: str,
+    plots_dir: Optional[Path] = None,
+    mask: Optional[Sequence[bool]] = None,
 ) -> None:
     """Save enhanced scatter plots for surrogate predictions."""
     if plots_dir is None:
@@ -657,6 +671,7 @@ def save_scatter_plots(
         run_name,
         plots_dir=plots_dir,
         return_fig=True,
+        mask=mask,
     )
     # also store individual scatter images for backward compatibility
     axes = fig.axes
@@ -1984,7 +1999,21 @@ def main(args: argparse.Namespace):
             preds_c = np.array(preds_c)
             true_p = np.array(true_p)
             true_c = np.array(true_c)
-            save_scatter_plots(true_p, preds_p, true_c, preds_c, run_name)
+
+            res_mask = np.array([
+                n not in wn.reservoir_name_list for n in wn.node_name_list
+            ])
+            repeat = preds_p.size // res_mask.size
+            full_mask = np.tile(res_mask, repeat)
+
+            save_scatter_plots(
+                true_p,
+                preds_p,
+                true_c,
+                preds_c,
+                run_name,
+                mask=full_mask,
+            )
 
     print(f"Best model saved to {model_path}")
 
