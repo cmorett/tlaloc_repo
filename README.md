@@ -169,6 +169,11 @@ the sequence arrays when ``--sequence-length`` is greater than one.
 Initial tank levels are now drawn from a Gaussian around the values in
 ``CTown.inp`` so each scenario begins with slightly different volumes.
 
+After scenario generation finishes a plot ``dataset_distributions_<timestamp>.png``
+is created under ``plots/`` summarising the sampled demand multipliers and pump
+speed settings.  Checking this figure helps ensure the dataset spans diverse
+operating conditions before proceeding to training.
+
 To create sequence datasets for the recurrent surrogate specify ``--sequence-length``:
 
 ```bash
