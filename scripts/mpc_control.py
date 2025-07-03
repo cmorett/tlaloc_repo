@@ -653,7 +653,8 @@ def compute_mpc_cost(
 
     for t in range(horizon):
         d = demands[t] if demands is not None else None
-        x = prepare_node_features(feature_template, cur_p, cur_c, u[t], model, d)
+        ctrl = torch.clamp(u[t], 0.0, 1.0)
+        x = prepare_node_features(feature_template, cur_p, cur_c, ctrl, model, d)
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
             out = model(seq_in, edge_index, edge_attr, node_types, edge_types)
@@ -708,7 +709,7 @@ def compute_mpc_cost(
                 if t == 0 and return_energy:
                     energy_first = energy_first + e
         else:
-            energy_term = torch.sum(u[t] ** 2)
+            energy_term = torch.sum(ctrl ** 2)
 
         step_cost = (
             w_p * pressure_penalty
@@ -721,7 +722,8 @@ def compute_mpc_cost(
         if t > 0:
             # small penalty on rapid pump switching to produce smoother
             # control sequences
-            smoothness_penalty = smoothness_penalty + torch.sum((u[t] - u[t - 1]) ** 2)
+            prev_ctrl = torch.clamp(u[t - 1], 0.0, 1.0)
+            smoothness_penalty = smoothness_penalty + torch.sum((ctrl - prev_ctrl) ** 2)
 
         # update dictionaries for next step
         cur_p = pred_p
