@@ -746,6 +746,38 @@ def plot_error_histograms(
     return fig if return_fig else None
 
 
+def correlation_heatmap(
+    matrix: np.ndarray,
+    labels: Sequence[str],
+    run_name: str,
+    plots_dir: Optional[Path] = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Plot a heatmap of pairwise feature correlations."""
+
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    mat = np.asarray(matrix, dtype=float)
+    if mat.ndim != 2:
+        mat = mat.reshape(-1, mat.shape[-1])
+
+    corr = np.corrcoef(mat, rowvar=False)
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(corr, cmap="coolwarm", vmin=-1, vmax=1)
+    ax.set_xticks(np.arange(len(labels)))
+    ax.set_yticks(np.arange(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_yticklabels(labels)
+    ax.set_title("Feature Correlation")
+    fig.colorbar(im, ax=ax)
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"correlation_heatmap_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
 def plot_loss_components(
     loss_components: Sequence[Sequence[float]],
     run_name: str,
@@ -2210,6 +2242,14 @@ def main(args: argparse.Namespace):
                 run_name,
             )
             plot_error_histograms(err_p, err_c, run_name)
+            labels = [
+                "demand",
+                "pressure",
+                "chlorine",
+                "elevation",
+            ] + [f"pump_{i}" for i in range(len(wn.pump_name_list))]
+            X_flat = X_raw.reshape(-1, X_raw.shape[-1])
+            correlation_heatmap(X_flat, labels, run_name)
 
     print(f"Best model saved to {model_path}")
 
