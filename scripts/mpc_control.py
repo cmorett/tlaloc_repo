@@ -1213,7 +1213,7 @@ def simulate_closed_loop(
     print(
         f"[MPC Summary] Chlorine violations: {chlorine_violations}/{len(log)}h"
     )
-    print(f"[MPC Summary] Total pump energy used: {total_energy:.2f} kWh")
+    print(f"[MPC Summary] Total pump energy used: {total_energy:.2f} J")
     os.makedirs(REPO_ROOT / "logs", exist_ok=True)
     with open(REPO_ROOT / "logs" / "mpc_summary.json", "w") as f:
         json.dump(summary, f, indent=2)

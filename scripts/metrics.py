@@ -69,7 +69,7 @@ def accuracy_metrics(
 def control_metrics(
     min_pressures: Sequence[float],
     min_chlorine: Sequence[float],
-    energy_kwh: Sequence[float],
+    energy_joules: Sequence[float],
     p_min: float,
     c_min: float,
 ) -> pd.DataFrame:
@@ -81,14 +81,14 @@ def control_metrics(
         Minimum pressure recorded for each simulation step in meters.
     min_chlorine : sequence of floats
         Minimum chlorine concentration for each step in mg/L.
-    energy_kwh : sequence of floats
-        Pump energy usage per step in kWh.
+    energy_joules : sequence of floats
+        Pump energy usage per step in Joules.
     p_min, c_min : float
         Operational lower bounds for pressure and chlorine.
     """
     p = _to_numpy(min_pressures)
     c = _to_numpy(min_chlorine)
-    e = _to_numpy(energy_kwh)
+    e = _to_numpy(energy_joules)
 
     pressure_violations = int(np.sum(p < p_min))
     chlorine_violations = int(np.sum(c < c_min))
@@ -100,7 +100,7 @@ def control_metrics(
     index = [
         "Pressure Constraint Violations (hrs)",
         "Chlorine Constraint Violations (hrs)",
-        "Total Pump Energy (kWh)",
+        "Total Pump Energy (J)",
     ]
     return pd.DataFrame(data, index=index)
 

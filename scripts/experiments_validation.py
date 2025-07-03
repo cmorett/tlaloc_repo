@@ -59,7 +59,7 @@ def energy_pressure_tradeoff(
     width = 0.4
 
     ax1.bar(x - width / 2, energy, width, color="tab:blue", label="Energy")
-    ax1.set_ylabel("Energy Consumption (kWh)", color="tab:blue")
+    ax1.set_ylabel("Energy Consumption (J)", color="tab:blue")
     ax1.tick_params(axis="y", labelcolor="tab:blue")
 
     ax2 = ax1.twinx()
@@ -553,7 +553,7 @@ def aggregate_and_plot(results: Dict[str, pd.DataFrame], run_name: str, Pmin: fl
     for name, df in results.items():
         plt.plot(df["time"], df["energy"], label=name)
     plt.xlabel("Hour")
-    plt.ylabel("Energy [kWh]")
+    plt.ylabel("Energy [J]")
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(PLOTS_DIR, f"mpc_energy_{run_name}.png"))

@@ -34,7 +34,7 @@ def test_control_metrics_basic():
     df = control_metrics(min_p, min_c, energy, p_min=20.0, c_min=0.2)
     assert df.loc["Pressure Constraint Violations (hrs)", "Value"] == 1
     assert df.loc["Chlorine Constraint Violations (hrs)", "Value"] == 1
-    assert np.isclose(df.loc["Total Pump Energy (kWh)", "Value"], 6.0)
+    assert np.isclose(df.loc["Total Pump Energy (J)", "Value"], 6.0)
 
 
 def test_computational_metrics_basic():
