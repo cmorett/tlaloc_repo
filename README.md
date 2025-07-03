@@ -227,7 +227,7 @@ at each hour.  EPANET is only called every 24 hours (controlled by
 ``--feedback-interval``) and all intermediate updates rely on the GNN surrogate
 running entirely on a CUDA device.  Results are written to
 `data/mpc_history.csv`.  A summary listing constraint violations and total
-energy consumption is printed at the end of the run and saved to
+energy consumption (in Joules) is printed at the end of the run and saved to
 ``logs/mpc_summary.json``.
 The controller updates node demands each hour using the diurnal patterns
 specified in ``CTown.inp`` so the surrogate remains aligned with its training
