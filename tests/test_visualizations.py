@@ -8,6 +8,7 @@ from scripts.train_gnn import (
     plot_error_histograms,
     SequenceDataset,
     plot_sequence_prediction,
+    correlation_heatmap,
 )
 from scripts.mpc_control import plot_convergence_curve
 
@@ -101,4 +102,11 @@ def test_plot_sequence_prediction(tmp_path: Path):
 
     plot_sequence_prediction(model, ds, "unit", plots_dir=tmp_path)
     assert (tmp_path / "time_series_example_unit.png").exists()
+
+
+def test_correlation_heatmap(tmp_path: Path):
+    mat = np.random.randn(8, 3)
+    labels = ["a", "b", "c"]
+    correlation_heatmap(mat, labels, "unit", plots_dir=tmp_path)
+    assert (tmp_path / "correlation_heatmap_unit.png").exists()
 
