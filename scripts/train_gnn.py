@@ -700,6 +700,37 @@ def save_accuracy_metrics(
     export_table(df, str(logs_dir / f"accuracy_{run_name}.csv"))
 
 
+def plot_loss_components(
+    loss_components: Sequence[Sequence[float]],
+    run_name: str,
+    plots_dir: Optional[Path] = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Plot individual loss terms over training epochs."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    arr = np.asarray(loss_components, dtype=float)
+    epochs = np.arange(1, arr.shape[0] + 1)
+    labels = ["node", "edge", "mass", "sym"]
+    if arr.shape[1] == 5:
+        labels.append("head")
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for i, label in enumerate(labels):
+        ax.loglog(epochs, arr[:, i], label=label)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_title("Component-wise Training Loss")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"loss_components_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
 def apply_normalization(
     data_list,
     x_mean,
@@ -1763,6 +1794,7 @@ def main(args: argparse.Namespace):
     norm_path = f"{base}_{run_name}_norm.npz"
     log_path = os.path.join(DATA_DIR, f"training_{run_name}.log")
     losses = []
+    loss_components = [] if seq_mode else None
     with open(log_path, "w") as f:
         f.write(f"timestamp: {datetime.now().isoformat()}\n")
         f.write(f"args: {vars(args)}\n")
@@ -1794,6 +1826,10 @@ def main(args: argparse.Namespace):
                 )
                 loss = loss_tuple[0]
                 node_l, edge_l, mass_l, head_l, sym_l = loss_tuple[1:]
+                comp = [node_l, edge_l, mass_l, sym_l]
+                if args.pressure_loss:
+                    comp.append(head_l)
+                loss_components.append(tuple(comp))
                 if val_loader is not None and not interrupted:
                     val_tuple = evaluate_sequence(
                         model,
@@ -1892,6 +1928,9 @@ def main(args: argparse.Namespace):
         plt.tight_layout()
         plt.savefig(os.path.join(PLOTS_DIR, f"loss_curve_{run_name}.png"))
         plt.close()
+
+    if seq_mode and loss_components:
+        plot_loss_components(loss_components, run_name)
 
     # scatter plot of predictions vs actual on test set
     if args.x_test_path and os.path.exists(args.x_test_path):

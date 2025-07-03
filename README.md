@@ -44,6 +44,8 @@ corresponding ground truth labels are transformed back to physical units before
 plotting.
 In addition, ``train_gnn.py`` now writes a CSV file ``logs/accuracy_<run>.csv``
 containing MAE, RMSE, MAPE and maximum error for pressure and chlorine.
+When sequence models are used a component-wise loss curve
+``loss_components_<run>.png`` is stored alongside ``loss_curve_<run>.png``.
 
 The script automatically detects which format is provided and loads the data
 accordingly. When using the matrix format, supply the path to the shared
