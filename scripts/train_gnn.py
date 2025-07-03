@@ -32,6 +32,8 @@ from models.loss_utils import (
     pressure_headloss_consistency_loss,
 )
 
+from scripts.metrics import accuracy_metrics, export_table
+
 
 class HydroConv(MessagePassing):
     """Mass-conserving convolution supporting heterogeneous components."""
@@ -680,6 +682,22 @@ def save_scatter_plots(
         plots_dir / f"pred_vs_actual_chlorine_{run_name}.png"
     )
     plt.close(fig)
+
+
+def save_accuracy_metrics(
+    true_p,
+    preds_p,
+    true_c,
+    preds_c,
+    run_name: str,
+    logs_dir: Optional[Path] = None,
+) -> None:
+    """Compute and export accuracy metrics to a CSV file."""
+    if logs_dir is None:
+        logs_dir = REPO_ROOT / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    df = accuracy_metrics(true_p, preds_p, np.expm1(true_c), np.expm1(preds_c))
+    export_table(df, str(logs_dir / f"accuracy_{run_name}.csv"))
 
 
 def apply_normalization(
@@ -2013,6 +2031,13 @@ def main(args: argparse.Namespace):
                 preds_c,
                 run_name,
                 mask=full_mask,
+            )
+            save_accuracy_metrics(
+                true_p,
+                preds_p,
+                true_c,
+                preds_c,
+                run_name,
             )
 
     print(f"Best model saved to {model_path}")
