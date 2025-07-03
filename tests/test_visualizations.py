@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from scripts.train_gnn import predicted_vs_actual_scatter
+from scripts.train_gnn import predicted_vs_actual_scatter, plot_loss_components
 from scripts.mpc_control import plot_convergence_curve
 
 
@@ -42,4 +42,13 @@ def test_convergence_curve(tmp_path: Path):
     assert (tmp_path / "mpc_convergence_unit.png").exists()
     ax = fig.axes[0]
     assert ax.get_xlabel() == "Optimization Iteration"
+
+
+def test_plot_loss_components(tmp_path: Path):
+    comps = [
+        (1.0, 2.0, 3.0, 4.0, 5.0),
+        (0.5, 1.5, 2.5, 3.5, 4.5),
+    ]
+    plot_loss_components(comps, "unit", plots_dir=tmp_path)
+    assert (tmp_path / "loss_components_unit.png").exists()
 
