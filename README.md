@@ -48,6 +48,8 @@ In addition, ``train_gnn.py`` now writes a CSV file ``logs/accuracy_<run>.csv``
 containing MAE, RMSE, MAPE and maximum error for pressure and chlorine.
 When sequence models are used a component-wise loss curve
 ``loss_components_<run>.png`` is stored alongside ``loss_curve_<run>.png``.
+For sequence datasets a time-series example ``time_series_example_<run>.png``
+plots predicted and actual pressure and chlorine for one node across all steps.
 
 The script automatically detects which format is provided and loads the data
 accordingly. When using the matrix format, supply the path to the shared

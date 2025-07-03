@@ -777,6 +777,86 @@ def plot_loss_components(
     return fig if return_fig else None
 
 
+def plot_sequence_prediction(
+    model: nn.Module,
+    dataset: "SequenceDataset",
+    run_name: str,
+    node_idx: int = 0,
+    plots_dir: Optional[Path] = None,
+) -> None:
+    """Plot a single denormalised sequence prediction for ``node_idx``."""
+
+    if len(dataset) == 0:
+        return
+
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    device = next(model.parameters()).device
+    model.eval()
+
+    X_seq, Y_seq = dataset[0]
+    X_seq = X_seq.unsqueeze(0).to(device)
+    ei = dataset.edge_index.to(device)
+    ea = dataset.edge_attr.to(device) if dataset.edge_attr is not None else None
+    nt = dataset.node_type.to(device) if dataset.node_type is not None else None
+    et = dataset.edge_type.to(device) if dataset.edge_type is not None else None
+
+    with torch.no_grad():
+        out = model(X_seq, ei, ea, nt, et)
+
+    if isinstance(out, dict):
+        pred = out["node_outputs"]
+    else:
+        pred = out
+
+    if isinstance(Y_seq, dict):
+        true = Y_seq["node_outputs"]
+    else:
+        true = Y_seq
+
+    if hasattr(model, "y_mean") and model.y_mean is not None:
+        if isinstance(model.y_mean, dict):
+            mean = model.y_mean["node_outputs"].to(pred.device)
+            std = model.y_std["node_outputs"].to(pred.device)
+        else:
+            mean = model.y_mean.to(pred.device)
+            std = model.y_std.to(pred.device)
+        pred = pred * std + mean
+        true = true.to(pred.device) * std + mean
+    else:
+        true = true.to(pred.device)
+
+    pred_np = pred.squeeze(0).cpu().numpy()
+    true_np = true.squeeze(0).cpu().numpy()
+
+    T = pred_np.shape[0]
+    time = np.arange(T)
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 5))
+    axes[0].plot(time, true_np[:, node_idx, 0], label="Actual")
+    axes[0].plot(time, pred_np[:, node_idx, 0], "--", label="Predicted")
+    axes[0].set_xlabel("Timestep")
+    axes[0].set_ylabel("Pressure (m)")
+    axes[0].set_title(f"Node {node_idx} Pressure")
+    axes[0].legend()
+
+    if pred_np.shape[-1] >= 2:
+        axes[1].plot(time, np.expm1(true_np[:, node_idx, 1]), label="Actual")
+        axes[1].plot(time, np.expm1(pred_np[:, node_idx, 1]), "--", label="Predicted")
+        axes[1].set_xlabel("Timestep")
+        axes[1].set_ylabel("Chlorine (mg/L)")
+        axes[1].set_title(f"Node {node_idx} Chlorine")
+        axes[1].legend()
+    else:
+        axes[1].remove()
+
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"time_series_example_{run_name}.png")
+    plt.close(fig)
+
+
 def apply_normalization(
     data_list,
     x_mean,
@@ -2120,6 +2200,8 @@ def main(args: argparse.Namespace):
                 run_name,
                 mask=full_mask,
             )
+            if seq_mode:
+                plot_sequence_prediction(model, test_ds, run_name)
             save_accuracy_metrics(
                 true_p,
                 preds_p,

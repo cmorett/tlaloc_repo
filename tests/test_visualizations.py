@@ -1,9 +1,13 @@
 from pathlib import Path
+import numpy as np
+import torch
 
 from scripts.train_gnn import (
     predicted_vs_actual_scatter,
     plot_loss_components,
     plot_error_histograms,
+    SequenceDataset,
+    plot_sequence_prediction,
 )
 from scripts.mpc_control import plot_convergence_curve
 
@@ -65,4 +69,36 @@ def test_plot_error_histograms(tmp_path: Path):
         plots_dir=tmp_path,
     )
     assert (tmp_path / "error_histograms_unit.png").exists()
+
+
+def test_plot_sequence_prediction(tmp_path: Path):
+    edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
+    edge_attr = torch.zeros((2, 3), dtype=torch.float32)
+    X = np.zeros((1, 2, 2, 4), dtype=np.float32)
+    Y = np.array(
+        [
+            {
+                "node_outputs": np.zeros((2, 2, 2), dtype=np.float32),
+                "edge_outputs": np.zeros((2, 2), dtype=np.float32),
+            }
+        ],
+        dtype=object,
+    )
+    ds = SequenceDataset(X, Y, edge_index.numpy(), edge_attr.numpy())
+
+    class Dummy(torch.nn.Module):
+        def forward(self, X_seq, ei, ea, nt, et):
+            B, T, N, _ = X_seq.size()
+            return {"node_outputs": torch.zeros(B, T, N, 2) + self.dummy}
+
+        def __init__(self):
+            super().__init__()
+            self.dummy = torch.nn.Parameter(torch.zeros(1))
+
+    model = Dummy()
+    model.y_mean = {"node_outputs": torch.zeros(2)}
+    model.y_std = {"node_outputs": torch.ones(2)}
+
+    plot_sequence_prediction(model, ds, "unit", plots_dir=tmp_path)
+    assert (tmp_path / "time_series_example_unit.png").exists()
 
