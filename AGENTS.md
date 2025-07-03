@@ -13,7 +13,6 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `mpc_control.py` – run gradient-based MPC using the trained surrogate.
   - `experiments_validation.py` – validate the surrogate, compare baselines and aggregate results.
   - `metrics.py` – report surrogate accuracy, MPC control and runtime metrics.
-  - `visualizations.py` – helper plots for model predictions and MPC results.
 - `models/` – storage location for trained weights (`gnn_surrogate.pth`).
 - `pytorchcheck.py` – quick script verifying that PyTorch Geometric runs on the configured GPU.
 - `data/` – ignored by git; used for generated datasets and temporary simulation outputs.
@@ -81,3 +80,4 @@ When adding new features or bug fixes, please create unit tests using `pytest` i
 - Paths should be resolved relative to the repository root so scripts work when launched from any location.
 - Generated data and results should remain inside the `data/` folder, if they are plots they go to `plots/`.
 - Any changes that you do that influence the way the user is supposed to interact with the scripts should be accompanied with a corresponding change to the `README.md` file in which you declare how the new change is supposed to be used. If the change involves the creation of new files those changes should be present in this `AGENTS.md` file.
+- Also aim to consistently have the optimal example prompt in the `README.md` file for optimal usage. 
