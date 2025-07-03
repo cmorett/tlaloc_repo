@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from scripts.train_gnn import predicted_vs_actual_scatter, plot_loss_components
+from scripts.train_gnn import (
+    predicted_vs_actual_scatter,
+    plot_loss_components,
+    plot_error_histograms,
+)
 from scripts.mpc_control import plot_convergence_curve
 
 
@@ -51,4 +55,14 @@ def test_plot_loss_components(tmp_path: Path):
     ]
     plot_loss_components(comps, "unit", plots_dir=tmp_path)
     assert (tmp_path / "loss_components_unit.png").exists()
+
+
+def test_plot_error_histograms(tmp_path: Path):
+    plot_error_histograms(
+        [0.1, -0.2, 0.0],
+        [0.05, -0.05, 0.1],
+        "unit",
+        plots_dir=tmp_path,
+    )
+    assert (tmp_path / "error_histograms_unit.png").exists()
 

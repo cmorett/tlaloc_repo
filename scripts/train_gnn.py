@@ -700,6 +700,52 @@ def save_accuracy_metrics(
     export_table(df, str(logs_dir / f"accuracy_{run_name}.csv"))
 
 
+def plot_error_histograms(
+    err_p: Sequence[float],
+    err_c: Sequence[float],
+    run_name: str,
+    plots_dir: Optional[Path] = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Histogram and box plots of prediction errors."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    ep = _to_numpy(err_p)
+    ec = _to_numpy(err_c)
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    axes[0, 0].hist(ep, bins=50, color="tab:blue", alpha=0.7)
+    axes[0, 0].set_title("Pressure Error")
+    axes[0, 0].set_xlabel("Prediction Error (m)")
+    axes[0, 0].set_ylabel("Count")
+
+    axes[0, 1].hist(ec, bins=50, color="tab:orange", alpha=0.7)
+    axes[0, 1].set_title("Chlorine Error")
+    axes[0, 1].set_xlabel("Prediction Error (mg/L)")
+    axes[0, 1].set_ylabel("Count")
+
+    axes[1, 0].boxplot(ep, vert=False)
+    axes[1, 0].set_yticklabels(["Pressure"])
+    axes[1, 0].set_xlabel("Prediction Error (m)")
+    axes[1, 0].set_title("Pressure Error Box")
+
+    axes[1, 1].boxplot(ec, vert=False)
+    axes[1, 1].set_yticklabels(["Chlorine"])
+    axes[1, 1].set_xlabel("Prediction Error (mg/L)")
+    axes[1, 1].set_title("Chlorine Error Box")
+
+    for ax in axes.ravel():
+        ax.tick_params(labelsize=8)
+
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"error_histograms_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
 def plot_loss_components(
     loss_components: Sequence[Sequence[float]],
     run_name: str,
@@ -2057,6 +2103,9 @@ def main(args: argparse.Namespace):
             true_p = np.array(true_p)
             true_c = np.array(true_c)
 
+            err_p = preds_p - true_p
+            err_c = preds_c - true_c
+
             res_mask = np.array([
                 n not in wn.reservoir_name_list for n in wn.node_name_list
             ])
@@ -2078,6 +2127,7 @@ def main(args: argparse.Namespace):
                 preds_c,
                 run_name,
             )
+            plot_error_histograms(err_p, err_c, run_name)
 
     print(f"Best model saved to {model_path}")
 
