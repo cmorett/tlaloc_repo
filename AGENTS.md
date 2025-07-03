@@ -37,6 +37,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `test_headloss_loss.py` – pressure‑headloss consistency penalty.
   - `test_metrics.py` – metric helper functions generate expected tables.
   - `test_visualizations.py` – plotting utilities create labelled images.
+  - `test_dataset_distributions.py` – dataset distribution plot is generated.
 
 ## Architecture Overview
 

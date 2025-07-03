@@ -3,18 +3,22 @@ import pickle
 import os
 import argparse
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Optional
 from sklearn.preprocessing import MinMaxScaler
 import warnings
 from functools import partial
 from multiprocessing import Pool, cpu_count
+import matplotlib.pyplot as plt
 
 # Resolve repository paths so all files are created inside the repo
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
 TEMP_DIR = DATA_DIR / "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
+PLOTS_DIR = REPO_ROOT / "plots"
+os.makedirs(PLOTS_DIR, exist_ok=True)
 
 import numpy as np
 import wntr
@@ -288,6 +292,39 @@ def run_scenarios(
     results = [res for res in raw_results if res is not None]
 
     return results
+
+
+def plot_dataset_distributions(
+    demand_mults: Iterable[float],
+    pump_speeds: Iterable[float],
+    out_prefix: str,
+    plots_dir: Path = PLOTS_DIR,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Plot distributions of demand multipliers and pump speeds."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    d_arr = np.asarray(list(demand_mults), dtype=float)
+    p_arr = np.asarray(list(pump_speeds), dtype=float)
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].hist(d_arr, bins=30, color="tab:blue", alpha=0.7)
+    axes[0].set_xlabel("Demand Multiplier")
+    axes[0].set_ylabel("Frequency")
+    axes[0].set_title("Demand Distribution")
+
+    axes[1].hist(p_arr, bins=30, color="tab:orange", alpha=0.7)
+    axes[1].set_xlabel("Pump Speed")
+    axes[1].set_ylabel("Frequency")
+    axes[1].set_title("Pump Speed Distribution")
+
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"dataset_distributions_{out_prefix}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
 
 
 def split_results(
@@ -580,6 +617,17 @@ def main() -> None:
         extreme_event_prob=args.extreme_event_prob,
         num_workers=args.num_workers,
     )
+
+    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    demand_mults: List[float] = []
+    pump_speeds: List[float] = []
+    for _sim, scale_dict, pump_ctrl in results:
+        for arr in scale_dict.values():
+            demand_mults.extend(arr.ravel().tolist())
+        for speeds in pump_ctrl.values():
+            pump_speeds.extend(list(speeds))
+
+    plot_dataset_distributions(demand_mults, pump_speeds, run_ts)
     train_res, val_res, test_res = split_results(results)
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
