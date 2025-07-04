@@ -116,12 +116,15 @@ def pressure_headloss_consistency_loss(
     p_tgt = p[:, tgt]
     pred_hl = (p_src - p_tgt).abs()
 
-    # Hazen--Williams head loss formula (SI units)
+    # Hazen--Williams head loss formula (SI units). Flows are stored in L/s
+    # so convert to m^3/s before applying the equation.
     const = 10.67
     length = length[pipe_mask]
     diam = diam[pipe_mask]
     rough = rough[pipe_mask]
-    hw_hl = const * length * q.abs()[:, pipe_mask].pow(1.852) / (
+    # convert flow from L/s to m^3/s before applying Hazen--Williams
+    q_m3 = q[:, pipe_mask] * 0.001
+    hw_hl = const * length * q_m3.abs().pow(1.852) / (
         rough.pow(1.852) * diam.pow(4.87)
     )
 
