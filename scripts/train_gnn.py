@@ -559,7 +559,15 @@ def load_dataset(
             node_feat = torch.tensor(node_feat, dtype=torch.float32)
             if torch.isnan(node_feat).any():
                 node_feat = torch.nan_to_num(node_feat)
-            data = Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
+            if isinstance(label, dict):
+                # ``label`` may contain multiple targets (e.g., edge labels).
+                # Only use the node-level outputs during training.
+                label = label["node_outputs"]
+            data = Data(
+                x=node_feat,
+                edge_index=edge_index,
+                y=torch.tensor(label, dtype=torch.float32),
+            )
             if edge_attr_tensor is not None:
                 data.edge_attr = edge_attr_tensor
             if node_type_tensor is not None:
