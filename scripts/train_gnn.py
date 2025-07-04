@@ -861,7 +861,12 @@ def plot_sequence_prediction(
         true = true.to(pred.device)
 
     pred_np = pred.squeeze(0).cpu().numpy()
-    true_np = true.squeeze(0).cpu().numpy()
+    # ``true`` is returned directly from ``SequenceDataset`` without a batch
+    # dimension.  When the sequence length is ``1`` this tensor has shape
+    # ``[1, N, F]`` and calling ``squeeze(0)`` would drop the time axis and
+    # produce a 2-D array.  Skip squeezing so the indexing logic works for
+    # both single and multi-step sequences.
+    true_np = true.cpu().numpy()
 
     T = pred_np.shape[0]
     time = np.arange(T)

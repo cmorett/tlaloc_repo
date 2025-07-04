@@ -104,6 +104,38 @@ def test_plot_sequence_prediction(tmp_path: Path):
     assert (tmp_path / "time_series_example_unit.png").exists()
 
 
+def test_plot_sequence_prediction_single_step(tmp_path: Path):
+    edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
+    edge_attr = torch.zeros((2, 3), dtype=torch.float32)
+    X = np.zeros((1, 1, 2, 4), dtype=np.float32)
+    Y = np.array(
+        [
+            {
+                "node_outputs": np.zeros((1, 2, 2), dtype=np.float32),
+                "edge_outputs": np.zeros((1, 2), dtype=np.float32),
+            }
+        ],
+        dtype=object,
+    )
+    ds = SequenceDataset(X, Y, edge_index.numpy(), edge_attr.numpy())
+
+    class Dummy(torch.nn.Module):
+        def forward(self, X_seq, ei, ea, nt, et):
+            B, T, N, _ = X_seq.size()
+            return {"node_outputs": torch.zeros(B, T, N, 2) + self.dummy}
+
+        def __init__(self):
+            super().__init__()
+            self.dummy = torch.nn.Parameter(torch.zeros(1))
+
+    model = Dummy()
+    model.y_mean = {"node_outputs": torch.zeros(2)}
+    model.y_std = {"node_outputs": torch.ones(2)}
+
+    plot_sequence_prediction(model, ds, "unit1", plots_dir=tmp_path)
+    assert (tmp_path / "time_series_example_unit1.png").exists()
+
+
 def test_correlation_heatmap(tmp_path: Path):
     mat = np.random.randn(8, 3)
     labels = ["a", "b", "c"]
