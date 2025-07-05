@@ -172,6 +172,8 @@ Initial tank levels are now drawn from a Gaussian around the values in
 Chlorine decay is enabled in the example network via a global bulk reaction
 coefficient of ``-0.05`` 1/h which EPANET applies during water quality
 simulations.
+Pipe roughness coefficients are left unchanged; only demand multipliers and
+pump schedules vary between scenarios.
 
 After scenario generation finishes a plot ``dataset_distributions_<timestamp>.png``
 is created under ``plots/`` summarising the sampled demand multipliers and pump
