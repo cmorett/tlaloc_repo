@@ -53,7 +53,11 @@ def simulate_extreme_event(
             if source in wn.node_name_list:
                 n = wn.get_node(source)
                 if hasattr(n, "initial_quality"):
-                    n.initial_quality *= random.uniform(0.5, 1.5)
+                    factor = random.uniform(0.5, 1.5)
+                    n.initial_quality *= factor
+                    src = wn.get_source(source, None)
+                    if src is not None:
+                        src.strength *= factor
 
 
 
