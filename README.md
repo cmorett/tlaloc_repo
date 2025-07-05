@@ -36,7 +36,7 @@ saved under the top-level ``plots/`` directory.  The scripts automatically
 create this folder if it does not yet exist. After each training run
 ``train_gnn.py`` saves two scatter plots comparing model predictions to
 EPANET results: ``pred_vs_actual_pressure_<run>.png`` and
-``pred_vs_actual_chlorine_<run>.png``. Reservoir nodes are not included in
+``pred_vs_actual_chlorine_<run>.png``. Reservoirs and tanks are excluded from
 these plots since their pressures are fixed.
 It also writes ``error_histograms_<run>.png`` containing histograms and
 box plots of the prediction errors. Finally ``correlation_heatmap_<run>.png``

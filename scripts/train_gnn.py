@@ -2231,11 +2231,10 @@ def main(args: argparse.Namespace):
             err_p = preds_p - true_p
             err_c = preds_c - true_c
 
-            res_mask = np.array([
-                n not in wn.reservoir_name_list for n in wn.node_name_list
-            ])
-            repeat = preds_p.size // res_mask.size
-            full_mask = np.tile(res_mask, repeat)
+            exclude = set(wn.reservoir_name_list) | set(wn.tank_name_list)
+            node_mask = np.array([n not in exclude for n in wn.node_name_list])
+            repeat = preds_p.size // node_mask.size
+            full_mask = np.tile(node_mask, repeat)
 
             save_scatter_plots(
                 true_p,
