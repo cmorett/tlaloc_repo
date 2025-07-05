@@ -114,7 +114,7 @@ def pressure_headloss_consistency_loss(
     tgt = edge_index[1, pipe_mask]
     p_src = p[:, src]
     p_tgt = p[:, tgt]
-    pred_hl = (p_src - p_tgt).abs()
+    pred_hl = p_src - p_tgt
 
     # Hazen--Williams head loss formula (SI units). Flows are stored in L/s
     # so convert to m^3/s before applying the equation.
@@ -124,8 +124,9 @@ def pressure_headloss_consistency_loss(
     rough = rough[pipe_mask]
     # convert flow from L/s to m^3/s before applying Hazen--Williams
     q_m3 = q[:, pipe_mask] * 0.001
+    flow_sign = torch.sign(q[:, pipe_mask])
     hw_hl = const * length * q_m3.abs().pow(1.852) / (
         rough.pow(1.852) * diam.pow(4.87)
     )
 
-    return torch.mean((pred_hl - hw_hl) ** 2) if pred_hl.numel() > 0 else torch.tensor(0.0)
+    return torch.mean((pred_hl - flow_sign * hw_hl) ** 2) if pred_hl.numel() > 0 else torch.tensor(0.0)
