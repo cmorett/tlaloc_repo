@@ -169,6 +169,9 @@ pump failures or source quality changes.  Scenario labels are stored alongside
 the sequence arrays when ``--sequence-length`` is greater than one.
 Initial tank levels are now drawn from a Gaussian around the values in
 ``CTown.inp`` so each scenario begins with slightly different volumes.
+Chlorine decay is enabled in the example network via a global bulk reaction
+coefficient of ``-0.05`` 1/h which EPANET applies during water quality
+simulations.
 
 After scenario generation finishes a plot ``dataset_distributions_<timestamp>.png``
 is created under ``plots/`` summarising the sampled demand multipliers and pump

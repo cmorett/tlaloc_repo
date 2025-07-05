@@ -1181,7 +1181,7 @@ R1 SETPOINT 1.0
  Order Bulk            	1.00
  Order Tank            	1.00
  Order Wall            	1
- Global Bulk           	0.000000
+ Global Bulk            -0.05
  Global Wall           	0.000000
  Limiting Potential    	0
  Roughness Correlation 	0
@@ -1219,7 +1219,7 @@ R1 SETPOINT 1.0
  Pattern            	1
  Demand Multiplier  	1
  Emitter Exponent   	0.5000
- Quality            	NONE mg/L
+ Quality                Chlorine mg/L
  Diffusivity        	1.000000
  Tolerance          	0.01000000
 
