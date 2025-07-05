@@ -95,7 +95,7 @@ class HydroConv(MessagePassing):
         for t, mlp in enumerate(self.edge_mlps):
             idx = edge_type == t
             if torch.any(idx):
-                weight[idx] = mlp(edge_attr[idx])
+                weight[idx] = mlp(edge_attr[idx]).to(weight.dtype)
         return weight * (x_j - x_i)
 
 
