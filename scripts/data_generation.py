@@ -68,9 +68,9 @@ def _build_randomized_network(
 ) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Create a network with randomized demand patterns and pump controls.
 
-    If ``event_type`` is not ``None`` an extreme scenario such as ``fire_flow``
-    or ``pump_failure`` is injected after the randomized controls are
-    created.
+    Pipe roughness values are kept at their defaults. If ``event_type`` is not
+    ``None`` an extreme scenario such as ``fire_flow`` or ``pump_failure`` is
+    injected after the randomized controls are created.
     """
 
     wn = wntr.network.WaterNetworkModel(inp_file)
@@ -80,13 +80,8 @@ def _build_randomized_network(
     wn.options.time.report_timestep = 3600
     wn.options.quality.parameter = "CHEMICAL"
 
-    # Randomize pipe roughness coefficients (Hazen--Williams C)
-    # to expose the surrogate to varied headloss scenarios.  Each
-    # pipe's base value is scaled by a factor between 0.7 and 1.3.
-    for pname in wn.pipe_name_list:
-        pipe = wn.get_link(pname)
-        base_c = pipe.roughness
-        pipe.roughness = base_c * random.uniform(0.7, 1.3)
+    # Pipe roughness coefficients (Hazen--Williams C) remain fixed so the
+    # surrogate only sees variations from demand patterns and pump controls.
 
     # Randomize initial tank levels while keeping values within the
     # feasible range.  Sample from a Gaussian centred on the original
