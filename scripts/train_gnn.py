@@ -624,8 +624,8 @@ def predicted_vs_actual_scatter(
 
     # chlorine values are stored in log space (log1p). Convert back to mg/L
     # before plotting so the axes reflect physical units.
-    tc = np.expm1(tc)
-    pc = np.expm1(pc)
+    tc = np.expm1(tc) * 1000.0
+    pc = np.expm1(pc) * 1000.0
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
@@ -704,7 +704,12 @@ def save_accuracy_metrics(
     if logs_dir is None:
         logs_dir = REPO_ROOT / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    df = accuracy_metrics(true_p, preds_p, np.expm1(true_c), np.expm1(preds_c))
+    df = accuracy_metrics(
+        true_p,
+        preds_p,
+        np.expm1(true_c) * 1000.0,
+        np.expm1(preds_c) * 1000.0,
+    )
     export_table(df, str(logs_dir / f"accuracy_{run_name}.csv"))
 
 
@@ -888,8 +893,8 @@ def plot_sequence_prediction(
     axes[0].legend()
 
     if pred_np.shape[-1] >= 2:
-        axes[1].plot(time, np.expm1(true_np[:, node_idx, 1]), label="Actual")
-        axes[1].plot(time, np.expm1(pred_np[:, node_idx, 1]), "--", label="Predicted")
+        axes[1].plot(time, np.expm1(true_np[:, node_idx, 1]) * 1000.0, label="Actual")
+        axes[1].plot(time, np.expm1(pred_np[:, node_idx, 1]) * 1000.0, "--", label="Predicted")
         axes[1].set_xlabel("Timestep")
         axes[1].set_ylabel("Chlorine (mg/L)")
         axes[1].set_title(f"Node {node_idx} Chlorine")

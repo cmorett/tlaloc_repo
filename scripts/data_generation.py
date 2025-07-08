@@ -370,7 +370,7 @@ def build_sequence_dataset(
         if wn_template.options.quality.parameter.upper() == "CHEMICAL":
             # convert mg/L to g/L used by CHEMICAL quality models before
             # taking the logarithm so the surrogate sees reasonable scales
-            quality_df = quality_df * 1000.0
+            quality_df = quality_df / 1000.0
         quality = np.log1p(quality_df)
         demands = sim_results.node.get("demand")
         if demands is not None:
@@ -464,7 +464,7 @@ def build_dataset(
         if wn_template.options.quality.parameter.upper() == "CHEMICAL":
             # CHEMICAL quality models return mg/L, scale to g/L before
             # applying the log transform
-            quality_df = quality_df * 1000.0
+            quality_df = quality_df / 1000.0
         quality = np.log1p(quality_df)
         demands = sim_results.node.get("demand")
         times = pressures.index

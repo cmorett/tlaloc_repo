@@ -306,7 +306,7 @@ def validate_surrogate(
                 y_true_c = chlorine_df.iloc[i + 1].to_numpy()
                 # chlorine predictions were trained in log space so convert
                 # predictions back to mg/L before computing errors
-                pred_c = np.expm1(pred_c)
+                pred_c = np.expm1(pred_c) * 1000.0
 
                 diff_p = pred_p - y_true_p
                 diff_c = pred_c - y_true_c
