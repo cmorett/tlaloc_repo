@@ -2420,7 +2420,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--w_head",
         type=float,
-        default=0.5,
+        default=0.005,
         help="Weight of the head loss consistency term",
     )
     parser.add_argument(
