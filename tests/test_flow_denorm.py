@@ -41,8 +41,8 @@ def test_mass_balance_denorm_per_edge():
     )
     ds = SequenceDataset(X, Y, edge_index.numpy(), edge_attr.numpy())
     loader = TorchLoader(ds, batch_size=1)
-    y_mean = {"edge_outputs": torch.tensor(1.0), "node_outputs": torch.zeros(2)}
-    y_std = {"edge_outputs": torch.tensor(1.0), "node_outputs": torch.ones(2)}
+    y_mean = {"edge_outputs": torch.ones(E), "node_outputs": torch.zeros(2)}
+    y_std = {"edge_outputs": torch.ones(E), "node_outputs": torch.ones(2)}
     edge_pred = torch.zeros(1, T, E, 1)
     node_pred = torch.zeros(1, T, N, 2)
     model = DummyModel(edge_pred, node_pred, y_mean, y_std)
