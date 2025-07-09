@@ -55,6 +55,9 @@ plots predicted and actual pressure and chlorine for one node across all steps.
 The script automatically detects which format is provided and loads the data
 accordingly. When using the matrix format, supply the path to the shared
 ``edge_index`` file via ``--edge-index-path`` (defaults to ``data/edge_index.npy``).
+Edge attributes describing pipe length, diameter and roughness are stored in
+``edge_attr.npy`` by ``scripts/data_generation.py``. ``train_gnn.py`` loads this
+file by default via ``--edge-attr-path``.
 
 Training performs node-wise regression with mean squared error.  The script
 automatically checks that the provided features include pump control inputs by
@@ -71,8 +74,9 @@ The GNN architecture has been refactored to support **heterogeneous graphs**.
 Node embeddings are now conditioned on the component type (junction, tank,
 pump or valve) while edges differentiate pipes, pumps and valves.  The helper
 scripts automatically compute these type indices from the EPANET network and
-store them in ``edge_type.npy``.  Training and MPC control handle these
-additional attributes transparently.
+store them in ``edge_type.npy`` together with numerical edge attributes in
+``edge_attr.npy``. Training and MPC control handle these additional attributes
+transparently.
 
 Optionally, the same convolution layer can be reused for all message passing
 steps by passing ``--share-weights`` to ``train_gnn.py``. This reduces the
@@ -89,7 +93,8 @@ Example usage:
 python scripts/train_gnn.py \
     --x-path data/X_train.npy --y-path data/Y_train.npy \
     --x-val-path data/X_val.npy --y-val-path data/Y_val.npy \
-    --edge-index-path data/edge_index.npy --inp-path CTown.inp \
+    --edge-index-path data/edge_index.npy --edge-attr-path data/edge_attr.npy \
+    --inp-path CTown.inp \
     --epochs 100 --batch-size 32 --hidden-dim 64 --num-layers 4 \
     --workers 8 \
     --dropout 0.1 --residual --early-stop-patience 10 \
@@ -157,7 +162,8 @@ python scripts/data_generation.py \
     --num-scenarios 2000 --output-dir data/ --seed 42 \
     --extreme-event-prob 0.2
 ```
-The generation step utilizes all available CPU cores by default. The value
+The generation step writes ``edge_index.npy``, ``edge_attr.npy`` and
+``edge_type.npy`` alongside the feature and label arrays. It utilizes all available CPU cores by default. The value
 ``2000`` matches the new default of ``--num-scenarios``. Use
 ``--num-workers`` to override the number of parallel workers if needed.
 If a particular random configuration causes EPANET to fail to produce results,
@@ -187,8 +193,8 @@ python scripts/data_generation.py \
     --num-scenarios 200 --sequence-length 24 --output-dir data/ \
     --seed 123
 ```
-This will also generate ``scenario_train.npy`` etc. recording the type of each
-scenario.
+This will also generate ``edge_index.npy``, ``edge_attr.npy`` and ``edge_type.npy``
+along with ``scenario_train.npy`` etc. recording the type of each scenario.
 Scenarios that do not contain at least ``sequence_length + 1`` time steps are
 skipped with a warning so the actual dataset may be smaller than requested.
 

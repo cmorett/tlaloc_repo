@@ -1637,12 +1637,16 @@ def main(args: argparse.Namespace):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
-    edge_attr = build_edge_attr(wn, edge_index_np)
-    # Preserve physical units (length, diameter, roughness) for headloss
-    # computations before any normalisation or log transforms.
-    edge_attr_phys = torch.tensor(edge_attr.copy(), dtype=torch.float32)
-    # log-transform roughness like in data generation
-    edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
+    # Always compute the physical edge attributes from the network
+    edge_attr_phys_np = build_edge_attr(wn, edge_index_np)
+    edge_attr_phys = torch.tensor(edge_attr_phys_np.copy(), dtype=torch.float32)
+
+    if os.path.exists(args.edge_attr_path):
+        edge_attr = np.load(args.edge_attr_path)
+    else:
+        edge_attr = edge_attr_phys_np.copy()
+        # log-transform roughness like in data generation
+        edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
     edge_types = build_edge_type(wn, edge_index_np)
     edge_pairs = build_edge_pairs(edge_index_np, edge_types)
     node_types = build_node_type(wn)
@@ -2287,6 +2291,11 @@ if __name__ == "__main__":
         "--edge-index-path",
         default=os.path.join(DATA_DIR, "edge_index.npy"),
         help="Path to edge index file (used with matrix-format datasets)",
+    )
+    parser.add_argument(
+        "--edge-attr-path",
+        default=os.path.join(DATA_DIR, "edge_attr.npy"),
+        help="File with edge attributes from data_generation.py",
     )
     parser.add_argument(
         "--x-val-path",
