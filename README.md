@@ -106,6 +106,9 @@ mass balance penalty (still weighted ``1.0`` by default) use ``--no-physics-loss
 The surrogate clamps predicted pressures and chlorine concentrations to
 non-negative values and applies L2 regularization controlled by
 ``--weight-decay`` (default ``1e-5``) to avoid degenerate solutions.
+Even when the physics-based loss is disabled with ``--no-physics-loss``
+the script prints the current epoch number so progress remains visible in
+the terminal.
 
 For large graphs you can reduce memory usage by training on subgraphs.
 Passing ``--cluster-batch-size <N>`` partitions the network into clusters of
