@@ -189,6 +189,8 @@ python scripts/data_generation.py \
 ```
 This will also generate ``scenario_train.npy`` etc. recording the type of each
 scenario.
+Scenarios that do not contain at least ``sequence_length + 1`` time steps are
+skipped with a warning so the actual dataset may be smaller than requested.
 
 The training script automatically detects such sequence files and will use the recurrent
 model. Adjust the recurrent hidden size via ``--rnn-hidden-dim`` if desired.
