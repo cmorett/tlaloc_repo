@@ -367,8 +367,9 @@ def build_sequence_dataset(
         # extreme values.  Drop the upper bound and only enforce non-negativity.
         pressures = sim_results.node["pressure"].clip(lower=0.0)
         quality_df = sim_results.node["quality"].clip(lower=0.0, upper=4.0)
-        if wn_template.options.quality.parameter.upper() == "CHEMICAL":
-            # convert mg/L to g/L used by CHEMICAL quality models before
+        param = str(wn_template.options.quality.parameter).upper()
+        if "CHEMICAL" in param or "CHLORINE" in param:
+            # convert mg/L to g/L used by CHEMICAL or CHLORINE models before
             # taking the logarithm so the surrogate sees reasonable scales
             quality_df = quality_df / 1000.0
         quality = np.log1p(quality_df)
@@ -468,9 +469,10 @@ def build_dataset(
         # non-negative pressures
         pressures = sim_results.node["pressure"].clip(lower=0.0)
         quality_df = sim_results.node["quality"].clip(lower=0.0, upper=4.0)
-        if wn_template.options.quality.parameter.upper() == "CHEMICAL":
-            # CHEMICAL quality models return mg/L, scale to g/L before
-            # applying the log transform
+        param = str(wn_template.options.quality.parameter).upper()
+        if "CHEMICAL" in param or "CHLORINE" in param:
+            # CHEMICAL or CHLORINE quality models return mg/L, scale to g/L
+            # before applying the log transform
             quality_df = quality_df / 1000.0
         quality = np.log1p(quality_df)
         demands = sim_results.node.get("demand")
