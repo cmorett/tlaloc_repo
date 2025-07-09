@@ -2425,6 +2425,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Add pressure-headloss consistency penalty",
     )
+    parser.add_argument(
+        "--no-pressure-loss",
+        dest="pressure_loss",
+        action="store_false",
+        help="Disable pressure-headloss consistency penalty",
+    )
     parser.set_defaults(pressure_loss=True)
     parser.add_argument(
         "--w_mass",
