@@ -5,4 +5,5 @@ models/__pycache__/
 models/*.pth
 models/*_norm.npz
 .venv/
-plots/logs/
+plots/
+logs/
