@@ -2058,6 +2058,8 @@ def main(args: argparse.Namespace):
                 if args.pressure_loss:
                     msg += f", head={head_l:.3f}"
                 print(msg)
+            else:
+                print(f"Epoch {epoch}")
             if val_loss < best_val - 1e-6:
                 best_val = val_loss
                 patience = 0
