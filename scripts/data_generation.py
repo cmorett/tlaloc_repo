@@ -380,9 +380,11 @@ def build_sequence_dataset(
         flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
 
         if len(times) <= seq_len:
-            raise ValueError(
-                f"Not enough timesteps ({len(times)}) for sequence length {seq_len}"
+            warnings.warn(
+                "Skipping scenario with only "
+                f"{len(times)} timesteps (need {seq_len + 1})"
             )
+            continue
 
         X_seq: List[np.ndarray] = []
         node_out_seq: List[np.ndarray] = []
@@ -436,6 +438,11 @@ def build_sequence_dataset(
             "edge_outputs": np.stack(edge_out_seq).astype(np.float32),
             "pump_energy": np.stack(energy_seq).astype(np.float32),
         })
+
+    if not X_list:
+        raise ValueError(
+            f"No scenarios contained at least {seq_len + 1} timesteps"
+        )
 
     X = np.stack(X_list).astype(np.float32)
     Y = np.array(Y_list, dtype=object)
