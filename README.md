@@ -229,8 +229,12 @@ diverging over long horizons.  It now also reports mean absolute error (MAE)
  ground truth are denormalized and chlorine values are exponentiated so the
  resulting errors are reported in physical units.  Pressures below 5 m are
  clipped to this lower bound during validation so metrics match the training
- distribution.  All metrics are written to
+distribution.  All metrics are written to
 ``logs/surrogate_metrics.json`` for reproducibility.
+
+If the dimension of ``edge_attr.npy`` does not match the value stored in the
+surrogate checkpoint, ``validate_surrogate`` now raises a ``ValueError``.
+Regenerate the dataset or retrain the surrogate when this occurs.
 
 Typical validation command:
 
@@ -285,6 +289,8 @@ have no effect on the predictions.
 `simulate_closed_loop` now performs the same check and raises a `ValueError`
 when the loaded model does not include pump controls so that experiment scripts
 fail fast instead of silently optimising with zero gradients.
+It also verifies that the provided edge attributes match the model's expected
+dimension and aborts with an error when they differ.
 
 ## Reporting Key Performance Metrics
 

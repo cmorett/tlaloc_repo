@@ -496,6 +496,9 @@ def load_surrogate_model(
 
     model.load_state_dict(state, strict=False)
 
+    # store expected edge attribute dimension for input checks
+    model.edge_dim = edge_dim if edge_dim is not None else 0
+
     norm_path = str(full_path.with_suffix("")) + "_norm.npz"
     if os.path.exists(norm_path):
         arr = np.load(norm_path)
@@ -1029,6 +1032,13 @@ def simulate_closed_loop(
         raise ValueError(
             "Loaded model was trained without pump controls - rerun train_gnn.py"
         )
+
+    if edge_attr is not None and hasattr(model, "edge_dim"):
+        if edge_attr.size(1) != model.edge_dim:
+            raise ValueError(
+                f"Edge attribute dimension mismatch: model expects {model.edge_dim}, "
+                f"but received {edge_attr.size(1)}."
+            )
 
     log = []
     pressure_violations = 0
