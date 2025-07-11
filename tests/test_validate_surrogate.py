@@ -4,6 +4,7 @@ import wntr
 import sys
 from pathlib import Path
 import numpy as np
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(REPO_ROOT))
@@ -149,4 +150,42 @@ def test_validate_surrogate_dict_stats():
     expected_diff_p = 1.0 - true_p
     assert arr.shape[0] >= 1
     assert abs(arr[0, 0] - expected_diff_p) < 1e-6
+
+
+def test_validate_surrogate_edge_dim_check():
+    device = torch.device('cpu')
+    (
+        wn,
+        node_to_index,
+        pump_names,
+        edge_index,
+        edge_attr,
+        node_types,
+        edge_types,
+    ) = load_network('CTown.inp', return_edge_attr=True)
+    wn.options.time.duration = 2 * 3600
+    wn.options.time.hydraulic_timestep = 3600
+    wn.options.time.quality_timestep = 3600
+    wn.options.time.report_timestep = 3600
+    sim = wntr.sim.EpanetSimulator(wn)
+    res = sim.run_sim(str(TEMP_DIR / 'temp_edge'))
+
+    class EdgeModel(DummyModel):
+        def __init__(self):
+            super().__init__()
+            self.edge_dim = 2
+
+    model = EdgeModel().to(device)
+    with pytest.raises(ValueError):
+        validate_surrogate(
+            model,
+            edge_index,
+            edge_attr,
+            wn,
+            [res],
+            device,
+            'edge_check',
+            torch.tensor(node_types, dtype=torch.long),
+            torch.tensor(edge_types, dtype=torch.long),
+        )
 

@@ -209,6 +209,13 @@ def validate_surrogate(
     are automatically unpacked.
     """
 
+    if edge_attr is not None and hasattr(model, "edge_dim"):
+        if edge_attr.size(1) != model.edge_dim:
+            raise ValueError(
+                f"Edge attribute dimension mismatch: model expects {model.edge_dim}, "
+                f"but received {edge_attr.size(1)}."
+            )
+
     rmse_p = 0.0
     rmse_c = 0.0
     mae_p = 0.0
