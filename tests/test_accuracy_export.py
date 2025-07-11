@@ -11,7 +11,8 @@ def test_save_accuracy_metrics(tmp_path):
     pred_p = np.array([9.5, 12.5])
     true_c = np.log1p(np.array([0.5, 0.4]) / 1000.0)
     pred_c = np.log1p(np.array([0.45, 0.6]) / 1000.0)
-    save_accuracy_metrics(true_p, pred_p, true_c, pred_c, "unit", logs_dir=tmp_path)
+    mask = [True, False]
+    save_accuracy_metrics(true_p, pred_p, true_c, pred_c, "unit", logs_dir=tmp_path, mask=mask)
     f = tmp_path / "accuracy_unit.csv"
     assert f.exists()
     df = pd.read_csv(f, index_col=0)

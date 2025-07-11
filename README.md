@@ -37,16 +37,16 @@ create this folder if it does not yet exist. After each training run
 ``train_gnn.py`` saves two scatter plots comparing model predictions to
 EPANET results: ``pred_vs_actual_pressure_<run>.png`` and
 ``pred_vs_actual_chlorine_<run>.png``. Reservoirs and tanks are excluded from
-these plots since their pressures are fixed.
-It also writes ``error_histograms_<run>.png`` containing histograms and
-box plots of the prediction errors. Finally ``correlation_heatmap_<run>.png``
+these plots since their pressures are fixed. ``error_histograms_<run>.png``
+contains histograms and box plots of the prediction errors and the CSV
+``logs/accuracy_<run>.csv`` records MAE, RMSE, MAPE and maximum error for
+pressure and chlorine. Reservoir and tank nodes are excluded from these metrics
+so outliers from fixed heads do not skew the results. Finally ``correlation_heatmap_<run>.png``
 visualises pairwise correlations between the unnormalised training features.
 When normalization is enabled (the default) the test data is scaled using the
 training statistics. During evaluation both predictions **and** the
 corresponding ground truth labels are transformed back to physical units before
 plotting.
-In addition, ``train_gnn.py`` now writes a CSV file ``logs/accuracy_<run>.csv``
-containing MAE, RMSE, MAPE and maximum error for pressure and chlorine.
 When sequence models are used a component-wise loss curve
 ``loss_components_<run>.png`` is stored alongside ``loss_curve_<run>.png``.
 For sequence datasets a time-series example ``time_series_example_<run>.png``
