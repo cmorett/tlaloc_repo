@@ -63,13 +63,18 @@ def test_plot_loss_components(tmp_path: Path):
 
 
 def test_plot_error_histograms(tmp_path: Path):
-    plot_error_histograms(
-        [0.1, -0.2, 0.0],
-        [0.05, -0.05, 0.1],
+    fig = plot_error_histograms(
+        [0.1, -0.2, 0.0, 0.3],
+        [0.05, -0.05, 0.1, -0.1],
         "unit",
         plots_dir=tmp_path,
+        return_fig=True,
+        mask=[True, False, True, False],
     )
     assert (tmp_path / "error_histograms_unit.png").exists()
+    # number of histogram bars should match masked data length
+    assert fig.axes[0].patches[0].get_height() > 0
+    plt = None
 
 
 def test_plot_sequence_prediction(tmp_path: Path):

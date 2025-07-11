@@ -699,16 +699,29 @@ def save_accuracy_metrics(
     preds_c,
     run_name: str,
     logs_dir: Optional[Path] = None,
+    mask: Optional[Sequence[bool]] = None,
 ) -> None:
     """Compute and export accuracy metrics to a CSV file."""
     if logs_dir is None:
         logs_dir = REPO_ROOT / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
+    tp = _to_numpy(true_p)
+    pp = _to_numpy(preds_p)
+    tc = _to_numpy(true_c)
+    pc = _to_numpy(preds_c)
+
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        tp = tp[m]
+        pp = pp[m]
+        tc = tc[m]
+        pc = pc[m]
+
     df = accuracy_metrics(
-        true_p,
-        preds_p,
-        np.expm1(true_c) * 1000.0,
-        np.expm1(preds_c) * 1000.0,
+        tp,
+        pp,
+        np.expm1(tc) * 1000.0,
+        np.expm1(pc) * 1000.0,
     )
     export_table(df, str(logs_dir / f"accuracy_{run_name}.csv"))
 
@@ -719,6 +732,7 @@ def plot_error_histograms(
     run_name: str,
     plots_dir: Optional[Path] = None,
     return_fig: bool = False,
+    mask: Optional[Sequence[bool]] = None,
 ) -> Optional[plt.Figure]:
     """Histogram and box plots of prediction errors."""
     if plots_dir is None:
@@ -727,6 +741,11 @@ def plot_error_histograms(
 
     ep = _to_numpy(err_p)
     ec = _to_numpy(err_c)
+
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        ep = ep[m]
+        ec = ec[m]
 
     fig, axes = plt.subplots(2, 2, figsize=(10, 8))
     axes[0, 0].hist(ep, bins=50, color="tab:blue", alpha=0.7)
@@ -2264,8 +2283,9 @@ def main(args: argparse.Namespace):
                 true_c,
                 preds_c,
                 run_name,
+                mask=full_mask,
             )
-            plot_error_histograms(err_p, err_c, run_name)
+            plot_error_histograms(err_p, err_c, run_name, mask=full_mask)
             labels = [
                 "demand",
                 "pressure",
