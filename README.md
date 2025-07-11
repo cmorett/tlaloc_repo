@@ -14,8 +14,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-This installs PyTorch, PyTorch Geometric, `numpy`, `scikit-learn` and `wntr`
-which are required for the training and control scripts.
+This installs PyTorch, PyTorch Geometric, `numpy`, `scikit-learn`, `wntr`,
+`pandas`, `matplotlib`, `networkx` and `epyt` which are required for the
+training and control scripts.
 
 ## Quick GPU check
 

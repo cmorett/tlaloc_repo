@@ -77,8 +77,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-This installs PyTorch, PyTorch Geometric and `wntr` along with other
-dependencies.
+This installs PyTorch, PyTorch Geometric, `numpy`, `scikit-learn`, `wntr`,
+`pandas`, `matplotlib`, `networkx` and `epyt` along with other dependencies.
 
 ## Testing Protocols
 
