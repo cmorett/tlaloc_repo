@@ -68,7 +68,17 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
 4. **Experiment Validation** – `scripts/experiments_validation.py` evaluates the surrogate on prerecorded EPANET scenarios and compares the MPC controller against two baselines. Results are aggregated into CSV files under `data/` and plots under `plots/`. Validation metrics are stored in `logs/surrogate_metrics.json`.
 5 **Metric Reporting and Visualization** – After each script is ran, several logs are created which summarize accuracy, control quality and computational overhead as well as visualizations: scatter plots, time‑series and convergence curves for reports.
 
-The repository assumes a working Python environment with PyTorch, PyTorch Geometric and `wntr` installed. A small virtual environment with these dependencies is provided in `.venv/`.
+The repository assumes a working Python environment. Create a virtual environment
+and install the required packages listed in `requirements.txt`:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+This installs PyTorch, PyTorch Geometric and `wntr` along with other
+dependencies.
 
 ## Testing Protocols
 

@@ -1,0 +1,5 @@
+numpy
+torch
+torch-geometric
+scikit-learn
+wntr

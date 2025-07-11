@@ -1,6 +1,21 @@
 # tlaloc_repo
 
+
 A GNN, MPC-gradient based, optimizer for EPANET water systems
+
+## Installation
+
+Create a Python virtual environment and install the required packages from
+`requirements.txt`:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+This installs PyTorch, PyTorch Geometric, `numpy`, `scikit-learn` and `wntr`
+which are required for the training and control scripts.
 
 ## Quick GPU check
 
