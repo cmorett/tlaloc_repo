@@ -3,3 +3,7 @@ torch
 torch-geometric
 scikit-learn
 wntr
+pandas
+matplotlib
+networkx
+epyt
