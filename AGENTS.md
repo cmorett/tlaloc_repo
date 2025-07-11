@@ -6,38 +6,59 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
 ## Project Layout
 
 - `README.md` – high level usage instructions.
+- `AGENTS.md` – repository guidelines for Codex.
 - `CTown.inp` – EPANET input file for the C‑Town network.
+- `pytorchcheck.py` – quick script verifying that PyTorch Geometric runs on the configured GPU.
+- `models/`
+  - `loss_utils.py` – physics-based loss helpers.
+  - `gnn_surrogate.pth` – trained weights saved here after running the training script.
 - `scripts/`
   - `data_generation.py` – create randomized simulation scenarios and produce training datasets.
-  - `train_gnn.py` – train a graph neural network surrogate on generated data.
-  - `mpc_control.py` – run gradient-based MPC using the trained surrogate.
   - `experiments_validation.py` – validate the surrogate, compare baselines and aggregate results.
   - `metrics.py` – report surrogate accuracy, MPC control and runtime metrics.
-- `models/` – storage location for trained weights (`gnn_surrogate.pth`).
-- `pytorchcheck.py` – quick script verifying that PyTorch Geometric runs on the configured GPU.
+  - `mpc_control.py` – run gradient-based MPC using the trained surrogate.
+  - `train_gnn.py` – train a graph neural network surrogate on generated data.
+- `tests/` – pytest suite containing:
+  - `test_accuracy_export.py`
+  - `test_amp.py`
+  - `test_cli_args.py`
+  - `test_clip.py`
+  - `test_dataset_distributions.py`
+  - `test_demand_scaling.py`
+  - `test_early_stop.py`
+  - `test_energy.py`
+  - `test_extreme_events.py`
+  - `test_flow_denorm.py`
+  - `test_headloss_loss.py`
+  - `test_hydroconv.py`
+  - `test_interrupt_dataloader.py`
+  - `test_interrupt_handler.py`
+  - `test_load_surrogate.py`
+  - `test_mass_balance.py`
+  - `test_metrics.py`
+  - `test_mpc_input_check.py`
+  - `test_nan_check.py`
+  - `test_normalization.py`
+  - `test_normalized_negative.py`
+  - `test_output_clamp.py`
+  - `test_physics_training.py`
+  - `test_pump_controls.py`
+  - `test_recurrent_forward.py`
+  - `test_reservoir_feature.py`
+  - `test_reservoir_mask.py`
+  - `test_scatter.py`
+  - `test_scatter_interrupt.py`
+  - `test_sequence_nan_check.py`
+  - `test_sequence_norm_stats.py`
+  - `test_tank_dynamics.py`
+  - `test_tank_initial_randomization.py`
+  - `test_validate_surrogate.py`
+  - `test_visualizations.py`
+  - `test_workers.py`
 - `data/` – ignored by git; used for generated datasets and temporary simulation outputs.
-- `plots/` – ignored by git; stores all figures produced during training, validation and MPC runs.
+- `plots/` – ignored by git; stores figures generated during training, validation and MPC runs.
 - `logs/` – ignored by git; JSON summaries such as `surrogate_metrics.json` and `mpc_summary.json`.
-- `tests/` – pytest suite:
-  - `test_clip.py` – pressures and chlorine are clipped to non‑negative values.
-  - `test_early_stop.py` – early stopping logic.
-  - `test_energy.py` – pump energy calculations never produce NaNs.
-  - `test_extreme_events.py` – scenario generation labels extreme events.
-  - `test_hydroconv.py` – `HydroConv` layer conserves mass.
-  - `test_load_surrogate.py` – loading surrogate checkpoints (key renaming, NaN detection, newest model search, multi‑task norms).
-  - `test_mass_balance.py` – mass balance loss computation.
-  - `test_mpc_input_check.py` – MPC simulation requires pump control features.
-  - `test_nan_check.py` – training aborts when NaNs are present in the input.
-  - `test_normalization.py` – statistics computation and normalization behaviour.
-  - `test_normalized_negative.py` – training after normalization when values become negative.
-  - `test_pump_controls.py` – at least one pump is active each hour in a generated scenario.
-  - `test_recurrent_forward.py` – forward pass shapes for recurrent and multi‑task models.
-  - `test_scatter.py` – saving scatter plots.
-  - `test_validate_surrogate.py` – validating a surrogate with provided results.
-  - `test_headloss_loss.py` – pressure‑headloss consistency penalty.
-  - `test_metrics.py` – metric helper functions generate expected tables.
-  - `test_visualizations.py` – plotting utilities create labelled images.
-  - `test_dataset_distributions.py` – dataset distribution plot is generated.
+- `.vscode/` – VS Code configuration (contains `settings.json`).
 
 ## Architecture Overview
 
