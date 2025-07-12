@@ -357,72 +357,107 @@ def load_surrogate_model(
         k
         for k in state
         if k.startswith("layers.")
-        and (k.endswith("weight") or k.endswith("lin.weight"))
+        and (
+            k.endswith("weight")
+            or k.endswith("lin.weight")
+            or k.endswith("lin_src.weight")
+        )
     ]
     fc_layer = None
     if layer_keys:
         indices = sorted({int(k.split(".")[1]) for k in layer_keys})
         conv_layers = []
         for i in indices:
-            w_key = (
-                f"layers.{i}.weight"
-                if f"layers.{i}.weight" in state
-                else f"layers.{i}.lin.weight"
+            base = f"layers.{i}"
+            gat_att_key = f"{base}.att_src"
+            gat_lin_key = (
+                f"{base}.lin_src.weight"
+                if f"{base}.lin_src.weight" in state
+                else f"{base}.lin.weight"
             )
-            w = state[w_key]
-            in_dim = w.shape[1]
-            out_dim = w.shape[0]
 
-            edge_key = None
-            if f"layers.{i}.edge_mlp.0.weight" in state:
-                edge_key = f"layers.{i}.edge_mlp.0.weight"
-            elif f"layers.{i}.edge_mlps.0.0.weight" in state:
-                edge_key = f"layers.{i}.edge_mlps.0.0.weight"
-
-            if edge_key is not None:
-                e_dim = state[edge_key].shape[1]
-
-                node_keys = [
-                    k
-                    for k in state
-                    if k.startswith(f"layers.{i}.lin.") and k.endswith("weight")
-                ]
-                if node_keys:
-                    node_indices = []
-                    for k in node_keys:
-                        parts = k.split(".")
-                        if len(parts) > 3 and parts[3].isdigit():
-                            node_indices.append(int(parts[3]))
-                    n_node_types = max(node_indices) + 1 if node_indices else 1
+            if gat_att_key in state or f"{base}.lin_src.weight" in state:
+                w = state[gat_lin_key]
+                in_dim = w.shape[1]
+                att = state.get(gat_att_key)
+                if att is not None:
+                    heads = att.shape[1]
+                    out_per_head = att.shape[2]
                 else:
-                    n_node_types = 1
-
-                edge_keys = [
-                    k
-                    for k in state
-                    if k.startswith(f"layers.{i}.edge_mlps") and k.endswith("weight")
-                ]
-                if edge_keys:
-                    edge_indices = []
-                    for k in edge_keys:
-                        parts = k.split(".")
-                        if len(parts) > 3 and parts[3].isdigit():
-                            edge_indices.append(int(parts[3]))
-                    n_edge_types = max(edge_indices) + 1 if edge_indices else 1
-                else:
-                    n_edge_types = 1
-
+                    heads = 1
+                    out_per_head = w.shape[0]
+                edge_dim_layer = None
+                edge_w_key = f"{base}.lin_edge.weight"
+                if edge_w_key in state:
+                    edge_dim_layer = state[edge_w_key].shape[1]
                 conv_layers.append(
-                    HydroConv(
+                    GATConv(
                         in_dim,
-                        out_dim,
-                        e_dim,
-                        num_node_types=n_node_types,
-                        num_edge_types=n_edge_types,
+                        out_per_head,
+                        heads=heads,
+                        edge_dim=edge_dim_layer,
                     )
                 )
             else:
-                conv_layers.append(GCNConv(in_dim, out_dim))
+                w_key = (
+                    f"{base}.weight"
+                    if f"{base}.weight" in state
+                    else f"{base}.lin.weight"
+                )
+                w = state[w_key]
+                in_dim = w.shape[1]
+                out_dim = w.shape[0]
+
+                edge_key = None
+                if f"{base}.edge_mlp.0.weight" in state:
+                    edge_key = f"{base}.edge_mlp.0.weight"
+                elif f"{base}.edge_mlps.0.0.weight" in state:
+                    edge_key = f"{base}.edge_mlps.0.0.weight"
+
+                if edge_key is not None:
+                    e_dim = state[edge_key].shape[1]
+
+                    node_keys = [
+                        k
+                        for k in state
+                        if k.startswith(f"{base}.lin.") and k.endswith("weight")
+                    ]
+                    if node_keys:
+                        node_indices = []
+                        for k in node_keys:
+                            parts = k.split(".")
+                            if len(parts) > 3 and parts[3].isdigit():
+                                node_indices.append(int(parts[3]))
+                        n_node_types = max(node_indices) + 1 if node_indices else 1
+                    else:
+                        n_node_types = 1
+
+                    edge_keys = [
+                        k
+                        for k in state
+                        if k.startswith(f"{base}.edge_mlps") and k.endswith("weight")
+                    ]
+                    if edge_keys:
+                        edge_indices = []
+                        for k in edge_keys:
+                            parts = k.split(".")
+                            if len(parts) > 3 and parts[3].isdigit():
+                                edge_indices.append(int(parts[3]))
+                        n_edge_types = max(edge_indices) + 1 if edge_indices else 1
+                    else:
+                        n_edge_types = 1
+
+                    conv_layers.append(
+                        HydroConv(
+                            in_dim,
+                            out_dim,
+                            e_dim,
+                            num_node_types=n_node_types,
+                            num_edge_types=n_edge_types,
+                        )
+                    )
+                else:
+                    conv_layers.append(GCNConv(in_dim, out_dim))
     else:
         weight_key = "conv1.weight" if "conv1.weight" in state else "conv1.lin.weight"
         hidden_key = weight_key
@@ -456,6 +491,8 @@ def load_surrogate_model(
             edge_dim = first_layer[0].in_features
         else:
             edge_dim = first_layer.in_features
+    elif isinstance(conv_layers[0], GATConv):
+        edge_dim = conv_layers[0].edge_dim
 
     if multitask:
         node_out_dim, rnn_hidden_dim = state["node_decoder.weight"].shape

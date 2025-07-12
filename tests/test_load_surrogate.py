@@ -87,3 +87,28 @@ def test_load_surrogate_handles_multitask_norm(tmp_path):
     assert model.y_mean is not None
     assert model.y_mean_energy is None
     assert model.y_std_energy is None
+
+
+def test_load_surrogate_gatconv_edge_dim(tmp_path):
+    from torch_geometric.nn import GATConv
+
+    heads = 2
+    in_c = 3
+    out_per_head = 4
+    edge_dim = 5
+    state = {
+        'layers.0.lin_src.weight': torch.zeros(heads * out_per_head, in_c),
+        'layers.0.att_src': torch.zeros(1, heads, out_per_head),
+        'layers.0.att_dst': torch.zeros(1, heads, out_per_head),
+        'layers.0.att_edge': torch.zeros(1, heads, out_per_head),
+        'layers.0.lin_edge.weight': torch.zeros(heads * out_per_head, edge_dim),
+        'layers.0.bias': torch.zeros(heads * out_per_head),
+        'layers.1.weight': torch.zeros(1, heads * out_per_head),
+        'layers.1.bias': torch.zeros(1),
+    }
+    path = tmp_path / 'gat.pth'
+    torch.save(state, path)
+
+    model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
+    assert isinstance(model.layers[0], GATConv)
+    assert model.edge_dim == edge_dim
