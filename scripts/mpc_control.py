@@ -494,12 +494,16 @@ def load_surrogate_model(
     elif isinstance(conv_layers[0], GATConv):
         edge_dim = conv_layers[0].edge_dim
 
+    hidden_dim = conv_layers[0].out_channels
+    if isinstance(conv_layers[0], GATConv) and getattr(conv_layers[0], "concat", True):
+        hidden_dim = hidden_dim * conv_layers[0].heads
+
     if multitask:
         node_out_dim, rnn_hidden_dim = state["node_decoder.weight"].shape
         edge_out_dim = state["edge_decoder.weight"].shape[0]
         model = MultiTaskGNNSurrogate(
             in_channels=conv_layers[0].in_channels,
-            hidden_channels=conv_layers[0].out_channels,
+            hidden_channels=hidden_dim,
             edge_dim=edge_dim if edge_dim is not None else 0,
             node_output_dim=node_out_dim,
             edge_output_dim=edge_out_dim,
@@ -516,7 +520,7 @@ def load_surrogate_model(
         out_dim, rnn_hidden_dim = state["decoder.weight"].shape
         model = RecurrentGNNSurrogate(
             in_channels=conv_layers[0].in_channels,
-            hidden_channels=conv_layers[0].out_channels,
+            hidden_channels=hidden_dim,
             edge_dim=edge_dim if edge_dim is not None else 0,
             output_dim=out_dim,
             num_layers=len(conv_layers),

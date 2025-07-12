@@ -112,3 +112,32 @@ def test_load_surrogate_gatconv_edge_dim(tmp_path):
     model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
     assert isinstance(model.layers[0], GATConv)
     assert model.edge_dim == edge_dim
+
+
+def test_load_surrogate_gatconv_hidden_dim(tmp_path):
+    heads = 3
+    in_c = 4
+    out_per_head = 5
+    edge_dim = 2
+    hidden = heads * out_per_head
+    state = {
+        'layers.0.lin_src.weight': torch.zeros(heads * out_per_head, in_c),
+        'layers.0.att_src': torch.zeros(1, heads, out_per_head),
+        'layers.0.att_dst': torch.zeros(1, heads, out_per_head),
+        'layers.0.att_edge': torch.zeros(1, heads, out_per_head),
+        'layers.0.lin_edge.weight': torch.zeros(heads * out_per_head, edge_dim),
+        'layers.0.bias': torch.zeros(heads * out_per_head),
+        'node_decoder.weight': torch.zeros(2, 16),
+        'node_decoder.bias': torch.zeros(2),
+        'edge_decoder.weight': torch.zeros(1, 48),
+        'edge_decoder.bias': torch.zeros(1),
+        'rnn.weight_ih_l0': torch.zeros(64, hidden),
+        'rnn.weight_hh_l0': torch.zeros(64, 16),
+        'rnn.bias_ih_l0': torch.zeros(64),
+        'rnn.bias_hh_l0': torch.zeros(64),
+    }
+    path = tmp_path / 'model.pth'
+    torch.save(state, path)
+
+    model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
+    assert model.encoder.norms[0].normalized_shape[0] == hidden
