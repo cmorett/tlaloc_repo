@@ -24,6 +24,8 @@ import wntr
 from wntr.metrics.economic import pump_energy
 import epyt
 
+# Minimum allowed pressure [m] applied during preprocessing.
+MIN_PRESSURE = 5.0
 # Ensure the repository root is importable when running this script directly
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -253,7 +255,9 @@ def validate_surrogate(
             if isinstance(res, tuple):
                 res = res[0]
 
-            pressures_df = res.node["pressure"].clip(lower=5.0)
+            # Clip pressures to match the preprocessing used during data
+            # generation and avoid unrealistically low values.
+            pressures_df = res.node["pressure"].clip(lower=MIN_PRESSURE)
             chlorine_df = res.node["quality"]
             demand_df = res.node.get("demand")
             pump_df = res.link["setting"][wn.pump_name_list]
