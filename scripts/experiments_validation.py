@@ -438,17 +438,11 @@ def run_all_pumps_on(
             {
                 "time": hour,
                 "min_pressure": max(
-                    min(
-                        pressures[n]
-                        for n in wn.junction_name_list + wn.tank_name_list
-                    ),
+                    min(pressures[n] for n in wn.junction_name_list),
                     0.0,
                 ),
                 "min_chlorine": max(
-                    min(
-                        chlorine[n]
-                        for n in wn.junction_name_list + wn.tank_name_list
-                    ),
+                    min(chlorine[n] for n in wn.junction_name_list),
                     0.0,
                 ),
                 "energy": float(energy),
@@ -479,10 +473,8 @@ def run_heuristic_baseline(
     chlorine = results.node["quality"].iloc[-1].to_dict()
 
     for hour in range(24):
-        if min(
-            pressures[n] for n in wn.junction_name_list + wn.tank_name_list
-        ) < threshold_p or min(
-            chlorine[n] for n in wn.junction_name_list + wn.tank_name_list
+        if min(pressures[n] for n in wn.junction_name_list) < threshold_p or min(
+            chlorine[n] for n in wn.junction_name_list
         ) < threshold_c:
             status = wntr.network.base.LinkStatus.Open
         else:
@@ -506,17 +498,11 @@ def run_heuristic_baseline(
             {
                 "time": hour,
                 "min_pressure": max(
-                    min(
-                        pressures[n]
-                        for n in wn.junction_name_list + wn.tank_name_list
-                    ),
+                    min(pressures[n] for n in wn.junction_name_list),
                     0.0,
                 ),
                 "min_chlorine": max(
-                    min(
-                        chlorine[n]
-                        for n in wn.junction_name_list + wn.tank_name_list
-                    ),
+                    min(chlorine[n] for n in wn.junction_name_list),
                     0.0,
                 ),
                 "energy": float(energy),
