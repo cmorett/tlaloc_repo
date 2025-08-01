@@ -635,7 +635,7 @@ def prepare_node_features(
         if demands is not None:
             feats[:, :, 0] = demands
         feats[:, :, 1] = pressures
-        feats[:, :, 2] = chlorine
+        feats[:, :, 2] = torch.log1p(chlorine / 1000.0)
         feats[:, :, 4 : 4 + num_pumps] = pump_controls.view(batch_size, 1, -1).expand(batch_size, num_nodes, num_pumps)
         in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
         if in_dim is not None:
@@ -648,7 +648,7 @@ def prepare_node_features(
     if demands is not None:
         feats[:, 0] = demands
     feats[:, 1] = pressures
-    feats[:, 2] = chlorine
+    feats[:, 2] = torch.log1p(chlorine / 1000.0)
     feats[:, 4 : 4 + num_pumps] = pump_controls.view(1, -1).expand(num_nodes, num_pumps)
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
     if in_dim is not None:
@@ -727,7 +727,7 @@ def compute_mpc_cost(
             pred = pred * model.y_std + model.y_mean
         assert not torch.isnan(pred).any(), "NaN prediction"
         pred_p = pred[:, 0]
-        pred_c = pred[:, 1]
+        pred_c = torch.expm1(pred[:, 1]) * 1000.0
 
         # ------------------------------------------------------------------
         # Cost terms
@@ -1031,7 +1031,7 @@ def propagate_with_surrogate(
             assert not torch.isnan(pred).any(), "NaN prediction"
             pred = pred.view(batch_size, feature_template.size(0), -1)
             cur_p = pred[:, :, 0]
-            cur_c = pred[:, :, 1]
+            cur_c = torch.expm1(pred[:, :, 1]) * 1000.0
 
     if single:
         out_p = {n: float(cur_p[0, i]) for i, n in enumerate(wn.node_name_list)}
