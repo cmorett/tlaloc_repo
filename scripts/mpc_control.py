@@ -557,8 +557,14 @@ def load_surrogate_model(
 
         model.y_mean_energy = None
         model.y_std_energy = None
+        if "edge_mean" in arr:
+            model.edge_mean = torch.tensor(arr["edge_mean"], dtype=torch.float32, device=device)
+            model.edge_std = torch.tensor(arr["edge_std"], dtype=torch.float32, device=device)
+        else:
+            model.edge_mean = model.edge_std = None
     else:
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
+        model.edge_mean = model.edge_std = None
 
     model.eval()
 

@@ -243,6 +243,8 @@ def validate_surrogate(
     edge_index = edge_index.to(device)
     if edge_attr is not None:
         edge_attr = edge_attr.to(device)
+        if hasattr(model, "edge_mean") and getattr(model, "edge_mean") is not None:
+            edge_attr = (edge_attr - model.edge_mean) / model.edge_std
 
     with torch.no_grad():
         first = True
