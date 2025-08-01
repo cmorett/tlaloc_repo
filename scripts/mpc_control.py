@@ -537,6 +537,13 @@ def load_surrogate_model(
 
     model.load_state_dict(state, strict=False)
 
+    # ensure LayerNorm modules expose ``normalized_shape`` for compatibility
+    enc = getattr(model, "encoder", None)
+    if enc is not None:
+        for norm in getattr(enc, "norms", []):
+            if not hasattr(norm, "normalized_shape") and hasattr(norm, "weight"):
+                norm.normalized_shape = (norm.weight.numel(),)
+
     # store expected edge attribute dimension for input checks
     model.edge_dim = edge_dim if edge_dim is not None else 0
 
@@ -557,8 +564,14 @@ def load_surrogate_model(
 
         model.y_mean_energy = None
         model.y_std_energy = None
+        if "edge_mean" in arr:
+            model.edge_mean = torch.tensor(arr["edge_mean"], dtype=torch.float32, device=device)
+            model.edge_std = torch.tensor(arr["edge_std"], dtype=torch.float32, device=device)
+        else:
+            model.edge_mean = model.edge_std = None
     else:
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
+        model.edge_mean = model.edge_std = None
 
     model.eval()
 
@@ -1223,14 +1236,8 @@ def simulate_closed_loop(
             cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
             end = time.time()
             energy = energy_first
-        min_p = max(
-            min(pressures[n] for n in wn.junction_name_list + wn.tank_name_list),
-            0.0,
-        )
-        min_c = max(
-            min(chlorine[n] for n in wn.junction_name_list + wn.tank_name_list),
-            0.0,
-        )
+        min_p = max(min(pressures[n] for n in wn.junction_name_list), 0.0)
+        min_c = max(min(chlorine[n] for n in wn.junction_name_list), 0.0)
         if min_p < Pmin:
             pressure_violations += 1
         if min_c < Cmin:

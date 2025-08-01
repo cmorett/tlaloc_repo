@@ -24,6 +24,8 @@ import wntr
 from wntr.metrics.economic import pump_energy
 import epyt
 
+# Minimum allowed pressure [m] applied during preprocessing.
+MIN_PRESSURE = 5.0
 # Ensure the repository root is importable when running this script directly
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -243,6 +245,8 @@ def validate_surrogate(
     edge_index = edge_index.to(device)
     if edge_attr is not None:
         edge_attr = edge_attr.to(device)
+        if hasattr(model, "edge_mean") and getattr(model, "edge_mean") is not None:
+            edge_attr = (edge_attr - model.edge_mean) / model.edge_std
 
     with torch.no_grad():
         first = True
@@ -253,7 +257,9 @@ def validate_surrogate(
             if isinstance(res, tuple):
                 res = res[0]
 
-            pressures_df = res.node["pressure"].clip(lower=5.0)
+            # Clip pressures to match the preprocessing used during data
+            # generation and avoid unrealistically low values.
+            pressures_df = res.node["pressure"].clip(lower=MIN_PRESSURE)
             chlorine_df = res.node["quality"]
             demand_df = res.node.get("demand")
             pump_df = res.link["setting"][wn.pump_name_list]
@@ -432,17 +438,11 @@ def run_all_pumps_on(
             {
                 "time": hour,
                 "min_pressure": max(
-                    min(
-                        pressures[n]
-                        for n in wn.junction_name_list + wn.tank_name_list
-                    ),
+                    min(pressures[n] for n in wn.junction_name_list),
                     0.0,
                 ),
                 "min_chlorine": max(
-                    min(
-                        chlorine[n]
-                        for n in wn.junction_name_list + wn.tank_name_list
-                    ),
+                    min(chlorine[n] for n in wn.junction_name_list),
                     0.0,
                 ),
                 "energy": float(energy),
@@ -473,10 +473,8 @@ def run_heuristic_baseline(
     chlorine = results.node["quality"].iloc[-1].to_dict()
 
     for hour in range(24):
-        if min(
-            pressures[n] for n in wn.junction_name_list + wn.tank_name_list
-        ) < threshold_p or min(
-            chlorine[n] for n in wn.junction_name_list + wn.tank_name_list
+        if min(pressures[n] for n in wn.junction_name_list) < threshold_p or min(
+            chlorine[n] for n in wn.junction_name_list
         ) < threshold_c:
             status = wntr.network.base.LinkStatus.Open
         else:
@@ -500,17 +498,11 @@ def run_heuristic_baseline(
             {
                 "time": hour,
                 "min_pressure": max(
-                    min(
-                        pressures[n]
-                        for n in wn.junction_name_list + wn.tank_name_list
-                    ),
+                    min(pressures[n] for n in wn.junction_name_list),
                     0.0,
                 ),
                 "min_chlorine": max(
-                    min(
-                        chlorine[n]
-                        for n in wn.junction_name_list + wn.tank_name_list
-                    ),
+                    min(chlorine[n] for n in wn.junction_name_list),
                     0.0,
                 ),
                 "energy": float(energy),

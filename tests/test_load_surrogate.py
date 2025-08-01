@@ -89,6 +89,29 @@ def test_load_surrogate_handles_multitask_norm(tmp_path):
     assert model.y_std_energy is None
 
 
+def test_load_surrogate_loads_edge_norm(tmp_path):
+    state = {
+        'conv1.lin.weight': torch.zeros(1, 1),
+        'conv1.bias': torch.zeros(1),
+        'conv2.lin.weight': torch.zeros(1, 1),
+        'conv2.bias': torch.zeros(1),
+    }
+    path = tmp_path / 'model.pth'
+    torch.save(state, path)
+    np.savez(
+        tmp_path / 'model_norm.npz',
+        x_mean=np.zeros(1),
+        x_std=np.ones(1),
+        y_mean=np.zeros(1),
+        y_std=np.ones(1),
+        edge_mean=np.array([1.0, 2.0]),
+        edge_std=np.array([3.0, 4.0]),
+    )
+    model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
+    assert torch.allclose(model.edge_mean.cpu(), torch.tensor([1.0, 2.0]))
+    assert torch.allclose(model.edge_std.cpu(), torch.tensor([3.0, 4.0]))
+
+
 def test_load_surrogate_gatconv_edge_dim(tmp_path):
     from torch_geometric.nn import GATConv
 
@@ -140,6 +163,7 @@ def test_load_surrogate_gatconv_hidden_dim(tmp_path):
     torch.save(state, path)
 
     model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
+
     norm = model.encoder.norms[0]
     shape = getattr(norm, 'normalized_shape', None)
     dim = shape[0] if shape is not None else norm.in_channels

@@ -189,3 +189,50 @@ def test_validate_surrogate_edge_dim_check():
             torch.tensor(edge_types, dtype=torch.long),
         )
 
+
+def test_validate_surrogate_normalizes_edge_attr():
+    device = torch.device('cpu')
+    (
+        wn,
+        node_to_index,
+        pump_names,
+        edge_index,
+        edge_attr,
+        node_types,
+        edge_types,
+    ) = load_network('CTown.inp', return_edge_attr=True)
+    wn.options.time.duration = 2 * 3600
+    wn.options.time.hydraulic_timestep = 3600
+    wn.options.time.quality_timestep = 3600
+    wn.options.time.report_timestep = 3600
+    sim = wntr.sim.EpanetSimulator(wn)
+    res = sim.run_sim(str(TEMP_DIR / 'temp_edge_norm'))
+
+    class EdgeNormModel(DummyModel):
+        def __init__(self):
+            super().__init__()
+            self.edge_dim = edge_attr.size(1)
+            self.edge_mean = torch.full((self.edge_dim,), 2.0)
+            self.edge_std = torch.full((self.edge_dim,), 3.0)
+            self.seen = None
+
+        def forward(self, x, edge_index, edge_attr=None, node_types=None, edge_types=None):
+            self.seen = edge_attr
+            return super().forward(x, edge_index, edge_attr, node_types, edge_types)
+
+    model = EdgeNormModel().to(device)
+    validate_surrogate(
+        model,
+        edge_index,
+        edge_attr,
+        wn,
+        [res],
+        device,
+        'edge_norm',
+        torch.tensor(node_types, dtype=torch.long),
+        torch.tensor(edge_types, dtype=torch.long),
+    )
+    expected = (edge_attr.to(device) - model.edge_mean) / model.edge_std
+    assert model.seen is not None
+    assert torch.allclose(model.seen, expected)
+

@@ -12,6 +12,10 @@ from functools import partial
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
 
+# Minimum allowed pressure [m].  Values below this threshold are clipped
+# in both data generation and validation to keep preprocessing consistent.
+MIN_PRESSURE = 5.0
+
 # Resolve repository paths so all files are created inside the repo
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
@@ -362,10 +366,10 @@ def build_sequence_dataset(
 
     for sim_results, _scale_dict, pump_ctrl in results:
         scenario_types.append(getattr(sim_results, "scenario_type", "normal"))
-        # Clamp to avoid negative pressures but keep the full range otherwise
-        # Older versions limited pressures to [5, 80] m which could hide
-        # extreme values.  Drop the upper bound and only enforce non-negativity.
-        pressures = sim_results.node["pressure"].clip(lower=0.0)
+        # Clamp to avoid unrealistically low pressures while keeping the full
+        # range otherwise.  Enforce a 5 m lower bound to match downstream
+        # validation logic.
+        pressures = sim_results.node["pressure"].clip(lower=MIN_PRESSURE)
         quality_df = sim_results.node["quality"].clip(lower=0.0, upper=4.0)
         param = str(wn_template.options.quality.parameter).upper()
         if "CHEMICAL" in param or "CHLORINE" in param:
@@ -427,7 +431,7 @@ def build_sequence_dataset(
                 idx = pressures.columns.get_loc(node)
                 p_next = float(pressures.iat[t + 1, idx])
                 c_next = float(quality.iat[t + 1, idx])
-                out_nodes.append([max(p_next, 0.0), max(c_next, 0.0)])
+                out_nodes.append([max(p_next, MIN_PRESSURE), max(c_next, 0.0)])
             node_out_seq.append(np.array(out_nodes, dtype=np.float64))
 
             edge_out_seq.append(flows_arr[t + 1].astype(np.float64))
@@ -465,9 +469,9 @@ def build_dataset(
     pumps = wn_template.pump_name_list
 
     for sim_results, _scale_dict, pump_ctrl in results:
-        # Drop the previous [5, 80] m clamp in favour of only enforcing
-        # non-negative pressures
-        pressures = sim_results.node["pressure"].clip(lower=0.0)
+        # Enforce a 5 m lower bound while keeping the upper range unrestricted
+        # to capture extreme pressure values.
+        pressures = sim_results.node["pressure"].clip(lower=MIN_PRESSURE)
         quality_df = sim_results.node["quality"].clip(lower=0.0, upper=4.0)
         param = str(wn_template.options.quality.parameter).upper()
         if "CHEMICAL" in param or "CHLORINE" in param:
@@ -494,7 +498,7 @@ def build_dataset(
                     # Use the reservoir's constant head as the pressure input
                     p_t = float(wn_template.get_node(node).base_head)
                 else:
-                    p_t = max(pressures.iat[i, idx], 0.0)
+                    p_t = max(pressures.iat[i, idx], MIN_PRESSURE)
                 c_t = max(quality.iat[i, idx], 0.0)
                 if demands is not None and node in wn_template.junction_name_list:
                     d_t = demands.iat[i, idx]
@@ -519,7 +523,7 @@ def build_dataset(
             out_nodes = []
             for node in wn_template.node_name_list:
                 idx = pressures.columns.get_loc(node)
-                p_next = max(pressures.iat[i + 1, idx], 0.0)
+                p_next = max(pressures.iat[i + 1, idx], MIN_PRESSURE)
                 c_next = max(quality.iat[i + 1, idx], 0.0)
                 out_nodes.append([p_next, c_next])
             Y_list.append({
