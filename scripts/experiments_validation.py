@@ -184,7 +184,7 @@ def _prepare_features(
 
         feats[idx, 0] = float(demand)
         feats[idx, 1] = pressures.get(name, 0.0)
-        feats[idx, 2] = chlorine.get(name, 0.0)
+        feats[idx, 2] = np.log1p(chlorine.get(name, 0.0) / 1000.0)
         feats[idx, 3] = float(elev)
         feats[idx, 4:] = pump_t
     return feats
