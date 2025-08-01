@@ -140,4 +140,7 @@ def test_load_surrogate_gatconv_hidden_dim(tmp_path):
     torch.save(state, path)
 
     model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
-    assert model.encoder.norms[0].normalized_shape[0] == hidden
+    norm = model.encoder.norms[0]
+    shape = getattr(norm, 'normalized_shape', None)
+    dim = shape[0] if shape is not None else norm.in_channels
+    assert dim == hidden
