@@ -418,7 +418,10 @@ def build_sequence_dataset(
                     elev = wn_template.get_node(node).base_head
                 else:
                     n = wn_template.get_node(node)
-                    elev = getattr(n, "elevation", None) or getattr(n, "base_head", 0.0)
+                    if getattr(n, "elevation", None) is not None:
+                        elev = n.elevation
+                    else:
+                        elev = getattr(n, "base_head", 0.0)
                 if elev is None:
                     elev = 0.0
                 feat = [d_t, p_t, c_t, elev]
@@ -511,7 +514,10 @@ def build_dataset(
                     elev = wn_template.get_node(node).base_head
                 else:
                     n = wn_template.get_node(node)
-                    elev = getattr(n, "elevation", None) or getattr(n, "base_head", 0.0)
+                    if getattr(n, "elevation", None) is not None:
+                        elev = n.elevation
+                    else:
+                        elev = getattr(n, "base_head", 0.0)
                 if elev is None:
                     elev = 0.0
 
