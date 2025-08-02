@@ -759,8 +759,15 @@ def compute_mpc_cost(
             energy_term = torch.tensor(0.0, device=device)
             eff = wn.options.energy.global_efficiency / 100.0
             for idx, s_idx, e_idx in pump_info:
-                f = flows[idx]
-                hl = head[e_idx] - head[s_idx]
+                raw_f = flows[idx]
+                raw_hl = head[e_idx] - head[s_idx]
+                if raw_f.item() < 0 or raw_hl.item() < 0:
+                    warnings.warn(
+                        "Negative headloss or flow predicted; clamping.",
+                        RuntimeWarning,
+                    )
+                f = torch.abs(raw_f)
+                hl = torch.clamp(raw_hl, min=0.0)
                 e = 1000.0 * 9.81 * hl * f / eff * 3600.0
                 energy_term = energy_term + e
                 if t == 0 and return_energy:
