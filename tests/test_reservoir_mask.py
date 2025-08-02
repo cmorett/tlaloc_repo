@@ -52,7 +52,6 @@ def test_reservoir_node_excluded_from_loss():
         pred["node_outputs"][:, :, mask, :],
         Y_seq["node_outputs"].unsqueeze(0)[:, :, mask, :],
     ).item()
-
     loss_tuple = train_sequence(
         model,
         loader,
@@ -67,6 +66,7 @@ def test_reservoir_node_excluded_from_loss():
         physics_loss=False,
         pressure_loss=False,
         node_mask=mask,
+        loss_fn="mse",
     )
     assert abs(loss_tuple[1] - expected) < 1e-6
 
