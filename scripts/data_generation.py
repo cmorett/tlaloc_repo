@@ -72,9 +72,12 @@ def _build_randomized_network(
 ) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Create a network with randomized demand patterns and pump controls.
 
-    Pipe roughness values are kept at their defaults. If ``event_type`` is not
-    ``None`` an extreme scenario such as ``fire_flow`` or ``pump_failure`` is
-    injected after the randomized controls are created.
+    Pipe roughness values are kept at their defaults. Pump speeds are sampled
+    from ``{0.0, 0.5, 1.0}`` and evolve through a simple Markov process where
+    changes occur with low probability and on/off transitions respect a minimum
+    dwell time. If ``event_type`` is not ``None`` an extreme scenario such as
+    ``fire_flow`` or ``pump_failure`` is injected after the randomized controls
+    are created.
     """
 
     wn = wntr.network.WaterNetworkModel(inp_file)
@@ -120,16 +123,72 @@ def _build_randomized_network(
 
     pump_controls: Dict[str, List[float]] = {pn: [] for pn in wn.pump_name_list}
 
-    for _h in range(hours):
-        for pn in wn.pump_name_list:
-            spd = random.uniform(0.0, 1.0)
-            if random.random() < 0.3:
-                spd = 0.0
-            pump_controls[pn].append(spd)
+    # Pump speeds follow a discrete Markov process.  Each pump starts from a
+    # speed in ``{0.0, 0.5, 1.0}`` and can change with low probability while
+    # respecting a minimum dwell time between on/off transitions to avoid rapid
+    # cycling.
+    speed_levels = [0.0, 0.5, 1.0]
+    change_prob = 0.2
+    min_dwell = 2  # minimum hours before switching on/off
 
+    current_speed: Dict[str, float] = {}
+    dwell_time: Dict[str, int] = {}
+    is_on: Dict[str, bool] = {}
+
+    # Initialize pump speeds
+    for pn in wn.pump_name_list:
+        spd = random.choice(speed_levels)
+        current_speed[pn] = spd
+        pump_controls[pn].append(spd)
+        is_on[pn] = spd > 0.0
+        dwell_time[pn] = 1
+
+    # Ensure at least one pump is on at the start
+    if all(spd == 0.0 for spd in current_speed.values()):
+        keep_on = random.choice(wn.pump_name_list)
+        forced = random.choice([s for s in speed_levels if s > 0.0])
+        current_speed[keep_on] = forced
+        pump_controls[keep_on][0] = forced
+        is_on[keep_on] = True
+        dwell_time[keep_on] = 1
+
+    # Generate schedule for remaining hours
+    for _h in range(1, hours):
+        for pn in wn.pump_name_list:
+            spd = current_speed[pn]
+            next_spd = spd
+            if random.random() < change_prob:
+                if dwell_time[pn] >= min_dwell:
+                    candidates = [s for s in speed_levels if s != spd]
+                    next_spd = random.choice(candidates)
+                else:
+                    same_state = [
+                        s for s in speed_levels if (s > 0.0) == is_on[pn] and s != spd
+                    ]
+                    if same_state:
+                        next_spd = random.choice(same_state)
+            pump_controls[pn].append(next_spd)
+            current_speed[pn] = next_spd
+            if (next_spd > 0.0) == is_on[pn]:
+                dwell_time[pn] += 1
+            else:
+                is_on[pn] = next_spd > 0.0
+                dwell_time[pn] = 1
+
+        # Safeguard to keep at least one pump running
         if all(pump_controls[pn][-1] == 0.0 for pn in wn.pump_name_list):
-            keep_on = random.choice(wn.pump_name_list)
-            pump_controls[keep_on][-1] = random.uniform(0.5, 1.0)
+            candidates = [pn for pn in wn.pump_name_list if dwell_time[pn] >= min_dwell]
+            if not candidates:
+                candidates = list(wn.pump_name_list)
+            keep_on = random.choice(candidates)
+            forced = random.choice([s for s in speed_levels if s > 0.0])
+            pump_controls[keep_on][-1] = forced
+            current_speed[keep_on] = forced
+            if not is_on[keep_on]:
+                is_on[keep_on] = True
+                dwell_time[keep_on] = 1
+            else:
+                dwell_time[keep_on] += 1
 
     for pn in wn.pump_name_list:
         link = wn.get_link(pn)

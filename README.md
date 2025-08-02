@@ -202,7 +202,11 @@ Chlorine decay is enabled in the example network via a global bulk reaction
 coefficient of ``-0.05`` 1/h which EPANET applies during water quality
 simulations.
 Pipe roughness coefficients are left unchanged; only demand multipliers and
-pump schedules vary between scenarios.
+pump schedules vary between scenarios. Pump speeds are sampled from the
+discrete set ``{0.0, 0.5, 1.0}`` and evolve according to a low-probability
+Markov process (≈20% chance of change per hour). On/off transitions require
+at least two hours of dwell time to avoid rapid cycling, and at least one
+pump remains active at any given hour.
 
 After scenario generation finishes a plot ``dataset_distributions_<timestamp>.png``
 is created under ``plots/`` summarising the sampled demand multipliers and pump
