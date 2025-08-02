@@ -1494,7 +1494,7 @@ def train_sequence(
             Y_seq = Y_seq.to(device)
             loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
             with autocast(device_type=device.type, enabled=amp):
-            loss = _apply_loss(preds, Y_seq.float(), loss_fn)
+                loss = _apply_loss(preds, Y_seq.float(), loss_fn)
         if amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
