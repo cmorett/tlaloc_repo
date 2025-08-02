@@ -1231,7 +1231,28 @@ class NeighborSampleDataset(Dataset):
         return data
 
 
-def train(model, loader, optimizer, device, check_negative=True, amp=False):
+def _apply_loss(pred: torch.Tensor, target: torch.Tensor, loss_fn: str) -> torch.Tensor:
+    """Return loss between ``pred`` and ``target`` using selected objective."""
+
+    if loss_fn == "mse":
+        return F.mse_loss(pred, target)
+    if loss_fn == "mae":
+        return F.l1_loss(pred, target)
+    if loss_fn == "huber":
+        return F.smooth_l1_loss(pred, target, beta=1.0)
+    raise ValueError(f"Unknown loss function: {loss_fn}")
+
+
+def train(
+    model,
+    loader,
+    optimizer,
+    device,
+    check_negative: bool = True,
+    amp: bool = False,
+    loss_fn: str = "mae",
+    node_mask: Optional[torch.Tensor] = None,
+):
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = 0
@@ -1250,7 +1271,13 @@ def train(model, loader, optimizer, device, check_negative=True, amp=False):
                 getattr(batch, "node_type", None),
                 getattr(batch, "edge_type", None),
             )
-            loss = F.mse_loss(out, batch.y.float())
+            target = batch.y.float()
+            if node_mask is not None:
+                repeat = out.size(0) // node_mask.numel()
+                mask = node_mask.repeat(repeat)
+                out = out[mask]
+                target = target[mask]
+            loss = _apply_loss(out, target, loss_fn)
         if amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -1268,7 +1295,14 @@ def train(model, loader, optimizer, device, check_negative=True, amp=False):
     return total_loss / len(loader.dataset)
 
 
-def evaluate(model, loader, device, amp=False):
+def evaluate(
+    model,
+    loader,
+    device,
+    amp: bool = False,
+    loss_fn: str = "mae",
+    node_mask: Optional[torch.Tensor] = None,
+):
     global interrupted
     model.eval()
     total_loss = 0
@@ -1292,7 +1326,13 @@ def evaluate(model, loader, device, amp=False):
                     getattr(batch, "node_type", None),
                     getattr(batch, "edge_type", None),
                 )
-                loss = F.mse_loss(out, batch.y.float())
+                target = batch.y.float()
+                if node_mask is not None:
+                    repeat = out.size(0) // node_mask.numel()
+                    mask = node_mask.repeat(repeat)
+                    out = out[mask]
+                    target = target[mask]
+                loss = _apply_loss(out, target, loss_fn)
             total_loss += loss.item() * batch.num_graphs
             if interrupted:
                 break
@@ -1310,6 +1350,7 @@ def train_sequence(
     edge_pairs: list[tuple[int, int]],
     optimizer,
     device,
+    loss_fn: str = "mae",
     physics_loss: bool = False,
     pressure_loss: bool = False,
     node_mask: Optional[torch.Tensor] = None,
@@ -1373,10 +1414,10 @@ def train_sequence(
             if node_mask is not None:
                 pred_nodes = pred_nodes[:, :, node_mask, :]
                 target_nodes = target_nodes[:, :, node_mask, :]
-            loss_node = F.mse_loss(pred_nodes, target_nodes.float())
+            loss_node = _apply_loss(pred_nodes, target_nodes.float(), loss_fn)
             edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
             edge_preds = preds['edge_outputs'].float()
-            loss_edge = F.mse_loss(edge_preds, edge_target.float())
+            loss_edge = _apply_loss(edge_preds, edge_target.float(), loss_fn)
             if physics_loss:
                 flows_mb = (
                     edge_preds.squeeze(-1)
@@ -1453,7 +1494,7 @@ def train_sequence(
             Y_seq = Y_seq.to(device)
             loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
             with autocast(device_type=device.type, enabled=amp):
-                loss = F.mse_loss(preds, Y_seq.float())
+            loss = _apply_loss(preds, Y_seq.float(), loss_fn)
         if amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -1493,6 +1534,7 @@ def evaluate_sequence(
     edge_type: Optional[torch.Tensor],
     edge_pairs: list[tuple[int, int]],
     device,
+    loss_fn: str = "mae",
     physics_loss: bool = False,
     pressure_loss: bool = False,
     node_mask: Optional[torch.Tensor] = None,
@@ -1544,10 +1586,10 @@ def evaluate_sequence(
                     if node_mask is not None:
                         pred_nodes = pred_nodes[:, :, node_mask, :]
                         target_nodes = target_nodes[:, :, node_mask, :]
-                    loss_node = F.mse_loss(pred_nodes, target_nodes.float())
+                    loss_node = _apply_loss(pred_nodes, target_nodes.float(), loss_fn)
                     edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
                     edge_preds = preds['edge_outputs'].float()
-                    loss_edge = F.mse_loss(edge_preds, edge_target.float())
+                    loss_edge = _apply_loss(edge_preds, edge_target.float(), loss_fn)
                     if physics_loss:
                         flows_mb = (
                             edge_preds.squeeze(-1)
@@ -1623,7 +1665,7 @@ def evaluate_sequence(
                 else:
                     Y_seq = Y_seq.to(device)
                     loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
-                    loss = F.mse_loss(preds, Y_seq.float())
+                    loss = _apply_loss(preds, Y_seq.float(), loss_fn)
             total_loss += loss.item() * X_seq.size(0)
             node_total += loss_node.item() * X_seq.size(0)
             edge_total += loss_edge.item() * X_seq.size(0)
@@ -2016,6 +2058,7 @@ def main(args: argparse.Namespace):
                     edge_pairs,
                     optimizer,
                     device,
+                    loss_fn=args.loss_fn,
                     physics_loss=args.physics_loss,
                     pressure_loss=args.pressure_loss,
                     node_mask=loss_mask,
@@ -2041,6 +2084,7 @@ def main(args: argparse.Namespace):
                         data_ds.edge_type,
                         edge_pairs,
                         device,
+                        loss_fn=args.loss_fn,
                         physics_loss=args.physics_loss,
                         pressure_loss=args.pressure_loss,
                         node_mask=loss_mask,
@@ -2060,9 +2104,18 @@ def main(args: argparse.Namespace):
                     device,
                     check_negative=not args.normalize,
                     amp=args.amp,
+                    loss_fn=args.loss_fn,
+                    node_mask=loss_mask,
                 )
                 if val_loader is not None and not interrupted:
-                    val_loss = evaluate(model, val_loader, device, amp=args.amp)
+                    val_loss = evaluate(
+                        model,
+                        val_loader,
+                        device,
+                        amp=args.amp,
+                        loss_fn=args.loss_fn,
+                        node_mask=loss_mask,
+                    )
                 else:
                     val_loss = loss
             scheduler.step(val_loss)
@@ -2410,6 +2463,12 @@ if __name__ == "__main__":
         type=float,
         default=1e-5,
         help="L2 regularization factor for optimizer",
+    )
+    parser.add_argument(
+        "--loss-fn",
+        choices=["mse", "mae", "huber"],
+        default="mae",
+        help="Loss function for training: mean squared error (mse), mean absolute error (mae), or Huber loss (huber).",
     )
     parser.add_argument(
         "--log-every",

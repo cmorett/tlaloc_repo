@@ -75,7 +75,9 @@ Edge attributes describing pipe length, diameter and roughness are stored in
 ``edge_attr.npy`` by ``scripts/data_generation.py``. ``train_gnn.py`` loads this
 file by default via ``--edge-attr-path``.
 
-Training performs node-wise regression with mean squared error.  The script
+Training performs node-wise regression and by default optimizes the mean
+absolute error (MAE).  Specify ``--loss-fn`` to switch between MAE (``mae``),
+mean squared error (``mse``) or Huber loss (``huber``).  The script
 automatically checks that the provided features include pump control inputs by
 loading the EPANET network (``--inp-path``).  If the dimension does not match
 ``4 + num_pumps`` an error is raised. Use ``--output-dim`` to specify how many
@@ -116,6 +118,8 @@ python scripts/train_gnn.py \
     --dropout 0.1 --residual --early-stop-patience 10 \
     --weight-decay 1e-5
 ```
+Add ``--loss-fn huber`` to the command above to train with Huber loss or
+``--loss-fn mse`` to minimize mean squared error instead.
 Pressure–headloss consistency is now enforced by default with a weight of ``0.25``.
 Pass ``--no-pressure-loss`` if this coupling should be disabled.  To remove the
 mass balance penalty (still weighted ``1.0`` by default) use ``--no-physics-loss``.
