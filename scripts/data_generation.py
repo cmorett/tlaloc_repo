@@ -432,7 +432,10 @@ def build_sequence_dataset(
             out_nodes = []
             for node in wn_template.node_name_list:
                 idx = pressures.columns.get_loc(node)
-                p_next = float(pressures.iat[t + 1, idx])
+                if node in wn_template.reservoir_name_list:
+                    p_next = float(wn_template.get_node(node).base_head)
+                else:
+                    p_next = float(pressures.iat[t + 1, idx])
                 c_next = float(quality.iat[t + 1, idx])
                 out_nodes.append([max(p_next, MIN_PRESSURE), max(c_next, 0.0)])
             node_out_seq.append(np.array(out_nodes, dtype=np.float64))
@@ -529,7 +532,10 @@ def build_dataset(
             out_nodes = []
             for node in wn_template.node_name_list:
                 idx = pressures.columns.get_loc(node)
-                p_next = max(pressures.iat[i + 1, idx], MIN_PRESSURE)
+                if node in wn_template.reservoir_name_list:
+                    p_next = float(wn_template.get_node(node).base_head)
+                else:
+                    p_next = max(pressures.iat[i + 1, idx], MIN_PRESSURE)
                 c_next = max(quality.iat[i + 1, idx], 0.0)
                 out_nodes.append([p_next, c_next])
             Y_list.append({
