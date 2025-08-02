@@ -1116,6 +1116,11 @@ def simulate_closed_loop(
     c_arr = results.node["quality"].iloc[0].to_numpy(dtype=np.float32)
     pressures = dict(zip(wn.node_name_list, p_arr))
     chlorine = dict(zip(wn.node_name_list, c_arr))
+    for res_name in wn.reservoir_name_list:
+        idx = node_idx[res_name]
+        head = wn.get_node(res_name).base_head
+        p_arr[idx] = head
+        pressures[res_name] = head
     # Keep state tensors on GPU to avoid repeated host transfers
     cur_p = (
         torch.from_numpy(p_arr)
@@ -1199,6 +1204,11 @@ def simulate_closed_loop(
             c_arr = results.node["quality"].iloc[-1].to_numpy(dtype=np.float32)
             pressures = dict(zip(wn.node_name_list, p_arr))
             chlorine = dict(zip(wn.node_name_list, c_arr))
+            for res_name in wn.reservoir_name_list:
+                idx = node_idx[res_name]
+                head = wn.get_node(res_name).base_head
+                p_arr[idx] = head
+                pressures[res_name] = head
             # Using non_blocking transfer for EPANET output
             cur_p = (
                 torch.from_numpy(p_arr)

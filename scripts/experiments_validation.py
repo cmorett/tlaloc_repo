@@ -185,7 +185,11 @@ def _prepare_features(
             elev = 0.0
 
         feats[idx, 0] = float(demand)
-        feats[idx, 1] = pressures.get(name, 0.0)
+        if name in wn.reservoir_name_list:
+            p_val = float(node.base_head)
+        else:
+            p_val = pressures.get(name, 0.0)
+        feats[idx, 1] = p_val
         feats[idx, 2] = np.log1p(chlorine.get(name, 0.0) / 1000.0)
         feats[idx, 3] = float(elev)
         feats[idx, 4:] = pump_t
@@ -316,6 +320,9 @@ def validate_surrogate(
                 pred_p = node_pred[:, 0].cpu().numpy()
                 pred_c = node_pred[:, 1].cpu().numpy()
                 y_true_p = pressures_df.iloc[i + 1].to_numpy()
+                for j, name in enumerate(wn.node_name_list):
+                    if name in wn.reservoir_name_list:
+                        y_true_p[j] = wn.get_node(name).base_head
                 y_true_c = chlorine_df.iloc[i + 1].to_numpy()
                 # chlorine predictions were trained in log space so convert
                 # predictions back to mg/L before computing errors

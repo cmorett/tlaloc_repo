@@ -18,4 +18,6 @@ def test_reservoir_pressure_equals_head():
     idx = wn.node_name_list.index(res_name)
     head = wn.get_node(res_name).base_head
     assert np.allclose(X[:, idx, 1], head)
+    y_press = np.array([y["node_outputs"][idx, 0] for y in Y])
+    assert np.allclose(y_press, head)
 
