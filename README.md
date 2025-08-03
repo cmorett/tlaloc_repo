@@ -73,7 +73,9 @@ accordingly. When using the matrix format, supply the path to the shared
 ``edge_index`` file via ``--edge-index-path`` (defaults to ``data/edge_index.npy``).
 Edge attributes describing pipe length, diameter and roughness are stored in
 ``edge_attr.npy`` by ``scripts/data_generation.py``. ``train_gnn.py`` loads this
-file by default via ``--edge-attr-path``.
+file by default via ``--edge-attr-path``. Pump curve coefficients are saved as
+``pump_coeffs.npy`` and included in a dedicated pump curve loss during training
+(``--pump-loss``) with weight ``--w_pump``.
 
 Training performs node-wise regression and by default optimizes the mean
 absolute error (MAE).  Specify ``--loss-fn`` to switch between MAE (``mae``),
@@ -185,8 +187,8 @@ python scripts/data_generation.py \
     --num-scenarios 2000 --output-dir data/ --seed 42 \
     --extreme-event-prob 0.2
 ```
-The generation step writes ``edge_index.npy``, ``edge_attr.npy`` and
-``edge_type.npy`` alongside the feature and label arrays. It utilizes all available CPU cores by default. The value
+The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.npy`` and
+``pump_coeffs.npy`` alongside the feature and label arrays. It utilizes all available CPU cores by default. The value
 ``2000`` matches the new default of ``--num-scenarios``. Use
 ``--num-workers`` to override the number of parallel workers if needed.
 If a particular random configuration causes EPANET to fail to produce results,

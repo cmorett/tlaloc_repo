@@ -30,6 +30,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `test_extreme_events.py`
   - `test_flow_denorm.py`
   - `test_headloss_loss.py`
+  - `test_pump_curve_loss.py`
   - `test_hydroconv.py`
   - `test_interrupt_dataloader.py`
   - `test_interrupt_handler.py`
