@@ -72,12 +72,13 @@ def _build_randomized_network(
 ) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Create a network with randomized demand patterns and pump controls.
 
-    Pipe roughness values are kept at their defaults. Pump speeds are sampled
-    from ``{0.0, 0.5, 1.0}`` and evolve through a simple Markov process where
-    changes occur with low probability and on/off transitions respect a minimum
-    dwell time. If ``event_type`` is not ``None`` an extreme scenario such as
-    ``fire_flow`` or ``pump_failure`` is injected after the randomized controls
-    are created.
+    Pipe roughness values are kept at their defaults. Pump speeds evolve
+    continuously: each pump begins from a random speed in ``[0.3, 0.9]`` and is
+    perturbed by small, temporally correlated Gaussian noise (a truncated
+    random walk).  A short dwell time around zero prevents unrealistic rapid
+    cycling and at least one pump remains active every hour.  If
+    ``event_type`` is not ``None`` an extreme scenario such as ``fire_flow`` or
+    ``pump_failure`` is injected after the randomized controls are created.
     """
 
     wn = wntr.network.WaterNetworkModel(inp_file)
@@ -123,72 +124,54 @@ def _build_randomized_network(
 
     pump_controls: Dict[str, List[float]] = {pn: [] for pn in wn.pump_name_list}
 
-    # Pump speeds follow a discrete Markov process.  Each pump starts from a
-    # speed in ``{0.0, 0.5, 1.0}`` and can change with low probability while
-    # respecting a minimum dwell time between on/off transitions to avoid rapid
-    # cycling.
-    speed_levels = [0.0, 0.5, 1.0]
-    change_prob = 0.2
-    min_dwell = 2  # minimum hours before switching on/off
+    # Pump speeds now follow a continuous, temporally correlated process. Each
+    # pump starts from a random speed in ``[0.3, 0.9]`` and evolves through a
+    # truncated Gaussian random walk that limits hourly changes.  The ``is_on``
+    # state is tracked with a small dwell time to avoid unrealistic rapid
+    # cycling near zero.
+    max_step = 0.1  # maximum absolute change per hour
+    min_dwell = 2   # minimum hours before switching on/off
 
     current_speed: Dict[str, float] = {}
     dwell_time: Dict[str, int] = {}
     is_on: Dict[str, bool] = {}
 
-    # Initialize pump speeds
     for pn in wn.pump_name_list:
-        spd = random.choice(speed_levels)
+        spd = random.uniform(0.3, 0.9)
         current_speed[pn] = spd
         pump_controls[pn].append(spd)
-        is_on[pn] = spd > 0.0
+        is_on[pn] = spd > 0.05
         dwell_time[pn] = 1
 
-    # Ensure at least one pump is on at the start
-    if all(spd == 0.0 for spd in current_speed.values()):
-        keep_on = random.choice(wn.pump_name_list)
-        forced = random.choice([s for s in speed_levels if s > 0.0])
-        current_speed[keep_on] = forced
-        pump_controls[keep_on][0] = forced
-        is_on[keep_on] = True
-        dwell_time[keep_on] = 1
-
-    # Generate schedule for remaining hours
+    # Generate schedule for remaining hours using a correlated random walk
     for _h in range(1, hours):
         for pn in wn.pump_name_list:
-            spd = current_speed[pn]
-            next_spd = spd
-            if random.random() < change_prob:
-                if dwell_time[pn] >= min_dwell:
-                    candidates = [s for s in speed_levels if s != spd]
-                    next_spd = random.choice(candidates)
-                else:
-                    same_state = [
-                        s for s in speed_levels if (s > 0.0) == is_on[pn] and s != spd
-                    ]
-                    if same_state:
-                        next_spd = random.choice(same_state)
-            pump_controls[pn].append(next_spd)
-            current_speed[pn] = next_spd
-            if (next_spd > 0.0) == is_on[pn]:
+            prev = current_speed[pn]
+            step = random.gauss(0.0, 0.05)
+            step = float(np.clip(step, -max_step, max_step))
+            cand = prev + step
+            # Enforce dwell time around the on/off threshold of 0.05
+            if is_on[pn] and cand <= 0.05 and dwell_time[pn] < min_dwell:
+                cand = max(cand, 0.1)
+            if not is_on[pn] and cand > 0.05 and dwell_time[pn] < min_dwell:
+                cand = min(cand, 0.05)
+            cand = float(np.clip(cand, 0.0, 1.0))
+            pump_controls[pn].append(cand)
+            current_speed[pn] = cand
+            if (cand > 0.05) == is_on[pn]:
                 dwell_time[pn] += 1
             else:
-                is_on[pn] = next_spd > 0.0
+                is_on[pn] = cand > 0.05
                 dwell_time[pn] = 1
 
         # Safeguard to keep at least one pump running
-        if all(pump_controls[pn][-1] == 0.0 for pn in wn.pump_name_list):
-            candidates = [pn for pn in wn.pump_name_list if dwell_time[pn] >= min_dwell]
-            if not candidates:
-                candidates = list(wn.pump_name_list)
-            keep_on = random.choice(candidates)
-            forced = random.choice([s for s in speed_levels if s > 0.0])
+        if all(pump_controls[pn][-1] <= 0.05 for pn in wn.pump_name_list):
+            keep_on = random.choice(wn.pump_name_list)
+            forced = random.uniform(0.3, 0.9)
             pump_controls[keep_on][-1] = forced
             current_speed[keep_on] = forced
-            if not is_on[keep_on]:
-                is_on[keep_on] = True
-                dwell_time[keep_on] = 1
-            else:
-                dwell_time[keep_on] += 1
+            is_on[keep_on] = True
+            dwell_time[keep_on] = 1
 
     for pn in wn.pump_name_list:
         link = wn.get_link(pn)
