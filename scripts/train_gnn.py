@@ -18,7 +18,7 @@ from torch_geometric.nn import GCNConv, MessagePassing, GATConv, LayerNorm
 from torch_geometric.utils import subgraph, k_hop_subgraph
 import wntr
 import matplotlib.pyplot as plt
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 from typing import Optional, Sequence
 import networkx as nx
 from tqdm.auto import tqdm
@@ -1176,9 +1176,22 @@ def _signal_handler(signum, frame):
     print("Received interrupt signal. Stopping after current epoch...")
 
 
-def handle_keyboard_interrupt(model_path: str) -> None:
-    """Notify user that training was interrupted."""
-    print(f"Training interrupted. Using best weights saved to {model_path}")
+def handle_keyboard_interrupt(
+    model_path: str,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: _LRScheduler,
+    epoch: int,
+) -> None:
+    """Save final checkpoint when training is interrupted."""
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "epoch": epoch,
+    }
+    torch.save(checkpoint, model_path)
+    print(f"Training interrupted. Saved checkpoint to {model_path}")
 
 
 def partition_graph_greedy(edge_index: np.ndarray, num_nodes: int, cluster_size: int) -> list[np.ndarray]:
@@ -2124,13 +2137,30 @@ def main(args: argparse.Namespace):
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=6)
 
     # prepare logging
-    run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
-    base, ext = os.path.splitext(args.output)
-    model_path = f"{base}_{run_name}{ext}"
-    norm_path = f"{base}_{run_name}_norm.npz"
-    log_path = os.path.join(DATA_DIR, f"training_{run_name}.log")
+    if args.resume:
+        model_path = args.resume
+        base_resume, _ = os.path.splitext(args.resume)
+        run_name = Path(base_resume).name
+        norm_path = f"{base_resume}_norm.npz"
+        log_path = os.path.join(DATA_DIR, f"training_{run_name}.log")
+    else:
+        run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
+        base, ext = os.path.splitext(args.output)
+        model_path = f"{base}_{run_name}{ext}"
+        norm_path = f"{base}_{run_name}_norm.npz"
+        log_path = os.path.join(DATA_DIR, f"training_{run_name}.log")
     losses = []
     loss_components = [] if seq_mode else None
+
+    start_epoch = 0
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        start_epoch = checkpoint.get("epoch", 0) + 1
+
+    epoch = start_epoch
     with open(log_path, "w") as f:
         f.write(f"timestamp: {datetime.now().isoformat()}\n")
         f.write(f"args: {vars(args)}\n")
@@ -2139,7 +2169,7 @@ def main(args: argparse.Namespace):
         f.write("epoch,train_loss,val_loss,lr\n")
         best_val = float("inf")
         patience = 0
-        for epoch in range(args.epochs):
+        for epoch in range(start_epoch, args.epochs):
             if seq_mode:
                 loss_tuple = train_sequence(
                     model,
@@ -2242,7 +2272,15 @@ def main(args: argparse.Namespace):
                 best_val = val_loss
                 patience = 0
                 os.makedirs(os.path.dirname(model_path), exist_ok=True)
-                torch.save(model.state_dict(), model_path)
+                torch.save(
+                    {
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "epoch": epoch,
+                    },
+                    model_path,
+                )
                 if x_mean is not None:
                     if isinstance(y_mean, dict):
                         np.savez(
@@ -2273,7 +2311,7 @@ def main(args: argparse.Namespace):
             if patience >= args.early_stop_patience:
                 break
         if interrupted:
-            handle_keyboard_interrupt(model_path)
+            handle_keyboard_interrupt(model_path, model, optimizer, scheduler, epoch)
 
     os.makedirs(PLOTS_DIR, exist_ok=True)
     # plot loss curve
@@ -2708,6 +2746,11 @@ if __name__ == "__main__":
         "--output",
         default=os.path.join(MODELS_DIR, "gnn_surrogate.pth"),
         help="Output model file base path",
+    )
+    parser.add_argument(
+        "--resume",
+        default="",
+        help="Checkpoint path to resume training from",
     )
     args = parser.parse_args()
     main(args)

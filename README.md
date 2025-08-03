@@ -121,6 +121,20 @@ python scripts/train_gnn.py \
     --dropout 0.1 --residual --early-stop-patience 10 \
     --weight-decay 1e-5
 ```
+If training is interrupted with ``Ctrl+C`` a final checkpoint containing the
+model, optimizer, scheduler state and epoch is saved so progress is not lost.
+To continue a previous run pass the checkpoint path via ``--resume``.  All
+standard arguments still need to be supplied:
+
+```bash
+python scripts/train_gnn.py \
+    --resume models/gnn_surrogate_20240101.pth \
+    --x-path data/X_train.npy --y-path data/Y_train.npy \
+    --edge-index-path data/edge_index.npy --edge-attr-path data/edge_attr.npy \
+    --inp-path CTown.inp --epochs 100 --batch-size 32
+```
+Training will continue from the stored epoch and future checkpoints are written
+back to the same file so the run can be resumed repeatedly.
 Add ``--loss-fn huber`` to the command above to train with Huber loss or
 ``--loss-fn mse`` to minimize mean squared error instead.
 Pass ``--no-progress`` to disable the training progress bars or
