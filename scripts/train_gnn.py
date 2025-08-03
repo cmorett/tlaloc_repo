@@ -445,7 +445,8 @@ class MultiTaskGNNSurrogate(nn.Module):
                     else:
                         net.append((flows[:, t, edges] * signs).sum(dim=1))
                 net_flow = torch.stack(net, dim=1)
-                delta_vol = net_flow * 3600.0
+                # Net flow is in L/s; convert to m³ over one hour
+                delta_vol = net_flow * 3600.0 * 0.001
                 self.tank_levels += delta_vol
                 # Prevent negative volumes accumulating
                 self.tank_levels = self.tank_levels.clamp(min=0.0)
