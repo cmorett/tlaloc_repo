@@ -25,20 +25,18 @@ def test_at_least_one_pump_active_per_hour():
     res, scale, controls = _run_scenario()
     hours = len(next(iter(controls.values())))
     for h in range(hours):
-        assert any(controls[p][h] > 0 for p in controls)
+        assert any(controls[p][h] > 0.05 for p in controls)
 
 
-def test_pump_min_dwell_time():
+def test_pump_speeds_continuous_and_correlated():
     res, scale, controls = _run_scenario()
     for speeds in controls.values():
-        prev_state = speeds[0] > 0
-        dwell = 1
-        for spd in speeds[1:]:
-            state = spd > 0
-            if state != prev_state:
-                assert dwell >= 2
-                dwell = 1
-                prev_state = state
-            else:
-                dwell += 1
+        arr = np.array(speeds, dtype=float)
+        # Speeds span more than the discrete {0.0, 0.5, 1.0} set
+        assert len(np.unique(np.round(arr, 2))) > 3
+        # Adjacent hours should be positively correlated with limited jumps
+        if len(arr) > 1:
+            corr = np.corrcoef(arr[:-1], arr[1:])[0, 1]
+            assert corr > 0.3
+            assert np.max(np.abs(np.diff(arr))) < 0.25
 
