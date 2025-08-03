@@ -7,7 +7,7 @@ from scripts.mpc_control import compute_mpc_cost
 
 def test_negative_flow_headloss_clamped():
     wn = wntr.network.WaterNetworkModel('CTown.inp')
-    u = torch.zeros((1, 1))
+    speeds = torch.zeros((1, 1))
     edge_index = torch.tensor([[0], [1]], dtype=torch.long)
     edge_attr = torch.zeros((1, 3))
     node_types = torch.zeros(2, dtype=torch.long)
@@ -28,7 +28,7 @@ def test_negative_flow_headloss_clamped():
     pump_info = [(0, 0, 1)]
     with pytest.warns(RuntimeWarning):
         cost, energy = compute_mpc_cost(
-            u,
+            speeds,
             wn,
             model,
             edge_index,

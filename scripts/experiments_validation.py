@@ -268,7 +268,7 @@ def validate_surrogate(
             demand_df = res.node.get("demand")
             pump_df = res.link["setting"][wn.pump_name_list]
             times = pressures_df.index
-            pump_array = pump_df.values
+            pump_array = np.clip(pump_df.values, 0.0, 1.0)
             for i in range(len(times) - 1):
                 p = pressures_df.iloc[i].to_dict()
                 c = chlorine_df.iloc[i].to_dict()
