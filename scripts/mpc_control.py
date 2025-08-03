@@ -620,7 +620,7 @@ def prepare_node_features(
     template: torch.Tensor,
     pressures: torch.Tensor,
     chlorine: torch.Tensor,
-    pump_controls: torch.Tensor,
+    pump_speeds: torch.Tensor,
     model: GNNSurrogate,
     demands: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
@@ -633,8 +633,8 @@ def prepare_node_features(
         base demand stored in ``template`` is used.
     """
     num_nodes = template.size(0)
-    num_pumps = pump_controls.size(-1)
-    pump_controls = pump_controls.to(dtype=torch.float32, device=template.device)
+    num_pumps = pump_speeds.size(-1)
+    pump_speeds = pump_speeds.to(dtype=torch.float32, device=template.device)
 
     if pressures.dim() == 2:
         batch_size = pressures.size(0)
@@ -643,7 +643,7 @@ def prepare_node_features(
             feats[:, :, 0] = demands
         feats[:, :, 1] = pressures
         feats[:, :, 2] = torch.log1p(chlorine / 1000.0)
-        feats[:, :, 4 : 4 + num_pumps] = pump_controls.view(batch_size, 1, -1).expand(batch_size, num_nodes, num_pumps)
+        feats[:, :, 4 : 4 + num_pumps] = pump_speeds.view(batch_size, 1, -1).expand(batch_size, num_nodes, num_pumps)
         in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
         if in_dim is not None:
             feats = feats[:, :, :in_dim]
@@ -656,7 +656,7 @@ def prepare_node_features(
         feats[:, 0] = demands
     feats[:, 1] = pressures
     feats[:, 2] = torch.log1p(chlorine / 1000.0)
-    feats[:, 4 : 4 + num_pumps] = pump_controls.view(1, -1).expand(num_nodes, num_pumps)
+    feats[:, 4 : 4 + num_pumps] = pump_speeds.view(1, -1).expand(num_nodes, num_pumps)
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
     if in_dim is not None:
         feats = feats[:, :in_dim]
@@ -666,7 +666,7 @@ def prepare_node_features(
 
 
 def compute_mpc_cost(
-    u: torch.Tensor,
+    pump_speeds: torch.Tensor,
     wn: wntr.network.WaterNetworkModel,
     model: GNNSurrogate,
     edge_index: torch.Tensor,
@@ -685,7 +685,7 @@ def compute_mpc_cost(
     return_energy: bool = False,
     init_tank_levels: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-    """Return the MPC cost for a sequence of pump controls.
+    """Return the MPC cost for a sequence of pump speeds.
 
     The cost combines pressure and chlorine constraint violations, pump
     energy use and a smoothness term on control differences. ``demands`` can be
@@ -710,8 +710,8 @@ def compute_mpc_cost(
 
     for t in range(horizon):
         d = demands[t] if demands is not None else None
-        ctrl = torch.clamp(u[t], 0.0, 1.0)
-        x = prepare_node_features(feature_template, cur_p, cur_c, ctrl, model, d)
+        speed = torch.clamp(pump_speeds[t], 0.0, 1.0)
+        x = prepare_node_features(feature_template, cur_p, cur_c, speed, model, d)
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
             out = model(seq_in, edge_index, edge_attr, node_types, edge_types)
@@ -773,7 +773,7 @@ def compute_mpc_cost(
                 if t == 0 and return_energy:
                     energy_first = energy_first + e
         else:
-            energy_term = torch.sum(ctrl ** 2)
+            energy_term = torch.sum(speed ** 2)
 
         step_cost = (
             w_p * pressure_penalty
@@ -786,8 +786,8 @@ def compute_mpc_cost(
         if t > 0:
             # small penalty on rapid pump switching to produce smoother
             # control sequences
-            prev_ctrl = torch.clamp(u[t - 1], 0.0, 1.0)
-            smoothness_penalty = smoothness_penalty + torch.sum((ctrl - prev_ctrl) ** 2)
+            prev_speed = torch.clamp(pump_speeds[t - 1], 0.0, 1.0)
+            smoothness_penalty = smoothness_penalty + torch.sum((speed - prev_speed) ** 2)
 
         # update dictionaries for next step
         cur_p = pred_p
@@ -820,20 +820,20 @@ def run_mpc_step(
     pump_info: Optional[list[tuple[int, int, int]]] = None,
     profile: bool = False,
 ) -> tuple[torch.Tensor, List[float], float]:
-    """Optimize pump controls for one hour using gradient-based MPC.
+    """Optimize pump speeds for one hour using gradient-based MPC.
 
     The optimization is performed in two phases: a short warm start with
     Adam followed by refinement using L-BFGS. ``iterations`` controls the total
     number of optimization steps, split approximately 20/80 between the two
-    phases. ``u`` is clamped to ``[0, 1]`` after each update to enforce valid
-    pump settings.
+    phases. The speed variables are clamped to ``[0, 1]`` after each update to
+    enforce valid pump settings.
 
     Parameters
     ----------
     demands : torch.Tensor, optional
         Horizon x num_nodes demand values used when assembling node features.
     u_warm : torch.Tensor, optional
-        Previous control sequence to warm start the optimization.
+        Previous speed sequence to warm start the optimization.
     """
     num_pumps = feature_template.size(1) - 4
     cost_history: List[float] = []
@@ -848,7 +848,7 @@ def run_mpc_step(
         init = torch.cat([u_warm[1:horizon], u_warm[horizon - 1 : horizon]], dim=0)
     else:
         init = torch.ones(horizon, num_pumps, device=device)
-    u = init.clone().detach().requires_grad_(True)
+    pump_speeds = init.clone().detach().requires_grad_(True)
 
     # ``torch.nn.LSTM`` in evaluation mode does not support the backward
     # pass when using cuDNN.  Some surrogates (``RecurrentGNNSurrogate`` or
@@ -862,13 +862,13 @@ def run_mpc_step(
 
     # --- Phase 1: warm start with Adam -------------------------------------
     adam_steps = max(1, min(10, iterations // 5))
-    adam_opt = torch.optim.Adam([u], lr=0.05)
+    adam_opt = torch.optim.Adam([pump_speeds], lr=0.05)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(adam_opt, "min", patience=3, factor=0.5)
 
     for _ in range(adam_steps):
         adam_opt.zero_grad()
         cost, _ = compute_mpc_cost(
-            u,
+            pump_speeds,
             wn,
             model,
             edge_index,
@@ -890,18 +890,18 @@ def run_mpc_step(
         cost.backward()
         adam_opt.step()
         with torch.no_grad():
-            u.data.clamp_(0.0, 1.0)
+            pump_speeds.data.clamp_(0.0, 1.0)
         scheduler.step(cost.item())
         cost_history.append(float(cost.item()))
 
     # --- Phase 2: L-BFGS refinement --------------------------------------
     lbfgs_steps = max(iterations - adam_steps, 1)
-    lbfgs_opt = torch.optim.LBFGS([u], max_iter=lbfgs_steps, line_search_fn="strong_wolfe")
+    lbfgs_opt = torch.optim.LBFGS([pump_speeds], max_iter=lbfgs_steps, line_search_fn="strong_wolfe")
 
     def closure():
         lbfgs_opt.zero_grad()
         c, _ = compute_mpc_cost(
-            u,
+            pump_speeds,
             wn,
             model,
             edge_index,
@@ -926,7 +926,7 @@ def run_mpc_step(
     final_cost = lbfgs_opt.step(closure)
     cost_history.append(float(final_cost))
     _, energy_first = compute_mpc_cost(
-        u,
+        pump_speeds,
         wn,
         model,
         edge_index,
@@ -946,7 +946,7 @@ def run_mpc_step(
         init_levels,
     )
     with torch.no_grad():
-        u.data.clamp_(0.0, 1.0)
+        pump_speeds.data.clamp_(0.0, 1.0)
 
     if hasattr(model, "rnn") and not prev_training:
         model.eval()
@@ -955,7 +955,7 @@ def run_mpc_step(
         end_time = time.time()
         print(f"[profile] run_mpc_step: {end_time - start_time:.4f}s")
 
-    return u.detach(), cost_history, float(energy_first.item()) if energy_first is not None else 0.0
+    return pump_speeds.detach(), cost_history, float(energy_first.item()) if energy_first is not None else 0.0
 
 
 def propagate_with_surrogate(
@@ -968,14 +968,14 @@ def propagate_with_surrogate(
     feature_template: torch.Tensor,
     pressures: Dict[str, float],
     chlorine: Dict[str, float],
-    control_seq: torch.Tensor,
+    speed_seq: torch.Tensor,
     device: torch.device,
     demands: Optional[torch.Tensor] = None,
 ) -> tuple[Dict[str, float], Dict[str, float]]:
     """Propagate the network state using the surrogate model.
 
     The current state ``pressures``/``chlorine`` is advanced through the
-    sequence of pump controls ``control_seq`` without running EPANET.  The
+    sequence of pump speeds ``speed_seq`` without running EPANET.  The
     function returns dictionaries for the next pressures and chlorine levels
     after applying the entire sequence.  ``pressures`` and ``chlorine`` can be
     either dictionaries for a single scenario or lists of dictionaries for
@@ -1022,14 +1022,14 @@ def propagate_with_surrogate(
         model.reset_tank_levels(init_levels)
 
     with torch.no_grad():
-        for t, u in enumerate(control_seq):
-            if u.dim() == 1:
-                u_in = u.view(1, -1).expand(batch_size, -1)
+        for t, speed in enumerate(speed_seq):
+            if speed.dim() == 1:
+                speed_in = speed.view(1, -1).expand(batch_size, -1)
             else:
-                u_in = u
+                speed_in = speed
             d = demands[t] if demands is not None else None
             x = prepare_node_features(
-                feature_template, cur_p, cur_c, u_in, model, d
+                feature_template, cur_p, cur_c, speed_in, model, d
             )
             if hasattr(model, "rnn"):
                 seq_in = x.view(batch_size, 1, feature_template.size(0), x.size(-1))
@@ -1091,7 +1091,7 @@ def simulate_closed_loop(
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", expected_in_dim)
     if in_dim < expected_in_dim:
         raise ValueError(
-            "Loaded model was trained without pump controls - rerun train_gnn.py"
+            "Loaded model was trained without pump speed inputs - rerun train_gnn.py"
         )
 
     if edge_attr is not None and hasattr(model, "edge_dim"):
@@ -1149,7 +1149,7 @@ def simulate_closed_loop(
         j: wn.get_node(j).demand_timeseries_list[0].base_value
         for j in wn.junction_name_list
     }
-    prev_u: Optional[torch.Tensor] = None
+    prev_speed: Optional[torch.Tensor] = None
     all_costs: List[float] = []
 
     for hour in range(24):
@@ -1157,7 +1157,7 @@ def simulate_closed_loop(
         demands = compute_demand_vectors(
             wn, node_to_index, base_demands, hour, horizon
         ).to(device)
-        u_opt, costs, energy_first = run_mpc_step(
+        speed_opt, costs, energy_first = run_mpc_step(
             wn,
             model,
             edge_index,
@@ -1173,22 +1173,24 @@ def simulate_closed_loop(
             Pmin,
             Cmin,
             demands,
-            prev_u,
+            prev_speed,
             pump_info,
             profile,
             )
         all_costs.extend(costs)
-        prev_u = u_opt.detach()
+        prev_speed = speed_opt.detach()
 
         # apply control to network object for consistency
-        first_controls = u_opt[0]
+        first_speeds = speed_opt[0]
         for i, pump in enumerate(pump_names):
             link = wn.get_link(pump)
-            if first_controls[i].item() < 0.5:
-                link.initial_status = wntr.network.base.LinkStatus.Closed
-            else:
-                link.initial_status = wntr.network.base.LinkStatus.Open
-                link.base_speed = float(first_controls[i].item())
+            spd = float(max(0.0, min(1.0, first_speeds[i].item())))
+            link.base_speed = spd
+            link.initial_status = (
+                wntr.network.base.LinkStatus.Closed
+                if spd == 0.0
+                else wntr.network.base.LinkStatus.Open
+            )
 
         # update demands based on the diurnal pattern
         t = hour * 3600
@@ -1245,7 +1247,7 @@ def simulate_closed_loop(
                 feature_template,
                 pressures,
                 chlorine,
-                u_opt,
+                speed_opt,
                 device,
                 demands,
             )
@@ -1267,7 +1269,7 @@ def simulate_closed_loop(
                 "min_chlorine": min_c,
                 "energy": energy,
                 "runtime_sec": end - start,
-                "controls": first_controls.cpu().numpy().tolist(),
+                "controls": first_speeds.cpu().numpy().tolist(),
             }
         )
         print(
@@ -1354,7 +1356,7 @@ def main():
             f"but the network requires {expected_in_dim}."
         )
         print(
-            "The provided model was likely trained without pump control inputs.\n"
+            "The provided model was likely trained without pump speed inputs.\n"
             "Re-train the surrogate using data generated with pump features."
         )
         return

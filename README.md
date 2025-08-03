@@ -34,10 +34,11 @@ are installed before continuing.
 The repository provides a simple training script `scripts/train_gnn.py` which
 expects feature and label data saved in the `data/` directory as NumPy arrays.
 Each node feature vector has the layout
-``[base_demand, pressure, chlorine, elevation, pump_1, ..., pump_N]`` where the
-additional elements represent the speeds of all pumps in the network. Reservoir
-nodes use their constant hydraulic head in the ``pressure`` slot so the model is
-given the correct supply level. The helper script `scripts/data_generation.py`
+``[base_demand, pressure, chlorine, elevation, pump_1, ..., pump_N]`` where each
+``pump_i`` denotes the fractional pump speed in ``[0, 1]`` rather than a binary
+on/off flag. Reservoir nodes use their constant hydraulic head in the
+``pressure`` slot so the model is given the correct supply level. The helper
+script `scripts/data_generation.py`
 generates these arrays as well as the graph ``edge_index``.  Two dataset formats
 are
 supported:
@@ -280,8 +281,8 @@ dedicated energy output and ties the optimisation to physical principles.
 By default the controller loads the most recent ``.pth`` file found in the
 ``models`` directory so retraining will automatically use the newest weights.
 
-This executes a 24‑hour closed loop simulation where pump actions are optimized
-at each hour.  EPANET is only called every 24 hours (controlled by
+This executes a 24‑hour closed loop simulation where fractional pump speeds are
+optimized at each hour.  EPANET is only called every 24 hours (controlled by
 ``--feedback-interval``) and all intermediate updates rely on the GNN surrogate
 running entirely on a CUDA device.  Results are written to
 `data/mpc_history.csv`.  A summary listing constraint violations and total
