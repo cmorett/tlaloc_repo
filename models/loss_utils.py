@@ -130,3 +130,42 @@ def pressure_headloss_consistency_loss(
     )
 
     return torch.mean((pred_hl - flow_sign * hw_hl) ** 2) if pred_hl.numel() > 0 else torch.tensor(0.0)
+
+
+def pump_curve_loss(
+    pred_flows: torch.Tensor,
+    pump_coeffs: torch.Tensor,
+    edge_index: torch.Tensor,
+    edge_type: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Return penalty for flows violating pump head--flow curves.
+
+    Parameters
+    ----------
+    pred_flows : torch.Tensor
+        Predicted flow rates per edge with shape ``[..., E]``.
+    pump_coeffs : torch.Tensor
+        Array of pump curve coefficients ``[E, 3]`` where rows not
+        corresponding to pumps are zero.
+    edge_index : torch.Tensor
+        Edge index tensor of shape ``[2, E]``. Included for API symmetry.
+    edge_type : torch.Tensor, optional
+        Integer edge type array marking pumps with value ``1``.
+    """
+
+    if edge_type is None:
+        return torch.tensor(0.0, device=pred_flows.device)
+
+    flows = pred_flows.reshape(-1, pred_flows.shape[-1])
+    mask = edge_type.flatten() == 1
+    if not torch.any(mask):
+        return torch.tensor(0.0, device=pred_flows.device)
+
+    coeff = pump_coeffs[mask].to(pred_flows.device)
+    q = flows[:, mask]
+    a = coeff[:, 0]
+    b = coeff[:, 1]
+    c = coeff[:, 2]
+    head = a - b * q.abs().pow(c)
+    violation = torch.clamp(-head, min=0.0)
+    return torch.mean(violation ** 2)

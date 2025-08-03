@@ -597,12 +597,13 @@ def build_dataset(
 def build_edge_index(
     wn: wntr.network.WaterNetworkModel,
 
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return directed edge index, edge attributes and edge types."""
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return directed edge index, edge attributes, edge types and pump curves."""
 
     node_index_map = {name: idx for idx, name in enumerate(wn.node_name_list)}
     edges: List[List[int]] = []
     attrs: List[List[float]] = []
+    coeffs: List[List[float]] = []
     types: List[int] = []
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
@@ -617,12 +618,17 @@ def build_edge_index(
         attrs.append([length, diam, rough])
         if link_name in wn.pipe_name_list:
             t = 0
+            a = b = c = 0.0
         elif link_name in wn.pump_name_list:
             t = 1
+            a, b, c = link.get_head_curve_coefficients()
         elif link_name in wn.valve_name_list:
             t = 2
+            a = b = c = 0.0
         else:
             t = 0
+            a = b = c = 0.0
+        coeffs.extend([[a, b, c], [a, b, c]])
         types.extend([t, t])
 
     edge_index = np.array(edges, dtype=np.int64).T
@@ -634,7 +640,8 @@ def build_edge_index(
 
     assert edge_index.shape[0] == 2
     edge_type = np.array(types, dtype=np.int64)
-    return edge_index, edge_attr, edge_type
+    pump_coeffs = np.array(coeffs, dtype=np.float32)
+    return edge_index, edge_attr, edge_type, pump_coeffs
 
 
 def main() -> None:
@@ -710,7 +717,7 @@ def main() -> None:
         X_val, Y_val = build_dataset(val_res, wn_template)
         X_test, Y_test = build_dataset(test_res, wn_template)
 
-    edge_index, edge_attr, edge_type = build_edge_index(wn_template)
+    edge_index, edge_attr, edge_type, pump_coeffs = build_edge_index(wn_template)
 
     out_dir = Path(args.output_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -728,6 +735,7 @@ def main() -> None:
     np.save(os.path.join(out_dir, "edge_index.npy"), edge_index)
     np.save(os.path.join(out_dir, "edge_attr.npy"), edge_attr)
     np.save(os.path.join(out_dir, "edge_type.npy"), edge_type)
+    np.save(os.path.join(out_dir, "pump_coeffs.npy"), pump_coeffs)
 
     with open(os.path.join(out_dir, "train_results_list.pkl"), "wb") as f:
         pickle.dump(train_res, f)

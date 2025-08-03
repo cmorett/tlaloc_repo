@@ -30,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 from models.loss_utils import (
     compute_mass_balance_loss,
     pressure_headloss_consistency_loss,
+    pump_curve_loss,
 )
 
 from scripts.metrics import accuracy_metrics, export_table
@@ -1056,6 +1057,25 @@ def build_edge_attr(
     return np.array([attr_dict[(int(s), int(t))] for s, t in edge_index.T], dtype=np.float32)
 
 
+def build_pump_coeffs(
+    wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
+) -> np.ndarray:
+    """Return pump curve coefficients ``[A, B, C]`` for each edge."""
+
+    node_map = {n: i for i, n in enumerate(wn.node_name_list)}
+    coeff_dict: dict[tuple[int, int], list[float]] = {}
+    for pump_name in wn.pump_name_list:
+        pump = wn.get_link(pump_name)
+        i = node_map[pump.start_node.name]
+        j = node_map[pump.end_node.name]
+        a, b, c = pump.get_head_curve_coefficients()
+        coeff = [float(a), float(b), float(c)]
+        coeff_dict[(i, j)] = coeff
+        coeff_dict[(j, i)] = coeff
+    zero = [0.0, 0.0, 0.0]
+    return np.array([coeff_dict.get((int(s), int(t)), zero) for s, t in edge_index.T], dtype=np.float32)
+
+
 def build_edge_type(
     wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
 ) -> np.ndarray:
@@ -1351,20 +1371,23 @@ def train_sequence(
     edge_pairs: list[tuple[int, int]],
     optimizer,
     device,
+    pump_coeffs: Optional[torch.Tensor] = None,
     loss_fn: str = "mae",
     physics_loss: bool = False,
     pressure_loss: bool = False,
+    pump_loss: bool = False,
     node_mask: Optional[torch.Tensor] = None,
     w_mass: float = 1.0,
     w_head: float = 1.0,
+    w_pump: float = 1.0,
     w_edge: float = 1.0,
     amp: bool = False,
-) -> tuple[float, float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float, float]:
     global interrupted
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = 0.0
-    node_total = edge_total = mass_total = head_total = sym_total = 0.0
+    node_total = edge_total = mass_total = head_total = sym_total = pump_total = 0.0
     node_count = int(edge_index.max()) + 1
     data_iter = iter(loader)
     while True:
@@ -1486,11 +1509,30 @@ def train_sequence(
                 )
             else:
                 head_loss = torch.tensor(0.0, device=device)
+            if pump_loss and pump_coeffs is not None:
+                flow_pc = edge_preds.squeeze(-1)
+                if hasattr(model, 'y_mean') and model.y_mean is not None:
+                    if isinstance(model.y_mean, dict):
+                        q_mean = model.y_mean['edge_outputs'].to(device)
+                        q_std = model.y_std['edge_outputs'].to(device)
+                        flow_pc = flow_pc * q_std + q_mean
+                    else:
+                        flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
+                pump_loss_val = pump_curve_loss(
+                    flow_pc,
+                    pump_coeffs.to(device),
+                    edge_index.to(device),
+                    et,
+                )
+            else:
+                pump_loss_val = torch.tensor(0.0, device=device)
             loss = loss_node + w_edge * loss_edge
             if physics_loss:
                 loss = loss + w_mass * (mass_loss + sym_loss)
             if pressure_loss:
                 loss = loss + w_head * head_loss
+            if pump_loss:
+                loss = loss + w_pump * pump_loss_val
         else:
             Y_seq = Y_seq.to(device)
             loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
@@ -1512,6 +1554,7 @@ def train_sequence(
         mass_total += mass_loss.item() * X_seq.size(0)
         head_total += head_loss.item() * X_seq.size(0)
         sym_total += sym_loss.item() * X_seq.size(0)
+        pump_total += pump_loss_val.item() * X_seq.size(0)
         if interrupted:
             break
     denom = len(loader.dataset)
@@ -1522,6 +1565,7 @@ def train_sequence(
         mass_total / denom,
         head_total / denom,
         sym_total / denom,
+        pump_total / denom,
     )
 
 
@@ -1535,19 +1579,22 @@ def evaluate_sequence(
     edge_type: Optional[torch.Tensor],
     edge_pairs: list[tuple[int, int]],
     device,
+    pump_coeffs: Optional[torch.Tensor] = None,
     loss_fn: str = "mae",
     physics_loss: bool = False,
     pressure_loss: bool = False,
+    pump_loss: bool = False,
     node_mask: Optional[torch.Tensor] = None,
     w_mass: float = 1.0,
     w_head: float = 1.0,
+    w_pump: float = 1.0,
     w_edge: float = 1.0,
     amp: bool = False,
-) -> tuple[float, float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float, float]:
     global interrupted
     model.eval()
     total_loss = 0.0
-    node_total = edge_total = mass_total = head_total = sym_total = 0.0
+    node_total = edge_total = mass_total = head_total = sym_total = pump_total = 0.0
     node_count = int(edge_index.max()) + 1
     data_iter = iter(loader)
     with torch.no_grad():
@@ -1658,11 +1705,30 @@ def evaluate_sequence(
                         )
                     else:
                         head_loss = torch.tensor(0.0, device=device)
+                    if pump_loss and pump_coeffs is not None:
+                        flow_pc = edge_preds.squeeze(-1)
+                        if hasattr(model, 'y_mean') and model.y_mean is not None:
+                            if isinstance(model.y_mean, dict):
+                                q_mean = model.y_mean['edge_outputs'].to(device)
+                                q_std = model.y_std['edge_outputs'].to(device)
+                                flow_pc = flow_pc * q_std + q_mean
+                            else:
+                                flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
+                        pump_loss_val = pump_curve_loss(
+                            flow_pc,
+                            pump_coeffs.to(device),
+                            edge_index.to(device),
+                            et,
+                        )
+                    else:
+                        pump_loss_val = torch.tensor(0.0, device=device)
                     loss = loss_node + w_edge * loss_edge
                     if physics_loss:
                         loss = loss + w_mass * (mass_loss + sym_loss)
                     if pressure_loss:
                         loss = loss + w_head * head_loss
+                    if pump_loss:
+                        loss = loss + w_pump * pump_loss_val
                 else:
                     Y_seq = Y_seq.to(device)
                     loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
@@ -1673,6 +1739,7 @@ def evaluate_sequence(
             mass_total += mass_loss.item() * X_seq.size(0)
             head_total += head_loss.item() * X_seq.size(0)
             sym_total += sym_loss.item() * X_seq.size(0)
+            pump_total += pump_loss_val.item() * X_seq.size(0)
             if interrupted:
                 break
     denom = len(loader.dataset)
@@ -1683,6 +1750,7 @@ def evaluate_sequence(
         mass_total / denom,
         head_total / denom,
         sym_total / denom,
+        pump_total / denom,
     )
 
 # Resolve important directories relative to the repository root so that training
@@ -1703,6 +1771,11 @@ def main(args: argparse.Namespace):
     # Always compute the physical edge attributes from the network
     edge_attr_phys_np = build_edge_attr(wn, edge_index_np)
     edge_attr_phys = torch.tensor(edge_attr_phys_np.copy(), dtype=torch.float32)
+    if os.path.exists(args.pump_coeffs_path):
+        pump_coeffs_np = np.load(args.pump_coeffs_path)
+    else:
+        pump_coeffs_np = build_pump_coeffs(wn, edge_index_np)
+    pump_coeffs_tensor = torch.tensor(pump_coeffs_np.copy(), dtype=torch.float32)
 
     if os.path.exists(args.edge_attr_path):
         edge_attr = np.load(args.edge_attr_path)
@@ -2059,20 +2132,25 @@ def main(args: argparse.Namespace):
                     edge_pairs,
                     optimizer,
                     device,
+                    pump_coeffs_tensor,
                     loss_fn=args.loss_fn,
                     physics_loss=args.physics_loss,
                     pressure_loss=args.pressure_loss,
+                    pump_loss=args.pump_loss,
                     node_mask=loss_mask,
                     w_mass=args.w_mass,
                     w_head=args.w_head,
+                    w_pump=args.w_pump,
                     w_edge=args.w_edge,
                     amp=args.amp,
                 )
                 loss = loss_tuple[0]
-                node_l, edge_l, mass_l, head_l, sym_l = loss_tuple[1:]
+                node_l, edge_l, mass_l, head_l, sym_l, pump_l = loss_tuple[1:]
                 comp = [node_l, edge_l, mass_l, sym_l]
                 if args.pressure_loss:
                     comp.append(head_l)
+                if args.pump_loss:
+                    comp.append(pump_l)
                 loss_components.append(tuple(comp))
                 if val_loader is not None and not interrupted:
                     val_tuple = evaluate_sequence(
@@ -2085,12 +2163,15 @@ def main(args: argparse.Namespace):
                         data_ds.edge_type,
                         edge_pairs,
                         device,
+                        pump_coeffs_tensor,
                         loss_fn=args.loss_fn,
                         physics_loss=args.physics_loss,
                         pressure_loss=args.pressure_loss,
+                        pump_loss=args.pump_loss,
                         node_mask=loss_mask,
                         w_mass=args.w_mass,
                         w_head=args.w_head,
+                        w_pump=args.w_pump,
                         w_edge=args.w_edge,
                         amp=args.amp,
                     )
@@ -2375,6 +2456,11 @@ if __name__ == "__main__":
         help="File with edge attributes from data_generation.py",
     )
     parser.add_argument(
+        "--pump-coeffs-path",
+        default=os.path.join(DATA_DIR, "pump_coeffs.npy"),
+        help="File with pump curve coefficients from data_generation.py",
+    )
+    parser.add_argument(
         "--x-val-path",
         default=os.path.join(DATA_DIR, "X_val.npy"),
         help="Validation features",
@@ -2515,6 +2601,18 @@ if __name__ == "__main__":
     )
     parser.set_defaults(pressure_loss=True)
     parser.add_argument(
+        "--pump-loss",
+        action="store_true",
+        help="Add pump curve consistency penalty",
+    )
+    parser.add_argument(
+        "--no-pump-loss",
+        dest="pump_loss",
+        action="store_false",
+        help="Disable pump curve consistency penalty",
+    )
+    parser.set_defaults(pump_loss=True)
+    parser.add_argument(
         "--w_mass",
         type=float,
         default=1.0,
@@ -2525,6 +2623,12 @@ if __name__ == "__main__":
         type=float,
         default=0.25,
         help="Weight of the head loss consistency term",
+    )
+    parser.add_argument(
+        "--w_pump",
+        type=float,
+        default=0.25,
+        help="Weight of the pump curve loss term",
     )
     parser.add_argument(
         "--w_edge",
