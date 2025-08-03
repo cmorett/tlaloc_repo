@@ -11,6 +11,10 @@ import warnings
 from functools import partial
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
+try:  # Optional progress bar
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - handled gracefully if unavailable
+    tqdm = None
 
 # Minimum allowed pressure [m].  Values below this threshold are clipped
 # in both data generation and validation to keep preprocessing consistent.
@@ -308,6 +312,7 @@ def run_scenarios(
     seed: Optional[int] = None,
     extreme_event_prob: float = 0.0,
     num_workers: Optional[int] = None,
+    show_progress: bool = False,
 ) -> List[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
 ]:
@@ -315,6 +320,8 @@ def run_scenarios(
 
     Scenarios that remain infeasible after several retries are skipped, so the
     returned list may contain fewer elements than ``num_scenarios``.
+    When ``show_progress`` is ``True`` and :mod:`tqdm` is available a progress
+    bar indicates completion status.
     """
 
     args_list = [(i, inp_file, seed) for i in range(num_scenarios)]
@@ -323,7 +330,18 @@ def run_scenarios(
 
     with Pool(processes=num_workers) as pool:
         func = partial(_run_single_scenario, extreme_event_prob=extreme_event_prob)
-        raw_results = pool.map(func, args_list)
+        if show_progress and tqdm is not None:
+            raw_results = [
+                res for res in tqdm(
+                    pool.imap(func, args_list),
+                    total=len(args_list),
+                    desc="Scenarios",
+                )
+            ]
+        else:
+            if show_progress and tqdm is None:
+                warnings.warn("tqdm is not installed; progress bar disabled.")
+            raw_results = pool.map(func, args_list)
 
     # Filter out failed scenarios returned as ``None``
     results = [res for res in raw_results if res is not None]
@@ -676,6 +694,11 @@ def main() -> None:
         default=1,
         help="Length of sequences to store in the dataset (1 for single-step)",
     )
+    parser.add_argument(
+        "--show-progress",
+        action="store_true",
+        help="Display a progress bar during scenario simulation",
+    )
     args = parser.parse_args()
 
     inp_file = REPO_ROOT / "CTown.inp"
@@ -687,6 +710,7 @@ def main() -> None:
         seed=args.seed,
         extreme_event_prob=args.extreme_event_prob,
         num_workers=args.num_workers,
+        show_progress=args.show_progress,
     )
 
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")

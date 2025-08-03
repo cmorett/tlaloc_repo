@@ -192,6 +192,8 @@ The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.np
 ``pump_coeffs.npy`` alongside the feature and label arrays. It utilizes all available CPU cores by default. The value
 ``2000`` matches the new default of ``--num-scenarios``. Use
 ``--num-workers`` to override the number of parallel workers if needed.
+Pass ``--show-progress`` to display a live progress bar during simulation
+when ``tqdm`` is installed.
 If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.
