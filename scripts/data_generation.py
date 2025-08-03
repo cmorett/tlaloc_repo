@@ -414,7 +414,8 @@ def build_sequence_dataset(
     Y_list: List[dict] = []
     scenario_types: List[str] = []
 
-    pumps = wn_template.pump_name_list
+    pumps = np.array(wn_template.pump_name_list)
+    node_names = wn_template.node_name_list
 
     for sim_results, _scale_dict, pump_ctrl in results:
         scenario_types.append(getattr(sim_results, "scenario_type", "normal"))
@@ -443,25 +444,32 @@ def build_sequence_dataset(
             )
             continue
 
+        # Precompute arrays and mappings for faster indexing
+        node_idx = {n: pressures.columns.get_loc(n) for n in node_names}
+        p_arr = pressures.to_numpy(dtype=np.float64)
+        q_arr = quality.to_numpy(dtype=np.float64)
+        d_arr = demands.to_numpy(dtype=np.float64) if demands is not None else None
+        pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
+
         X_seq: List[np.ndarray] = []
         node_out_seq: List[np.ndarray] = []
         edge_out_seq: List[np.ndarray] = []
         energy_seq: List[np.ndarray] = []
         for t in range(seq_len):
-            pump_vector = np.array([pump_ctrl[p][t] for p in pumps], dtype=np.float64)
+            pump_vector = pump_ctrl_arr[:, t]
             feat_nodes = []
-            for node in wn_template.node_name_list:
-                idx = pressures.columns.get_loc(node)
+            for node in node_names:
+                idx = node_idx[node]
                 if node in wn_template.reservoir_name_list:
                     # Reservoir nodes report ~0 pressure from EPANET. Use their
                     # fixed hydraulic head instead so the surrogate is aware of
                     # the supply level.
                     p_t = float(wn_template.get_node(node).base_head)
                 else:
-                    p_t = float(pressures.iat[t, idx])
-                c_t = float(quality.iat[t, idx])
-                if demands is not None and node in wn_template.junction_name_list:
-                    d_t = float(demands.iat[t, idx])
+                    p_t = float(p_arr[t, idx])
+                c_t = float(q_arr[t, idx])
+                if d_arr is not None and node in wn_template.junction_name_list:
+                    d_t = float(d_arr[t, idx])
                 else:
                     d_t = 0.0
                 if node in wn_template.junction_name_list or node in wn_template.tank_name_list:
@@ -482,13 +490,13 @@ def build_sequence_dataset(
             X_seq.append(np.array(feat_nodes, dtype=np.float64))
 
             out_nodes = []
-            for node in wn_template.node_name_list:
-                idx = pressures.columns.get_loc(node)
+            for node in node_names:
+                idx = node_idx[node]
                 if node in wn_template.reservoir_name_list:
                     p_next = float(wn_template.get_node(node).base_head)
                 else:
-                    p_next = float(pressures.iat[t + 1, idx])
-                c_next = float(quality.iat[t + 1, idx])
+                    p_next = float(p_arr[t + 1, idx])
+                c_next = float(q_arr[t + 1, idx])
                 out_nodes.append([max(p_next, MIN_PRESSURE), max(c_next, 0.0)])
             node_out_seq.append(np.array(out_nodes, dtype=np.float64))
 
@@ -524,7 +532,8 @@ def build_dataset(
     X_list: List[np.ndarray] = []
     Y_list: List[dict] = []
 
-    pumps = wn_template.pump_name_list
+    pumps = np.array(wn_template.pump_name_list)
+    node_names = wn_template.node_name_list
 
     for sim_results, _scale_dict, pump_ctrl in results:
         # Enforce a 5 m lower bound while keeping the upper range unrestricted
@@ -541,25 +550,31 @@ def build_dataset(
         times = pressures.index
         flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
 
-
         if demands is not None:
             max_d = float(demands.max().max())
             demands = demands.clip(lower=0.0, upper=max_d * 1.5)
 
+        # Precompute arrays and index mappings for faster lookup
+        node_idx = {n: pressures.columns.get_loc(n) for n in node_names}
+        p_arr = pressures.to_numpy(dtype=np.float64)
+        q_arr = quality.to_numpy(dtype=np.float64)
+        d_arr = demands.to_numpy(dtype=np.float64) if demands is not None else None
+        pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
+
         for i in range(len(times) - 1):
-            pump_vector = np.array([pump_ctrl[p][i] for p in pumps], dtype=np.float64)
+            pump_vector = pump_ctrl_arr[:, i]
 
             feat_nodes = []
-            for node in wn_template.node_name_list:
-                idx = pressures.columns.get_loc(node)
+            for node in node_names:
+                idx = node_idx[node]
                 if node in wn_template.reservoir_name_list:
                     # Use the reservoir's constant head as the pressure input
                     p_t = float(wn_template.get_node(node).base_head)
                 else:
-                    p_t = max(pressures.iat[i, idx], MIN_PRESSURE)
-                c_t = max(quality.iat[i, idx], 0.0)
-                if demands is not None and node in wn_template.junction_name_list:
-                    d_t = demands.iat[i, idx]
+                    p_t = max(p_arr[i, idx], MIN_PRESSURE)
+                c_t = max(q_arr[i, idx], 0.0)
+                if d_arr is not None and node in wn_template.junction_name_list:
+                    d_t = d_arr[i, idx]
                 else:
                     d_t = 0.0
 
@@ -582,13 +597,13 @@ def build_dataset(
             X_list.append(np.array(feat_nodes, dtype=np.float64))
 
             out_nodes = []
-            for node in wn_template.node_name_list:
-                idx = pressures.columns.get_loc(node)
+            for node in node_names:
+                idx = node_idx[node]
                 if node in wn_template.reservoir_name_list:
                     p_next = float(wn_template.get_node(node).base_head)
                 else:
-                    p_next = max(pressures.iat[i + 1, idx], MIN_PRESSURE)
-                c_next = max(quality.iat[i + 1, idx], 0.0)
+                    p_next = max(p_arr[i + 1, idx], MIN_PRESSURE)
+                c_next = max(q_arr[i + 1, idx], 0.0)
                 out_nodes.append([p_next, c_next])
             Y_list.append({
                 "node_outputs": np.array(out_nodes, dtype=np.float32),
