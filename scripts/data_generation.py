@@ -11,6 +11,7 @@ import warnings
 from functools import partial
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
+from contextlib import contextmanager
 try:  # Optional progress bar
     from tqdm import tqdm
 except Exception:  # pragma: no cover - handled gracefully if unavailable
@@ -27,6 +28,35 @@ TEMP_DIR = DATA_DIR / "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
 PLOTS_DIR = REPO_ROOT / "plots"
 os.makedirs(PLOTS_DIR, exist_ok=True)
+
+# File extensions produced by EPANET that need to be cleaned up after each
+# simulation run.
+TEMP_EXTENSIONS = [
+    ".inp",
+    ".rpt",
+    ".bin",
+    ".hyd",
+    ".msx",
+    ".msx-rpt",
+    ".msx-bin",
+    ".check.msx",
+]
+
+
+@contextmanager
+def temp_simulation_files(prefix: Path | str):
+    """Yield ``prefix`` and remove EPANET temporary files afterwards."""
+    try:
+        yield prefix
+    finally:
+        for ext in TEMP_EXTENSIONS:
+            f = f"{prefix}{ext}"
+            try:
+                os.remove(f)
+            except FileNotFoundError:
+                pass
+            except PermissionError:
+                warnings.warn(f"Could not remove file {f}")
 
 import numpy as np
 import wntr
@@ -226,54 +256,16 @@ def _run_single_scenario(
 
         prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}_{attempt}"
         try:
-            sim = wntr.sim.EpanetSimulator(wn)
-            sim_results = sim.run_sim(file_prefix=str(prefix))
-            sim_results.scenario_type = scenario_label
+            with temp_simulation_files(prefix) as pf:
+                sim = wntr.sim.EpanetSimulator(wn)
+                sim_results = sim.run_sim(file_prefix=str(pf))
+                sim_results.scenario_type = scenario_label
             break
         except wntr.epanet.exceptions.EpanetException:
-            # Remove possible leftover files before retrying with a new
-            # randomized scenario.  If we ran out of attempts, return None so
-            # the caller can skip this scenario instead of failing the entire
-            # generation run.
-            for ext in [
-                ".inp",
-                ".rpt",
-                ".bin",
-                ".hyd",
-                ".msx",
-                ".msx-rpt",
-                ".msx-bin",
-                ".check.msx",
-            ]:
-                try:
-                    os.remove(f"{prefix}{ext}")
-                except FileNotFoundError:
-                    pass
-                except PermissionError:
-                    warnings.warn(f"Could not remove file {prefix}{ext}")
             if attempt == 2:
                 return None
             else:
                 continue
-
-    # Clean up temp files from the successful attempt
-    for ext in [
-        ".inp",
-        ".rpt",
-        ".bin",
-        ".hyd",
-        ".msx",
-        ".msx-rpt",
-        ".msx-bin",
-        ".check.msx",
-    ]:
-        f = f"{prefix}{ext}"
-        try:
-            os.remove(f)
-        except FileNotFoundError:
-            pass
-        except PermissionError:
-            warnings.warn(f"Could not remove file {f}")
 
 
     flows = sim_results.link["flowrate"]
