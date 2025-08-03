@@ -65,6 +65,13 @@ class HydroConv(MessagePassing):
             [nn.Sequential(nn.Linear(edge_dim, 1), nn.Softplus()) for _ in range(num_edge_types)]
         )
 
+        # Learnable embedding so that pump edges can obtain a dedicated bias in
+        # the message passing step.  This keeps the interface flexible for any
+        # number of edge types while explicitly distinguishing pumps.
+        self.edge_type_emb = (
+            nn.Embedding(num_edge_types, edge_dim) if num_edge_types > 1 else None
+        )
+
     def forward(
         self,
         x: torch.Tensor,
@@ -91,7 +98,15 @@ class HydroConv(MessagePassing):
                 out[idx] = lin(aggr[idx]).to(out.dtype)
         return out
 
-    def message(self, x_i: torch.Tensor, x_j: torch.Tensor, edge_attr: torch.Tensor, edge_type: torch.Tensor) -> torch.Tensor:
+    def message(
+        self,
+        x_i: torch.Tensor,
+        x_j: torch.Tensor,
+        edge_attr: torch.Tensor,
+        edge_type: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.edge_type_emb is not None:
+            edge_attr = edge_attr + self.edge_type_emb(edge_type)
         weight = torch.zeros(edge_attr.size(0), 1, device=edge_attr.device)
         for t, mlp in enumerate(self.edge_mlps):
             idx = edge_type == t
