@@ -38,3 +38,31 @@ def test_data_generation_cli_show_progress(tmp_path):
     ]
     subprocess.run(cmd, check=True)
 
+
+def test_train_progress_flag(monkeypatch):
+    import torch
+    from torch_geometric.data import Data
+    from torch_geometric.loader import DataLoader
+    repo = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(repo))
+    import scripts.train_gnn as tg
+
+    calls = []
+
+    class DummyTqdm:
+        def __init__(self, it, disable=False):
+            calls.append(disable)
+            self.it = it
+
+        def __iter__(self):
+            return iter(self.it)
+
+    monkeypatch.setattr(tg, "tqdm", DummyTqdm)
+    model = tg.GCNEncoder(1, 1, 1, num_layers=1)
+    data = Data(x=torch.zeros((1, 1)), edge_index=torch.tensor([[0], [0]]), y=torch.zeros((1, 1)))
+    loader = DataLoader([data], batch_size=1)
+    opt = torch.optim.Adam(model.parameters(), lr=0.01)
+    tg.train(model, loader, opt, torch.device("cpu"), check_negative=False, progress=True)
+    tg.train(model, loader, opt, torch.device("cpu"), check_negative=False, progress=False)
+    assert calls == [False, True]
+

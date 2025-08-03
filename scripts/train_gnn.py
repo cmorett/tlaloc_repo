@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Optional, Sequence
 import networkx as nx
+from tqdm.auto import tqdm
 
 # Ensure the repository root is importable when running this file directly
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1288,11 +1289,12 @@ def train(
     amp: bool = False,
     loss_fn: str = "mae",
     node_mask: Optional[torch.Tensor] = None,
+    progress: bool = True,
 ):
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = 0
-    for batch in loader:
+    for batch in tqdm(loader, disable=not progress):
         batch = batch.to(device, non_blocking=True)
         if torch.isnan(batch.x).any() or torch.isnan(batch.y).any():
             raise ValueError("NaN detected in training batch")
@@ -1338,11 +1340,12 @@ def evaluate(
     amp: bool = False,
     loss_fn: str = "mae",
     node_mask: Optional[torch.Tensor] = None,
+    progress: bool = True,
 ):
     global interrupted
     model.eval()
     total_loss = 0
-    data_iter = iter(loader)
+    data_iter = iter(tqdm(loader, disable=not progress))
     with torch.no_grad():
         while True:
             try:
@@ -1397,6 +1400,7 @@ def train_sequence(
     w_pump: float = 1.0,
     w_edge: float = 1.0,
     amp: bool = False,
+    progress: bool = True,
 ) -> tuple[float, float, float, float, float, float, float]:
     global interrupted
     model.train()
@@ -1404,7 +1408,7 @@ def train_sequence(
     total_loss = 0.0
     node_total = edge_total = mass_total = head_total = sym_total = pump_total = 0.0
     node_count = int(edge_index.max()) + 1
-    data_iter = iter(loader)
+    data_iter = iter(tqdm(loader, disable=not progress))
     while True:
         try:
             X_seq, Y_seq = next(data_iter)
@@ -1605,13 +1609,14 @@ def evaluate_sequence(
     w_pump: float = 1.0,
     w_edge: float = 1.0,
     amp: bool = False,
+    progress: bool = True,
 ) -> tuple[float, float, float, float, float, float, float]:
     global interrupted
     model.eval()
     total_loss = 0.0
     node_total = edge_total = mass_total = head_total = sym_total = pump_total = 0.0
     node_count = int(edge_index.max()) + 1
-    data_iter = iter(loader)
+    data_iter = iter(tqdm(loader, disable=not progress))
     with torch.no_grad():
         while True:
             try:
@@ -2158,6 +2163,7 @@ def main(args: argparse.Namespace):
                     w_pump=args.w_pump,
                     w_edge=args.w_edge,
                     amp=args.amp,
+                    progress=args.progress,
                 )
                 loss = loss_tuple[0]
                 node_l, edge_l, mass_l, head_l, sym_l, pump_l = loss_tuple[1:]
@@ -2189,6 +2195,7 @@ def main(args: argparse.Namespace):
                         w_pump=args.w_pump,
                         w_edge=args.w_edge,
                         amp=args.amp,
+                        progress=args.progress,
                     )
                     val_loss = val_tuple[0]
                 else:
@@ -2203,6 +2210,7 @@ def main(args: argparse.Namespace):
                     amp=args.amp,
                     loss_fn=args.loss_fn,
                     node_mask=loss_mask,
+                    progress=args.progress,
                 )
                 if val_loader is not None and not interrupted:
                     val_loss = evaluate(
@@ -2212,6 +2220,7 @@ def main(args: argparse.Namespace):
                         amp=args.amp,
                         loss_fn=args.loss_fn,
                         node_mask=loss_mask,
+                        progress=args.progress,
                     )
                 else:
                     val_loss = loss
@@ -2675,6 +2684,19 @@ if __name__ == "__main__":
         help="Disable mixed precision training",
     )
     parser.set_defaults(amp=True)
+    parser.add_argument(
+        "--progress",
+        dest="progress",
+        action="store_true",
+        help="Display progress bars during training",
+    )
+    parser.add_argument(
+        "--no-progress",
+        dest="progress",
+        action="store_false",
+        help="Disable progress bars",
+    )
+    parser.set_defaults(progress=True)
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--run-name", default="", help="Optional run name")
     parser.add_argument(

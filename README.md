@@ -123,6 +123,8 @@ python scripts/train_gnn.py \
 ```
 Add ``--loss-fn huber`` to the command above to train with Huber loss or
 ``--loss-fn mse`` to minimize mean squared error instead.
+Pass ``--no-progress`` to disable the training progress bars or
+``--progress`` to re-enable them if disabled.
 Pressure–headloss consistency is now enforced by default with a weight of ``0.25``.
 Pass ``--no-pressure-loss`` if this coupling should be disabled.  To remove the
 mass balance penalty (still weighted ``1.0`` by default) use ``--no-physics-loss``.
