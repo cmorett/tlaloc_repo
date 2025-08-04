@@ -19,7 +19,7 @@ from torch_geometric.utils import subgraph, k_hop_subgraph
 import wntr
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
-from typing import Optional, Sequence
+from typing import Optional, Sequence, List, Tuple, Dict
 import networkx as nx
 from tqdm.auto import tqdm
 
@@ -521,7 +521,7 @@ def load_dataset(
     edge_attr: Optional[np.ndarray] = None,
     node_type: Optional[np.ndarray] = None,
     edge_type: Optional[np.ndarray] = None,
-) -> list[Data]:
+) -> List[Data]:
     """Load training data.
 
     The function supports two dataset layouts:
@@ -671,7 +671,7 @@ def predicted_vs_actual_scatter(
     return fig if return_fig else None
 
 
-def compute_edge_attr_stats(edge_attr: np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
+def compute_edge_attr_stats(edge_attr: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
     """Return mean and std for edge attribute matrix."""
     attr_mean = torch.tensor(edge_attr.mean(axis=0), dtype=torch.float32)
     attr_std = torch.tensor(edge_attr.std(axis=0) + 1e-8, dtype=torch.float32)
@@ -1059,7 +1059,7 @@ def build_edge_attr(
 ) -> np.ndarray:
     """Return edge attribute matrix [E,3] for given edge index."""
     node_map = {n: i for i, n in enumerate(wn.node_name_list)}
-    attr_dict: dict[tuple[int, int], list[float]] = {}
+    attr_dict: Dict[Tuple[int, int], List[float]] = {}
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
         i = node_map[link.start_node.name]
@@ -1079,7 +1079,7 @@ def build_pump_coeffs(
     """Return pump curve coefficients ``[A, B, C]`` for each edge."""
 
     node_map = {n: i for i, n in enumerate(wn.node_name_list)}
-    coeff_dict: dict[tuple[int, int], list[float]] = {}
+    coeff_dict: Dict[Tuple[int, int], List[float]] = {}
     for pump_name in wn.pump_name_list:
         pump = wn.get_link(pump_name)
         i = node_map[pump.start_node.name]
@@ -1098,7 +1098,7 @@ def build_edge_type(
     """Return integer edge type array matching ``edge_index``."""
 
     node_map = {n: i for i, n in enumerate(wn.node_name_list)}
-    type_dict: dict[tuple[int, int], int] = {}
+    type_dict: Dict[Tuple[int, int], int] = {}
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
         i = node_map[link.start_node.name]
@@ -1119,15 +1119,15 @@ def build_edge_type(
 
 def build_edge_pairs(
     edge_index: np.ndarray, edge_type: Optional[np.ndarray] = None
-) -> list[tuple[int, int]]:
+) -> List[Tuple[int, int]]:
     """Return list of ``(i, j)`` tuples pairing forward and reverse edges.
 
     When ``edge_type`` is provided, only edges with type ``0`` (pipes) are
     paired.  This avoids including pumps or valves in the symmetry penalty.
     """
 
-    pair_map: dict[tuple[int, int], int] = {}
-    pairs: list[tuple[int, int]] = []
+    pair_map: Dict[Tuple[int, int], int] = {}
+    pairs: List[Tuple[int, int]] = []
     for eid in range(edge_index.shape[1]):
         u = int(edge_index[0, eid])
         v = int(edge_index[1, eid])
@@ -1194,13 +1194,13 @@ def handle_keyboard_interrupt(
     print(f"Training interrupted. Saved checkpoint to {model_path}")
 
 
-def partition_graph_greedy(edge_index: np.ndarray, num_nodes: int, cluster_size: int) -> list[np.ndarray]:
+def partition_graph_greedy(edge_index: np.ndarray, num_nodes: int, cluster_size: int) -> List[np.ndarray]:
     """Split ``edge_index`` into clusters using greedy modularity heuristics."""
     G = nx.Graph()
     G.add_nodes_from(range(num_nodes))
     G.add_edges_from((int(s), int(t)) for s, t in edge_index.T)
     communities = list(nx.algorithms.community.greedy_modularity_communities(G))
-    clusters: list[list[int]] = []
+    clusters: List[List[int]] = []
     for com in communities:
         nodes = list(com)
         for i in range(0, len(nodes), cluster_size):
@@ -1216,7 +1216,7 @@ def partition_graph_greedy(edge_index: np.ndarray, num_nodes: int, cluster_size:
 class ClusterSampleDataset(Dataset):
     """Dataset that yields samples restricted to precomputed node clusters."""
 
-    def __init__(self, base_data: list[Data], clusters: list[np.ndarray]):
+    def __init__(self, base_data: List[Data], clusters: List[np.ndarray]):
         self.base_data = base_data
         self.clusters = clusters
         self.num_clusters = len(clusters)
@@ -1253,7 +1253,7 @@ class ClusterSampleDataset(Dataset):
 class NeighborSampleDataset(Dataset):
     """Dataset performing random neighbor sampling on-the-fly."""
 
-    def __init__(self, base_data: list[Data], edge_index: np.ndarray, sample_size: int, num_hops: int = 1):
+    def __init__(self, base_data: List[Data], edge_index: np.ndarray, sample_size: int, num_hops: int = 1):
         self.base_data = base_data
         self.sample_size = sample_size
         self.num_hops = num_hops
@@ -1399,7 +1399,7 @@ def train_sequence(
     edge_attr_phys: torch.Tensor,
     node_type: Optional[torch.Tensor],
     edge_type: Optional[torch.Tensor],
-    edge_pairs: list[tuple[int, int]],
+    edge_pairs: List[Tuple[int, int]],
     optimizer,
     device,
     pump_coeffs: Optional[torch.Tensor] = None,
@@ -1414,7 +1414,7 @@ def train_sequence(
     w_edge: float = 1.0,
     amp: bool = False,
     progress: bool = True,
-) -> tuple[float, float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float]:
     global interrupted
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
@@ -1609,7 +1609,7 @@ def evaluate_sequence(
     edge_attr_phys: torch.Tensor,
     node_type: Optional[torch.Tensor],
     edge_type: Optional[torch.Tensor],
-    edge_pairs: list[tuple[int, int]],
+    edge_pairs: List[Tuple[int, int]],
     device,
     pump_coeffs: Optional[torch.Tensor] = None,
     loss_fn: str = "mae",
@@ -1623,7 +1623,7 @@ def evaluate_sequence(
     w_edge: float = 1.0,
     amp: bool = False,
     progress: bool = True,
-) -> tuple[float, float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float]:
     global interrupted
     model.eval()
     total_loss = 0.0

@@ -1,6 +1,6 @@
 import argparse
 import time
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 import os
 from pathlib import Path
 import json
@@ -683,10 +683,10 @@ def compute_mpc_cost(
     Pmin: float,
     Cmin: float,
     demands: Optional[torch.Tensor] = None,
-    pump_info: Optional[list[tuple[int, int, int]]] = None,
+    pump_info: Optional[List[Tuple[int, int, int]]] = None,
     return_energy: bool = False,
     init_tank_levels: Optional[torch.Tensor] = None,
-) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """Return the MPC cost for a sequence of pump speeds.
 
     The cost combines pressure and chlorine constraint violations, pump
@@ -819,9 +819,9 @@ def run_mpc_step(
     Cmin: float,
     demands: Optional[torch.Tensor] = None,
     u_warm: Optional[torch.Tensor] = None,
-    pump_info: Optional[list[tuple[int, int, int]]] = None,
+    pump_info: Optional[List[Tuple[int, int, int]]] = None,
     profile: bool = False,
-) -> tuple[torch.Tensor, List[float], float]:
+) -> Tuple[torch.Tensor, List[float], float]:
     """Optimize pump speeds for one hour using gradient-based MPC.
 
     The optimization is performed in two phases: a short warm start with
@@ -973,7 +973,7 @@ def propagate_with_surrogate(
     speed_seq: torch.Tensor,
     device: torch.device,
     demands: Optional[torch.Tensor] = None,
-) -> tuple[Dict[str, float], Dict[str, float]]:
+) -> Tuple[Dict[str, float], Dict[str, float]]:
     """Propagate the network state using the surrogate model.
 
     The current state ``pressures``/``chlorine`` is advanced through the
