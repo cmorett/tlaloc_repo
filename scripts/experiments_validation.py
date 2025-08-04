@@ -12,7 +12,7 @@ import os
 import json
 import pickle
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 from datetime import datetime
 import sys
 
@@ -206,7 +206,7 @@ def validate_surrogate(
     run_name: str,
     node_types_tensor: Optional[torch.Tensor] = None,
     edge_types_tensor: Optional[torch.Tensor] = None,
-) -> tuple[Dict[str, float], np.ndarray, List[int]]:
+) -> Tuple[Dict[str, float], np.ndarray, List[int]]:
     """Compute RMSE of surrogate predictions.
 
     ``test_results`` may either contain ``wntr`` ``NetworkResults`` objects or

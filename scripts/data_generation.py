@@ -5,7 +5,7 @@ import argparse
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple, Optional
+from typing import Dict, Iterable, List, Tuple, Optional, Union
 from sklearn.preprocessing import MinMaxScaler
 import warnings
 from functools import partial
@@ -44,7 +44,7 @@ TEMP_EXTENSIONS = [
 
 
 @contextmanager
-def temp_simulation_files(prefix: Path | str):
+def temp_simulation_files(prefix: Union[Path, str]):
     """Yield ``prefix`` and remove EPANET temporary files afterwards."""
     try:
         yield prefix
@@ -281,7 +281,10 @@ def _run_single_scenario(
     return sim_results, scale_dict, pump_controls
 
 
-def extract_additional_targets(sim_results: wntr.sim.results.SimulationResults, wn: wntr.network.WaterNetworkModel) -> tuple[np.ndarray, np.ndarray]:
+def extract_additional_targets(
+    sim_results: wntr.sim.results.SimulationResults,
+    wn: wntr.network.WaterNetworkModel,
+) -> Tuple[np.ndarray, np.ndarray]:
     """Return arrays of pipe flow rates and pump energy consumption."""
 
     flows_df = sim_results.link["flowrate"]
