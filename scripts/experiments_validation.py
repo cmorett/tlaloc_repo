@@ -23,6 +23,7 @@ import torch
 import wntr
 from wntr.metrics.economic import pump_energy
 import epyt
+from tqdm import tqdm
 
 # Minimum allowed pressure [m] applied during preprocessing.
 MIN_PRESSURE = 5.0
@@ -254,7 +255,11 @@ def validate_surrogate(
 
     with torch.no_grad():
         first = True
-        for res in test_results:
+        for res in tqdm(
+            test_results,
+            desc="Validating scenarios",
+            disable=__name__ != "__main__",
+        ):
             # ``data_generation.py`` stores tuples of ``(results, demand_scale)``.
             # Older pickle files may therefore provide the result object as the
             # first element of a tuple.  Support both formats here.
@@ -269,7 +274,12 @@ def validate_surrogate(
             pump_df = res.link["setting"][wn.pump_name_list]
             times = pressures_df.index
             pump_array = np.clip(pump_df.values, 0.0, 1.0)
-            for i in range(len(times) - 1):
+            for i in tqdm(
+                range(len(times) - 1),
+                desc="Sim steps",
+                leave=False,
+                disable=__name__ != "__main__",
+            ):
                 p = pressures_df.iloc[i].to_dict()
                 c = chlorine_df.iloc[i].to_dict()
                 dem = demand_df.iloc[i].to_dict() if demand_df is not None else None
@@ -425,7 +435,11 @@ def run_all_pumps_on(
     """Simulate with every pump on at full speed."""
 
     log = []
-    for hour in range(24):
+    for hour in tqdm(
+        range(24),
+        desc="Baseline: all pumps on",
+        disable=__name__ != "__main__",
+    ):
         for pn in pump_names:
             link = wn.get_link(pn)
             link.initial_status = wntr.network.base.LinkStatus.Open
@@ -479,7 +493,11 @@ def run_heuristic_baseline(
     pressures = results.node["pressure"].iloc[-1].to_dict()
     chlorine = results.node["quality"].iloc[-1].to_dict()
 
-    for hour in range(24):
+    for hour in tqdm(
+        range(24),
+        desc="Baseline: heuristic",
+        disable=__name__ != "__main__",
+    ):
         if min(pressures[n] for n in wn.junction_name_list) < threshold_p or min(
             chlorine[n] for n in wn.junction_name_list
         ) < threshold_c:
