@@ -22,7 +22,6 @@ import pandas as pd
 import torch
 import wntr
 from wntr.metrics.economic import pump_energy
-import epyt
 
 # Minimum allowed pressure [m] applied during preprocessing.
 MIN_PRESSURE = 5.0
@@ -85,7 +84,7 @@ def pressure_error_heatmap(
     errors: np.ndarray,
     times: Sequence[int],
     node_names: Sequence[str],
-    inp_path: str,
+    wn: wntr.network.WaterNetworkModel,
     run_name: str,
     plots_dir: Optional[Path] = None,
     return_fig: bool = False,
@@ -107,12 +106,10 @@ def pressure_error_heatmap(
     axes[0].set_xticklabels(node_names, rotation=90, fontsize=6)
     fig.colorbar(im, ax=axes[0], label="Error (m)")
 
-    net = epyt.epanet(str(inp_path))
-    coords = net.getNodeCoordinates()
-    node_index = {name: i + 1 for i, name in enumerate(net.NodeNameID)}
     avg_err = errors.mean(axis=0)
-    x = [coords["x"][node_index[n]] for n in node_names]
-    y = [coords["y"][node_index[n]] for n in node_names]
+    coords = [wn.get_node(n).coordinates for n in node_names]
+    x = [c[0] for c in coords]
+    y = [c[1] for c in coords]
     sc = axes[1].scatter(x, y, c=avg_err, cmap="magma")
     axes[1].set_title("Average Node Error")
     fig.colorbar(sc, ax=axes[1], label="Error (m)")
@@ -645,7 +642,7 @@ def main() -> None:
             err_arr,
             err_times,
             wn.node_name_list,
-            args.inp,
+            wn,
             args.run_name or "",
         )
     else:

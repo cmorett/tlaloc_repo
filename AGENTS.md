@@ -79,7 +79,7 @@ pip install -r requirements.txt
 ```
 
 This installs PyTorch, PyTorch Geometric, `numpy`, `scikit-learn`, `wntr`,
-`pandas`, `matplotlib`, `networkx` and `epyt` along with other dependencies.
+`pandas`, `matplotlib`, and `networkx` along with other dependencies.
 
 ## Testing Protocols
 
