@@ -2382,9 +2382,12 @@ def main(args: argparse.Namespace):
                 pin_memory=torch.cuda.is_available(),
                 persistent_workers=args.workers > 0,
             )
-        state = torch.load(model_path, map_location=device)
-        if isinstance(state, dict) and "model_state_dict" in state:
-            state = state["model_state_dict"]
+        checkpoint = torch.load(model_path, map_location=device)
+        state = (
+            checkpoint["model_state_dict"]
+            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
+            else checkpoint
+        )
         model.load_state_dict(state)
         model.eval()
         preds_p = []
