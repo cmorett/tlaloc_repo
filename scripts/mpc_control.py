@@ -292,9 +292,12 @@ def load_surrogate_model(
         raise FileNotFoundError(
             f"{full_path} not found. Run train_gnn.py to generate the surrogate weights."
         )
-    state = torch.load(str(full_path), map_location=device)
-    if isinstance(state, dict) and "model_state_dict" in state:
-        state = state["model_state_dict"]
+    checkpoint = torch.load(str(full_path), map_location=device)
+    state = (
+        checkpoint["model_state_dict"]
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
+        else checkpoint
+    )
 
     # Support both the current ``layers.X`` style parameter names as well as
     # older checkpoints that used ``conv1``/``conv2``.  If the latter is
