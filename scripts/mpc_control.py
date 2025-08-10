@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import warnings
 import inspect
 from torch_geometric.nn import GCNConv, GATConv
@@ -717,15 +718,22 @@ def compute_mpc_cost(
     return_energy: bool = False,
     init_tank_levels: Optional[torch.Tensor] = None,
     skip_normalization: bool = False,
+    w_p: float = 100.0,
+    w_c: float = 100.0,
+    w_e: float = 1.0,
+    energy_scale: float = 1e-9,
+    use_barrier: bool = False,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """Return the MPC cost for a sequence of pump speeds.
 
     The cost combines pressure and chlorine constraint violations, pump
     energy use and a smoothness term on control differences. ``demands`` can be
     used to provide per-node demand values for each step which keeps the
-    surrogate inputs consistent with training.
-    Violations are penalized cubically to strongly discourage operating below
-    the specified minimum thresholds.
+    surrogate inputs consistent with training.  The energy term is scaled by
+    ``energy_scale`` which defaults to converting Joules to megawatt-hours
+    (``1e-9``).  ``w_p``, ``w_c`` and ``w_e`` weight the respective cost
+    components.  If ``use_barrier`` is ``True`` a softplus barrier is applied
+    to constraint violations so that large deviations grow superlinearly.
     """
     cur_p = pressures.to(device)
     cur_c = chlorine.to(device)
@@ -779,24 +787,24 @@ def compute_mpc_cost(
         # ------------------------------------------------------------------
         # Cost terms
         # ------------------------------------------------------------------
-        # We enforce pressure and chlorine constraints using a cubic penalty
-        # on the amount by which the prediction falls below the minimum
-        # thresholds.  Cubic growth penalizes larger violations more
-        # aggressively than a simple quadratic term.
-
-        w_p, w_c, w_e, w_s = 10.0, 5.0, 1.0, 0.01
+        w_s = 0.01
 
         Pmin_safe = Pmin + 3.0
         Cmin_safe = Cmin + 0.05
 
         psf = torch.clamp(Pmin_safe - pred_p, min=0.0)
         csf = torch.clamp(Cmin_safe - pred_c, min=0.0)
-        pressure_penalty = torch.sum(psf ** 3)
-        chlorine_penalty = torch.sum(csf ** 3)
+
+        if use_barrier:
+            pressure_penalty = torch.sum(F.softplus(psf) ** 2)
+            chlorine_penalty = torch.sum(F.softplus(csf) ** 2)
+        else:
+            pressure_penalty = torch.sum(psf ** 3)
+            chlorine_penalty = torch.sum(csf ** 3)
 
         if flows is not None and pump_info is not None:
             head = pred_p + feature_template[:, 3]
-            energy_term = torch.tensor(0.0, device=device)
+            energy_term_j = torch.tensor(0.0, device=device)
             eff = wn.options.energy.global_efficiency / 100.0
             for idx, s_idx, e_idx in pump_info:
                 raw_f = flows[idx]
@@ -809,11 +817,13 @@ def compute_mpc_cost(
                 f = torch.abs(raw_f)
                 hl = torch.clamp(raw_hl, min=0.0)
                 e = 1000.0 * 9.81 * hl * f / eff * 3600.0
-                energy_term = energy_term + e
+                energy_term_j = energy_term_j + e
                 if t == 0 and return_energy:
                     energy_first = energy_first + e
         else:
-            energy_term = torch.sum(speed ** 2)
+            energy_term_j = torch.sum(speed ** 2)
+
+        energy_term = energy_term_j * energy_scale
 
         step_cost = (
             w_p * pressure_penalty
@@ -860,6 +870,11 @@ def run_mpc_step(
     pump_info: Optional[List[Tuple[int, int, int]]] = None,
     profile: bool = False,
     skip_normalization: bool = False,
+    w_p: float = 100.0,
+    w_c: float = 100.0,
+    w_e: float = 1.0,
+    energy_scale: float = 1e-9,
+    use_barrier: bool = False,
 ) -> Tuple[torch.Tensor, List[float], float]:
     """Optimize pump speeds for one hour using gradient-based MPC.
 
@@ -928,6 +943,11 @@ def run_mpc_step(
             False,
             init_levels,
             skip_normalization,
+            w_p,
+            w_c,
+            w_e,
+            energy_scale,
+            use_barrier,
         )
         cost.backward()
         adam_opt.step()
@@ -962,6 +982,11 @@ def run_mpc_step(
             False,
             init_levels,
             skip_normalization,
+            w_p,
+            w_c,
+            w_e,
+            energy_scale,
+            use_barrier,
         )
         c.backward()
         return c
@@ -988,6 +1013,11 @@ def run_mpc_step(
         True,
         init_levels,
         skip_normalization,
+        w_p,
+        w_c,
+        w_e,
+        energy_scale,
+        use_barrier,
     )
     with torch.no_grad():
         pump_speeds.data.clamp_(0.0, 1.0)
@@ -1128,6 +1158,11 @@ def simulate_closed_loop(
     run_name: str = "",
     profile: bool = False,
     skip_normalization: bool = False,
+    w_p: float = 100.0,
+    w_c: float = 100.0,
+    w_e: float = 1.0,
+    energy_scale: float = 1e-9,
+    use_barrier: bool = False,
 ) -> pd.DataFrame:
     """Run 24-hour closed-loop MPC using the surrogate for fast updates.
 
@@ -1226,6 +1261,11 @@ def simulate_closed_loop(
             pump_info,
             profile,
             skip_normalization,
+            w_p,
+            w_c,
+            w_e,
+            energy_scale,
+            use_barrier,
         )
         all_costs.extend(costs)
         prev_speed = speed_opt.detach()
@@ -1380,6 +1420,20 @@ def main():
         action="store_true",
         help="Disable feature normalization for ablation",
     )
+    parser.add_argument(
+        "--energy-scale",
+        type=float,
+        default=1e-9,
+        help="Scale factor applied to pump energy (e.g., 1e-9 converts J to MWh)",
+    )
+    parser.add_argument("--w_p", type=float, default=100.0, help="Weight on pressure violations")
+    parser.add_argument("--w_c", type=float, default=100.0, help="Weight on chlorine violations")
+    parser.add_argument("--w_e", type=float, default=1.0, help="Weight on energy usage")
+    parser.add_argument(
+        "--use-barrier",
+        action="store_true",
+        help="Apply softplus barrier to constraint violations (Approach B)",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1436,6 +1490,11 @@ def main():
         datetime.now().strftime("%Y%m%d_%H%M%S"),
         args.profile,
         args.skip_normalization,
+        args.w_p,
+        args.w_c,
+        args.w_e,
+        args.energy_scale,
+        args.use_barrier,
     )
 
 

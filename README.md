@@ -282,7 +282,8 @@ Once the surrogate model is trained you can run gradient-based MPC using
 ```bash
 python scripts/mpc_control.py \
     --horizon 6 --iterations 50 --feedback-interval 24 \
-    --Pmin 20.0 --Cmin 0.2 --profile
+    --Pmin 20.0 --Cmin 0.2 --energy-scale 1e-9 \
+    --w_p 100 --w_c 100 --w_e 1.0 --profile
 ```
 
 Pass ``--profile`` to print the runtime of each MPC optimisation step. The
@@ -295,6 +296,15 @@ scenarios in parallel.
 Use ``--skip-normalization`` to disable input normalization and feed raw
 features into the surrogate for ablation studies. Outputs are always
 de-normalized back to physical units.
+
+``mpc_control.py`` exposes weights on pressure, chlorine and energy terms as
+``--w_p``, ``--w_c`` and ``--w_e`` respectively.  The default configuration
+scales pump energy from Joules to megawatt-hours via ``--energy-scale 1e-9``
+and sets ``w_p``/``w_c`` to 100 so constraint violations dominate energy
+trade-offs.  Passing ``--use-barrier`` switches to an exponential-style
+penalty which grows superlinearly, enabling an alternative strategy where
+energy remains in Joules but the violation weights are increased by several
+orders of magnitude.
 
 Pump energy usage in the MPC cost function is computed from predicted flows and
 head gains using the EPANET power equations. This removes the need for a
