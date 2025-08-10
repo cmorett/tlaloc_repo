@@ -118,11 +118,14 @@ python scripts/train_gnn.py \
     --x-val-path data/X_val.npy --y-val-path data/Y_val.npy \
     --edge-index-path data/edge_index.npy --edge-attr-path data/edge_attr.npy \
     --inp-path CTown.inp \
-    --epochs 100 --batch-size 32 --hidden-dim 64 --num-layers 4 \
-    --workers 8 \
+    --epochs 100 --batch-size 32 --hidden-dim 128 --num-layers 4 \
+    --lstm-hidden 64 --workers 8 \
     --dropout 0.1 --residual --early-stop-patience 10 \
     --weight-decay 1e-5
 ```
+GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8}) and ``--hidden-dim`` ({128,256}).
+Use ``--residual`` to enable skip connections and ``--use-attention`` for graph attention on node updates.
+The LSTM hidden size can be set with ``--lstm-hidden`` (64 or 128).
 If training is interrupted with ``Ctrl+C`` a final checkpoint containing the
 model, optimizer, scheduler state and epoch is saved so progress is not lost.
 To continue a previous run pass the checkpoint path via ``--resume``.  All
@@ -256,7 +259,7 @@ Scenarios that do not contain at least ``sequence_length + 1`` time steps are
 skipped with a warning so the actual dataset may be smaller than requested.
 
 The training script automatically detects such sequence files and will use the recurrent
-model. Adjust the recurrent hidden size via ``--rnn-hidden-dim`` if desired.
+model. Adjust the recurrent hidden size via ``--lstm-hidden`` (alias ``--rnn-hidden-dim``) choosing 64 or 128.
 
 Validate the resulting model with `scripts/experiments_validation.py` before
 running the MPC controller.  The validation script executes a 24‑hour
@@ -281,6 +284,15 @@ python scripts/experiments_validation.py \
     --model models/gnn_surrogate.pth --inp CTown.inp \
     --horizon 6 --iterations 50 --feedback-interval 1 \
     --run-name baseline
+```
+
+To benchmark architectural variants, run ``scripts/ablation_study.py`` which trains four configurations (baseline, residual, deep and attention) and reports validation pressure MAE along with training time.
+
+```bash
+python scripts/ablation_study.py \
+    --x-path data/X_train.npy --y-path data/Y_train.npy \
+    --edge-index-path data/edge_index.npy --edge-attr-path data/edge_attr.npy \
+    --inp-path CTown.inp --epochs 20 --batch-size 32
 ```
 
 To examine how surrogate errors accumulate without EPANET feedback, enable
