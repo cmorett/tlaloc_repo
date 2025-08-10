@@ -316,7 +316,7 @@ Once the surrogate model is trained you can run gradient-based MPC using
 python scripts/mpc_control.py \
     --horizon 6 --iterations 50 --feedback-interval 24 \
     --Pmin 20.0 --Cmin 0.2 --energy-scale 1e-9 \
-    --w_p 100 --w_c 100 --w_e 1.0 --profile
+    --w_p 100 --w_c 100 --w_e 1.0 --bias-correction --bias-window 24 --profile
 ```
 
 Pass ``--profile`` to print the runtime of each MPC optimisation step. The
@@ -329,6 +329,12 @@ scenarios in parallel.
 Use ``--skip-normalization`` to disable input normalization and feed raw
 features into the surrogate for ablation studies. Outputs are always
 de-normalized back to physical units.
+
+Passing ``--bias-correction`` maintains a rolling mean of the last
+``--bias-window`` EPANET–surrogate pressure residuals and subtracts it
+from future surrogate predictions. Bias estimates reset whenever ground
+truth feedback is applied, and the magnitude range of the current bias is
+logged each hour.
 
 ``mpc_control.py`` exposes weights on pressure, chlorine and energy terms as
 ``--w_p``, ``--w_c`` and ``--w_e`` respectively.  The default configuration

@@ -15,6 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import warnings
 import inspect
+from collections import deque
 from torch_geometric.nn import GCNConv, GATConv
 from sklearn.preprocessing import MinMaxScaler
 # Import ``HydroConv`` from the training module located in the same
@@ -1138,6 +1139,30 @@ def propagate_with_surrogate(
     return out_ps, out_cs
 
 
+class PressureBiasCorrector:
+    """Maintain a rolling mean of pressure residuals and apply corrections."""
+
+    def __init__(self, num_nodes: int, window: int):
+        self.window = max(1, window)
+        self.buffers = [deque(maxlen=self.window) for _ in range(num_nodes)]
+        self.bias = np.zeros(num_nodes, dtype=np.float32)
+
+    def apply(self, pressures: Dict[str, float], node_to_index: Dict[str, int]) -> Dict[str, float]:
+        for name, idx in node_to_index.items():
+            pressures[name] -= float(self.bias[idx])
+        return pressures
+
+    def update(self, residual: np.ndarray) -> None:
+        for i, r in enumerate(residual):
+            self.buffers[i].append(float(r))
+            self.bias[i] = float(np.mean(self.buffers[i]))
+
+    def reset(self) -> None:
+        for buf in self.buffers:
+            buf.clear()
+        self.bias.fill(0.0)
+
+
 
 def simulate_closed_loop(
     wn: wntr.network.WaterNetworkModel,
@@ -1163,6 +1188,8 @@ def simulate_closed_loop(
     w_e: float = 1.0,
     energy_scale: float = 1e-9,
     use_barrier: bool = False,
+    bias_correction: bool = False,
+    bias_window: int = 1,
 ) -> pd.DataFrame:
     """Run 24-hour closed-loop MPC using the surrogate for fast updates.
 
@@ -1198,6 +1225,10 @@ def simulate_closed_loop(
         e = node_idx[pump.end_node.name]
         idx = int(np.where((ei_np[0] == s) & (ei_np[1] == e))[0][0])
         pump_info.append((idx, s, e))
+
+    bias_corrector = None
+    if bias_correction:
+        bias_corrector = PressureBiasCorrector(len(node_to_index), bias_window)
     # obtain hydraulic state at time zero
     wn.options.time.duration = 0
     wn.options.time.report_timestep = 0
@@ -1293,6 +1324,24 @@ def simulate_closed_loop(
             junc.demand_timeseries_list[0].base_value = base_demands[j] * mult
 
         if feedback_interval > 0 and hour % feedback_interval == 0:
+            pred_pressures = None
+            if bias_corrector is not None:
+                pred_pressures, _ = propagate_with_surrogate(
+                    wn,
+                    model,
+                    edge_index,
+                    edge_attr,
+                    node_types,
+                    edge_types,
+                    feature_template,
+                    pressures,
+                    chlorine,
+                    speed_opt,
+                    device,
+                    demands,
+                    skip_normalization,
+                )
+                pred_pressures = bias_corrector.apply(pred_pressures, node_idx)
             # Periodic ground truth synchronization using EPANET
             wn.options.time.start_clocktime = t
             wn.options.time.duration = 3600
@@ -1308,6 +1357,10 @@ def simulate_closed_loop(
                 head = wn.get_node(res_name).base_head
                 p_arr[idx] = head
                 pressures[res_name] = head
+            if bias_corrector is not None and pred_pressures is not None:
+                residual = p_arr - np.array([pred_pressures[n] for n in wn.node_name_list])
+                bias_corrector.reset()
+                bias_corrector.update(residual)
             # Using non_blocking transfer for EPANET output
             cur_p = (
                 torch.from_numpy(p_arr)
@@ -1342,10 +1395,17 @@ def simulate_closed_loop(
                 demands,
                 skip_normalization,
             )
+            if bias_corrector is not None:
+                pressures = bias_corrector.apply(pressures, node_idx)
             cur_p = torch.tensor([pressures[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
             cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
             end = time.time()
             energy = energy_first
+        bias_min = bias_max = 0.0
+        if bias_corrector is not None:
+            b_abs = np.abs(bias_corrector.bias)
+            bias_min = float(b_abs.min())
+            bias_max = float(b_abs.max())
         min_p = max(min(pressures[n] for n in wn.junction_name_list), 0.0)
         min_c = max(min(chlorine[n] for n in wn.junction_name_list), 0.0)
         if min_p < Pmin:
@@ -1361,10 +1421,12 @@ def simulate_closed_loop(
                 "energy": energy,
                 "runtime_sec": end - start,
                 "controls": first_speeds.cpu().numpy().tolist(),
+                "bias_min": bias_min,
+                "bias_max": bias_max,
             }
         )
         print(
-            f"Hour {hour}: minP={min_p:.2f}, minC={min_c:.3f}, energy={energy:.2f}, runtime={end-start:.2f}s"
+            f"Hour {hour}: minP={min_p:.2f}, minC={min_c:.3f}, energy={energy:.2f}, runtime={end-start:.2f}s, bias=[{bias_min:.3f},{bias_max:.3f}]"
         )
     df = pd.DataFrame(log)
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -1434,6 +1496,17 @@ def main():
         action="store_true",
         help="Apply softplus barrier to constraint violations (Approach B)",
     )
+    parser.add_argument(
+        "--bias-correction",
+        action="store_true",
+        help="Enable pressure bias correction using recent EPANET residuals",
+    )
+    parser.add_argument(
+        "--bias-window",
+        type=int,
+        default=1,
+        help="Number of residuals to average for bias correction",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1495,6 +1568,8 @@ def main():
         args.w_e,
         args.energy_scale,
         args.use_barrier,
+        args.bias_correction,
+        args.bias_window,
     )
 
 
