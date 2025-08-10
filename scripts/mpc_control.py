@@ -723,7 +723,7 @@ def compute_mpc_cost(
     w_c: float = 100.0,
     w_e: float = 1.0,
     energy_scale: float = 1e-9,
-    use_barrier: bool = False,
+    barrier: str = "softplus",
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """Return the MPC cost for a sequence of pump speeds.
 
@@ -733,8 +733,10 @@ def compute_mpc_cost(
     surrogate inputs consistent with training.  The energy term is scaled by
     ``energy_scale`` which defaults to converting Joules to megawatt-hours
     (``1e-9``).  ``w_p``, ``w_c`` and ``w_e`` weight the respective cost
-    components.  If ``use_barrier`` is ``True`` a softplus barrier is applied
-    to constraint violations so that large deviations grow superlinearly.
+    components.  ``barrier`` selects how constraint violations are penalised:
+    ``"softplus"`` (default) applies a smooth softplus barrier, ``"exp"`` uses
+    an exponential barrier and ``"cubic"`` falls back to the previous cubic
+    hinge.
     """
     cur_p = pressures.to(device)
     cur_c = chlorine.to(device)
@@ -757,7 +759,9 @@ def compute_mpc_cost(
 
     for t in range(horizon):
         d = demands[t] if demands is not None else None
-        speed = torch.clamp(pump_speeds[t], 0.0, 1.0)
+        raw_speed = pump_speeds[t]
+        clamped = torch.clamp(raw_speed, 0.0, 1.0)
+        speed = raw_speed + (clamped - raw_speed).detach()
         x = prepare_node_features(
             feature_template, cur_p, cur_c, speed, model, d, skip_normalization
         )
@@ -796,9 +800,12 @@ def compute_mpc_cost(
         psf = torch.clamp(Pmin_safe - pred_p, min=0.0)
         csf = torch.clamp(Cmin_safe - pred_c, min=0.0)
 
-        if use_barrier:
+        if barrier == "softplus":
             pressure_penalty = torch.sum(F.softplus(psf) ** 2)
             chlorine_penalty = torch.sum(F.softplus(csf) ** 2)
+        elif barrier == "exp":
+            pressure_penalty = torch.sum(torch.expm1(psf))
+            chlorine_penalty = torch.sum(torch.expm1(csf))
         else:
             pressure_penalty = torch.sum(psf ** 3)
             chlorine_penalty = torch.sum(csf ** 3)
@@ -837,7 +844,9 @@ def compute_mpc_cost(
         if t > 0:
             # small penalty on rapid pump switching to produce smoother
             # control sequences
-            prev_speed = torch.clamp(pump_speeds[t - 1], 0.0, 1.0)
+            prev_raw = pump_speeds[t - 1]
+            prev_clamped = torch.clamp(prev_raw, 0.0, 1.0)
+            prev_speed = prev_raw + (prev_clamped - prev_raw).detach()
             smoothness_penalty = smoothness_penalty + torch.sum((speed - prev_speed) ** 2)
 
         # update dictionaries for next step
@@ -875,7 +884,8 @@ def run_mpc_step(
     w_c: float = 100.0,
     w_e: float = 1.0,
     energy_scale: float = 1e-9,
-    use_barrier: bool = False,
+    barrier: str = "softplus",
+    gmax: float = 1.0,
 ) -> Tuple[torch.Tensor, List[float], float]:
     """Optimize pump speeds for one hour using gradient-based MPC.
 
@@ -883,7 +893,8 @@ def run_mpc_step(
     Adam followed by refinement using L-BFGS. ``iterations`` controls the total
     number of optimization steps, split approximately 20/80 between the two
     phases. The speed variables are clamped to ``[0, 1]`` after each update to
-    enforce valid pump settings.
+    enforce valid pump settings. Gradients on the control variables are clipped
+    to ``[-gmax, gmax]`` to improve numerical stability.
 
     Parameters
     ----------
@@ -948,12 +959,14 @@ def run_mpc_step(
             w_c,
             w_e,
             energy_scale,
-            use_barrier,
+            barrier,
         )
         cost.backward()
+        if gmax is not None:
+            pump_speeds.grad.clamp_(-gmax, gmax)
         adam_opt.step()
         with torch.no_grad():
-            pump_speeds.data.clamp_(0.0, 1.0)
+            pump_speeds.copy_(pump_speeds.clamp(0.0, 1.0))
         scheduler.step(cost.item())
         cost_history.append(float(cost.item()))
 
@@ -987,9 +1000,11 @@ def run_mpc_step(
             w_c,
             w_e,
             energy_scale,
-            use_barrier,
+            barrier,
         )
         c.backward()
+        if gmax is not None:
+            pump_speeds.grad.clamp_(-gmax, gmax)
         return c
 
     final_cost = lbfgs_opt.step(closure)
@@ -1018,10 +1033,10 @@ def run_mpc_step(
         w_c,
         w_e,
         energy_scale,
-        use_barrier,
+        barrier,
     )
     with torch.no_grad():
-        pump_speeds.data.clamp_(0.0, 1.0)
+        pump_speeds.copy_(pump_speeds.clamp(0.0, 1.0))
 
     if hasattr(model, "rnn") and not prev_training:
         model.eval()
@@ -1187,7 +1202,8 @@ def simulate_closed_loop(
     w_c: float = 100.0,
     w_e: float = 1.0,
     energy_scale: float = 1e-9,
-    use_barrier: bool = False,
+    barrier: str = "softplus",
+    gmax: float = 1.0,
     bias_correction: bool = False,
     bias_window: int = 1,
 ) -> pd.DataFrame:
@@ -1302,7 +1318,8 @@ def simulate_closed_loop(
             w_c,
             w_e,
             energy_scale,
-            use_barrier,
+            barrier,
+            gmax,
         )
         all_costs.extend(costs)
         prev_speed = speed_opt.detach()
@@ -1498,9 +1515,16 @@ def main():
     parser.add_argument("--w_c", type=float, default=100.0, help="Weight on chlorine violations")
     parser.add_argument("--w_e", type=float, default=1.0, help="Weight on energy usage")
     parser.add_argument(
-        "--use-barrier",
-        action="store_true",
-        help="Apply softplus barrier to constraint violations (Approach B)",
+        "--barrier",
+        choices=["softplus", "exp", "cubic"],
+        default="softplus",
+        help="Penalty type for constraint violations",
+    )
+    parser.add_argument(
+        "--gmax",
+        type=float,
+        default=1.0,
+        help="Infinity-norm gradient clipping threshold for controls",
     )
     parser.add_argument(
         "--bias-correction",
@@ -1578,7 +1602,8 @@ def main():
         args.w_c,
         args.w_e,
         args.energy_scale,
-        args.use_barrier,
+        args.barrier,
+        args.gmax,
         args.bias_correction,
         args.bias_window,
     )

@@ -341,10 +341,10 @@ logged each hour.
 ``--w_p``, ``--w_c`` and ``--w_e`` respectively.  The default configuration
 scales pump energy from Joules to megawatt-hours via ``--energy-scale 1e-9``
 and sets ``w_p``/``w_c`` to 100 so constraint violations dominate energy
-trade-offs.  Passing ``--use-barrier`` switches to an exponential-style
-penalty which grows superlinearly, enabling an alternative strategy where
-energy remains in Joules but the violation weights are increased by several
-orders of magnitude.
+trade-offs.  ``--barrier`` selects how violations are penalised: ``softplus``
+applies a smooth barrier (default), ``exp`` uses an exponential barrier and
+``cubic`` reverts to the previous hinge. Gradients on the control variables are
+clipped to ``[-gmax, gmax]`` with ``--gmax`` to improve numerical robustness.
 
 Pump energy usage in the MPC cost function is computed from predicted flows and
 head gains using the EPANET power equations. This removes the need for a
