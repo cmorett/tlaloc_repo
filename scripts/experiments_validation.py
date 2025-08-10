@@ -750,6 +750,11 @@ def main() -> None:
         help="Run N-step surrogate roll-out validation",
     )
     args = parser.parse_args()
+    if args.feedback_interval > 1:
+        print(
+            f"WARNING: --feedback-interval set to {args.feedback_interval}; "
+            "surrogate predictions may drift without hourly EPANET feedback."
+        )
     run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     (

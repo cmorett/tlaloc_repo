@@ -1179,7 +1179,7 @@ def simulate_closed_loop(
     device: torch.device,
     Pmin: float,
     Cmin: float,
-    feedback_interval: int = 24,
+    feedback_interval: int = 1,
     run_name: str = "",
     profile: bool = False,
     skip_normalization: bool = False,
@@ -1194,10 +1194,16 @@ def simulate_closed_loop(
     """Run 24-hour closed-loop MPC using the surrogate for fast updates.
 
     EPANET is invoked only every ``feedback_interval`` hours (default once per
-    day) to obtain ground-truth measurements.  All intermediate steps update the
-    pressures and chlorine levels using the GNN surrogate which allows the loop
-    to run nearly instantly.
+    hour) to obtain ground-truth measurements.  All intermediate steps update
+    the pressures and chlorine levels using the GNN surrogate which allows the
+    loop to run nearly instantly.
     """
+    if feedback_interval > 1:
+        print(
+            f"WARNING: feedback_interval is {feedback_interval}; "
+            "surrogate predictions may drift without hourly EPANET feedback."
+        )
+
     expected_in_dim = 4 + len(pump_names)
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", expected_in_dim)
     if in_dim < expected_in_dim:
@@ -1464,7 +1470,7 @@ def main():
     parser.add_argument(
         "--feedback-interval",
         type=int,
-        default=24,
+        default=1,
         help="Hours between EPANET synchronizations",
     )
     parser.add_argument(
@@ -1508,6 +1514,11 @@ def main():
         help="Number of residuals to average for bias correction",
     )
     args = parser.parse_args()
+    if args.feedback_interval > 1:
+        print(
+            f"WARNING: --feedback-interval set to {args.feedback_interval}; "
+            "surrogate predictions may drift without hourly EPANET feedback."
+        )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     inp_path = os.path.join(REPO_ROOT, "CTown.inp")

@@ -262,9 +262,10 @@ The training script automatically detects such sequence files and will use the r
 model. Adjust the recurrent hidden size via ``--lstm-hidden`` (alias ``--rnn-hidden-dim``) choosing 64 or 128.
 
 Validate the resulting model with `scripts/experiments_validation.py` before
-running the MPC controller.  The validation script executes a 24‑hour
-simulation with EPANET feedback applied every hour (``--feedback-interval`` is
-``1`` by default) which keeps predictions from the surrogate model from
+running the MPC controller.  Both this script and `scripts/mpc_control.py`
+now synchronize with EPANET every hour by default (``--feedback-interval 1``).
+The validation script executes a 24‑hour simulation with EPANET feedback
+applied every hour which keeps predictions from the surrogate model from
 diverging over long horizons.  It now also reports mean absolute error (MAE)
  and the maximum absolute error for pressure and chlorine.  Predictions and
  ground truth are denormalized and chlorine values are exponentiated so the
@@ -282,7 +283,7 @@ Typical validation command:
 ```bash
 python scripts/experiments_validation.py \
     --model models/gnn_surrogate.pth --inp CTown.inp \
-    --horizon 6 --iterations 50 --feedback-interval 1 \
+    --horizon 6 --iterations 50 \
     --run-name baseline
 ```
 
@@ -310,7 +311,7 @@ to `runs/<name>/rollout_rmse.png`.
 ## Running MPC control
 
 Once the surrogate model is trained you can run gradient-based MPC using
-`scripts/mpc_control.py`:
+`scripts/mpc_control.py` (hourly EPANET feedback is the default):
 
 ```bash
 python scripts/mpc_control.py \
@@ -353,9 +354,10 @@ By default the controller loads the most recent ``.pth`` file found in the
 ``models`` directory so retraining will automatically use the newest weights.
 
 This executes a 24‑hour closed loop simulation where fractional pump speeds are
-optimized at each hour.  EPANET is only called every 24 hours (controlled by
-``--feedback-interval``) and all intermediate updates rely on the GNN surrogate
-running entirely on a CUDA device.  Results are written to
+optimized at each hour. In the command above EPANET is only called every
+24 hours because ``--feedback-interval 24`` is specified; without this flag the
+controller synchronizes every hour. A warning is printed whenever the feedback
+interval exceeds one hour to highlight potential drift. Results are written to
 `data/mpc_history.csv`.  A summary listing constraint violations and total
 energy consumption (in Joules) is printed at the end of the run and saved to
 ``logs/mpc_summary.json``.
