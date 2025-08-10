@@ -292,6 +292,10 @@ inference.  Use ``--no-jit`` to disable this.  ``propagate_with_surrogate`` can
 also accept lists of pressure/chlorine dictionaries to evaluate multiple
 scenarios in parallel.
 
+Use ``--skip-normalization`` to disable input normalization and feed raw
+features into the surrogate for ablation studies. Outputs are always
+de-normalized back to physical units.
+
 Pump energy usage in the MPC cost function is computed from predicted flows and
 head gains using the EPANET power equations. This removes the need for a
 dedicated energy output and ties the optimisation to physical principles.

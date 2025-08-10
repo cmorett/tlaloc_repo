@@ -56,6 +56,8 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 PLOTS_DIR = REPO_ROOT / "plots"
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
+EPS = 1e-8
+
 
 def plot_mpc_time_series(
     df,  # pandas.DataFrame
@@ -578,6 +580,28 @@ def load_surrogate_model(
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
         model.edge_mean = model.edge_std = None
 
+    # Log shapes and checksum of normalization statistics for reproducibility
+    stats_tensors = []
+    for attr in ["x_mean", "x_std", "y_mean", "y_std", "edge_mean", "edge_std"]:
+        val = getattr(model, attr, None)
+        if val is not None:
+            stats_tensors.append(val.detach().cpu())
+    if stats_tensors:
+        import hashlib
+
+        md5 = hashlib.md5()
+        for t in stats_tensors:
+            md5.update(t.numpy().tobytes())
+        shapes = {
+            "x_mean": tuple(model.x_mean.shape) if getattr(model, "x_mean", None) is not None else None,
+            "x_std": tuple(model.x_std.shape) if getattr(model, "x_std", None) is not None else None,
+            "y_mean": tuple(model.y_mean.shape) if getattr(model, "y_mean", None) is not None else None,
+            "y_std": tuple(model.y_std.shape) if getattr(model, "y_std", None) is not None else None,
+            "edge_mean": tuple(model.edge_mean.shape) if getattr(model, "edge_mean", None) is not None else None,
+            "edge_std": tuple(model.edge_std.shape) if getattr(model, "edge_std", None) is not None else None,
+        }
+        print(f"Loaded normalization stats shapes: {shapes}, md5: {md5.hexdigest()}")
+
     model.eval()
 
     if use_jit:
@@ -628,6 +652,7 @@ def prepare_node_features(
     pump_speeds: torch.Tensor,
     model: GNNSurrogate,
     demands: Optional[torch.Tensor] = None,
+    skip_normalization: bool = False,
 ) -> torch.Tensor:
     """Assemble node features using precomputed static attributes.
 
@@ -652,8 +677,10 @@ def prepare_node_features(
         in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
         if in_dim is not None:
             feats = feats[:, :, :in_dim]
-        if getattr(model, "x_mean", None) is not None:
-            feats = (feats - model.x_mean.view(1, 1, -1)) / model.x_std.view(1, 1, -1)
+        if not skip_normalization and getattr(model, "x_mean", None) is not None:
+            feats = (feats - model.x_mean.view(1, 1, -1)) / (
+                model.x_std.view(1, 1, -1) + EPS
+            )
         return feats.view(batch_size * num_nodes, -1)
 
     feats = template.clone()
@@ -665,8 +692,8 @@ def prepare_node_features(
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
     if in_dim is not None:
         feats = feats[:, :in_dim]
-    if getattr(model, "x_mean", None) is not None:
-        feats = (feats - model.x_mean) / model.x_std
+    if not skip_normalization and getattr(model, "x_mean", None) is not None:
+        feats = (feats - model.x_mean) / (model.x_std + EPS)
     return feats
 
 
@@ -689,6 +716,7 @@ def compute_mpc_cost(
     pump_info: Optional[List[Tuple[int, int, int]]] = None,
     return_energy: bool = False,
     init_tank_levels: Optional[torch.Tensor] = None,
+    skip_normalization: bool = False,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """Return the MPC cost for a sequence of pump speeds.
 
@@ -713,13 +741,20 @@ def compute_mpc_cost(
     smoothness_penalty = torch.tensor(0.0, device=device)
     energy_first = torch.tensor(0.0, device=device) if return_energy else None
 
+    if edge_attr is not None and getattr(model, "edge_mean", None) is not None and not skip_normalization:
+        edge_attr_norm = (edge_attr - model.edge_mean) / (model.edge_std + EPS)
+    else:
+        edge_attr_norm = edge_attr
+
     for t in range(horizon):
         d = demands[t] if demands is not None else None
         speed = torch.clamp(pump_speeds[t], 0.0, 1.0)
-        x = prepare_node_features(feature_template, cur_p, cur_c, speed, model, d)
+        x = prepare_node_features(
+            feature_template, cur_p, cur_c, speed, model, d, skip_normalization
+        )
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
-            out = model(seq_in, edge_index, edge_attr, node_types, edge_types)
+            out = model(seq_in, edge_index, edge_attr_norm, node_types, edge_types)
             if isinstance(out, dict):
                 pred = out.get("node_outputs")[0, 0]
                 flows = out.get("edge_outputs")[0, 0].squeeze(-1)
@@ -727,7 +762,7 @@ def compute_mpc_cost(
                 pred = out[0, 0]
                 flows = None
         else:
-            out = model(x, edge_index, edge_attr, node_types, edge_types)
+            out = model(x, edge_index, edge_attr_norm, node_types, edge_types)
             if isinstance(out, dict):
                 pred = out.get("node_outputs")
                 flows = out.get("edge_outputs").squeeze(-1)
@@ -736,7 +771,7 @@ def compute_mpc_cost(
                 flows = None
 
         if getattr(model, "y_mean", None) is not None:
-            pred = pred * model.y_std + model.y_mean
+            pred = pred * (model.y_std + EPS) + model.y_mean
         assert not torch.isnan(pred).any(), "NaN prediction"
         pred_p = pred[:, 0]
         pred_c = torch.expm1(pred[:, 1]) * 1000.0
@@ -824,6 +859,7 @@ def run_mpc_step(
     u_warm: Optional[torch.Tensor] = None,
     pump_info: Optional[List[Tuple[int, int, int]]] = None,
     profile: bool = False,
+    skip_normalization: bool = False,
 ) -> Tuple[torch.Tensor, List[float], float]:
     """Optimize pump speeds for one hour using gradient-based MPC.
 
@@ -891,6 +927,7 @@ def run_mpc_step(
             pump_info,
             False,
             init_levels,
+            skip_normalization,
         )
         cost.backward()
         adam_opt.step()
@@ -924,6 +961,7 @@ def run_mpc_step(
             pump_info,
             False,
             init_levels,
+            skip_normalization,
         )
         c.backward()
         return c
@@ -949,6 +987,7 @@ def run_mpc_step(
         pump_info,
         True,
         init_levels,
+        skip_normalization,
     )
     with torch.no_grad():
         pump_speeds.data.clamp_(0.0, 1.0)
@@ -976,6 +1015,7 @@ def propagate_with_surrogate(
     speed_seq: torch.Tensor,
     device: torch.device,
     demands: Optional[torch.Tensor] = None,
+    skip_normalization: bool = False,
 ) -> Tuple[Dict[str, float], Dict[str, float]]:
     """Propagate the network state using the surrogate model.
 
@@ -989,6 +1029,9 @@ def propagate_with_surrogate(
     ``pressures = [dict(...), dict(...)]``
     ``chlorine = [dict(...), dict(...)]``
     """
+
+    if edge_attr is not None and getattr(model, "edge_mean", None) is not None and not skip_normalization:
+        edge_attr = (edge_attr - model.edge_mean) / (model.edge_std + EPS)
 
     single = isinstance(pressures, dict)
     if single:
@@ -1034,7 +1077,7 @@ def propagate_with_surrogate(
                 speed_in = speed
             d = demands[t] if demands is not None else None
             x = prepare_node_features(
-                feature_template, cur_p, cur_c, speed_in, model, d
+                feature_template, cur_p, cur_c, speed_in, model, d, skip_normalization
             )
             if hasattr(model, "rnn"):
                 seq_in = x.view(batch_size, 1, feature_template.size(0), x.size(-1))
@@ -1046,7 +1089,7 @@ def propagate_with_surrogate(
                 if isinstance(pred, dict):
                     pred = pred.get("node_outputs")
             if getattr(model, "y_mean", None) is not None:
-                pred = pred * model.y_std + model.y_mean
+                pred = pred * (model.y_std + EPS) + model.y_mean
             assert not torch.isnan(pred).any(), "NaN prediction"
             pred = pred.view(batch_size, feature_template.size(0), -1)
             cur_p = pred[:, :, 0]
@@ -1084,6 +1127,7 @@ def simulate_closed_loop(
     feedback_interval: int = 24,
     run_name: str = "",
     profile: bool = False,
+    skip_normalization: bool = False,
 ) -> pd.DataFrame:
     """Run 24-hour closed-loop MPC using the surrogate for fast updates.
 
@@ -1181,7 +1225,8 @@ def simulate_closed_loop(
             prev_speed,
             pump_info,
             profile,
-            )
+            skip_normalization,
+        )
         all_costs.extend(costs)
         prev_speed = speed_opt.detach()
 
@@ -1255,6 +1300,7 @@ def simulate_closed_loop(
                 speed_opt,
                 device,
                 demands,
+                skip_normalization,
             )
             cur_p = torch.tensor([pressures[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
             cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
@@ -1329,6 +1375,11 @@ def main():
         action="store_true",
         help="Print runtime of each MPC optimisation step",
     )
+    parser.add_argument(
+        "--skip-normalization",
+        action="store_true",
+        help="Disable feature normalization for ablation",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1384,6 +1435,7 @@ def main():
         args.feedback_interval,
         datetime.now().strftime("%Y%m%d_%H%M%S"),
         args.profile,
+        args.skip_normalization,
     )
 
 
