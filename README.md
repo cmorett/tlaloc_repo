@@ -283,6 +283,18 @@ python scripts/experiments_validation.py \
     --run-name baseline
 ```
 
+To examine how surrogate errors accumulate without EPANET feedback, enable
+roll-out evaluation:
+
+```bash
+python scripts/experiments_validation.py \
+    --model models/gnn_surrogate.pth --inp CTown.inp \
+    --rollout-eval --rollout-steps 24 --run-name baseline
+```
+
+This writes per-step RMSE values to `runs/<name>/rollout_rmse.csv` and a plot
+to `runs/<name>/rollout_rmse.png`.
+
 ## Running MPC control
 
 Once the surrogate model is trained you can run gradient-based MPC using
