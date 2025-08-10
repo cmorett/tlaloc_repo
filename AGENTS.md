@@ -11,6 +11,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
 - `pytorchcheck.py` – quick script verifying that PyTorch Geometric runs on the configured GPU.
 - `models/`
   - `loss_utils.py` – physics-based loss helpers.
+  - `losses.py` – weighted multi-task loss utilities.
   - `gnn_surrogate.pth` – trained weights saved here after running the training script.
 - `scripts/`
   - `data_generation.py` – create randomized simulation scenarios and produce training datasets.

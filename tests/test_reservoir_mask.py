@@ -48,9 +48,9 @@ def test_reservoir_node_excluded_from_loss():
     X_seq, Y_seq = ds[0]
     with torch.no_grad():
         pred = model(X_seq.unsqueeze(0), ds.edge_index, ds.edge_attr, None, None)
-    expected = F.mse_loss(
-        pred["node_outputs"][:, :, mask, :],
-        Y_seq["node_outputs"].unsqueeze(0)[:, :, mask, :],
+    expected_p = F.mse_loss(
+        pred["node_outputs"][:, :, mask, 0],
+        Y_seq["node_outputs"].unsqueeze(0)[:, :, mask, 0],
     ).item()
     loss_tuple = train_sequence(
         model,
@@ -68,7 +68,7 @@ def test_reservoir_node_excluded_from_loss():
         node_mask=mask,
         loss_fn="mse",
     )
-    assert abs(loss_tuple[1] - expected) < 1e-6
+    assert abs(loss_tuple[1] - expected_p) < 1e-6
 
 
 def test_build_loss_mask_ctown():
