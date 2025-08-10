@@ -33,12 +33,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from models.loss_utils import (
+from models.losses import (
+    weighted_mtl_loss,
     compute_mass_balance_loss,
     pressure_headloss_consistency_loss,
-    pump_curve_loss,
 )
-from models.losses import weighted_mtl_loss
+from models.loss_utils import pump_curve_loss
 
 from scripts.metrics import accuracy_metrics, export_table
 
@@ -1416,7 +1416,7 @@ def train_sequence(
     pressure_loss: bool = False,
     pump_loss: bool = False,
     node_mask: Optional[torch.Tensor] = None,
-    w_mass: float = 1.0,
+    w_mass: float = 2.0,
     w_head: float = 1.0,
     w_pump: float = 1.0,
     w_press: float = 3.0,
@@ -1424,13 +1424,14 @@ def train_sequence(
     w_flow: float = 1.0,
     amp: bool = False,
     progress: bool = True,
-) -> Tuple[float, float, float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float, float, float, float]:
     global interrupted
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = 0.0
     press_total = cl_total = flow_total = 0.0
     mass_total = head_total = sym_total = pump_total = 0.0
+    mass_imb_total = head_viol_total = 0.0
     node_count = int(edge_index.max()) + 1
     data_iter = iter(tqdm(loader, disable=not progress))
     while True:
@@ -1523,12 +1524,13 @@ def train_sequence(
                     dem_mean = model.x_mean[0].to(device)
                     dem_std = model.x_std[0].to(device)
                     demand_mb = demand_mb * dem_std + dem_mean
-                mass_loss = compute_mass_balance_loss(
+                mass_loss, mass_imb = compute_mass_balance_loss(
                     flows_mb,
                     edge_index.to(device),
                     node_count,
                     demand=demand_mb,
                     node_type=nt,
+                    return_imbalance=True,
                 )
                 sym_errors = []
                 for i, j in edge_pairs:
@@ -1545,6 +1547,7 @@ def train_sequence(
             else:
                 mass_loss = torch.tensor(0.0, device=device)
                 sym_loss = torch.tensor(0.0, device=device)
+                mass_imb = torch.tensor(0.0, device=device)
             if pressure_loss:
                 press = preds['node_outputs'][..., 0].float()
                 flow = edge_preds.squeeze(-1)
@@ -1558,15 +1561,17 @@ def train_sequence(
                         flow = flow * q_std + q_mean
                     else:
                         press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                head_loss = pressure_headloss_consistency_loss(
+                head_loss, head_violation = pressure_headloss_consistency_loss(
                     press,
                     flow,
                     edge_index.to(device),
                     edge_attr_phys.to(device),
                     edge_type=et,
+                    return_violation=True,
                 )
             else:
                 head_loss = torch.tensor(0.0, device=device)
+                head_violation = torch.tensor(0.0, device=device)
             if pump_loss and pump_coeffs is not None:
                 flow_pc = edge_preds.squeeze(-1)
                 if hasattr(model, 'y_mean') and model.y_mean is not None:
@@ -1594,6 +1599,7 @@ def train_sequence(
             Y_seq = Y_seq.to(device)
             loss_press = loss_cl = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
             head_loss = pump_loss_val = torch.tensor(0.0, device=device)
+            mass_imb = head_violation = torch.tensor(0.0, device=device)
             with autocast(device_type=device.type, enabled=amp):
                 loss = _apply_loss(preds, Y_seq.float(), loss_fn)
         if amp:
@@ -1614,6 +1620,8 @@ def train_sequence(
         head_total += head_loss.item() * X_seq.size(0)
         sym_total += sym_loss.item() * X_seq.size(0)
         pump_total += pump_loss_val.item() * X_seq.size(0)
+        mass_imb_total += mass_imb.item() * X_seq.size(0)
+        head_viol_total += head_violation.item() * X_seq.size(0)
         if interrupted:
             break
     denom = len(loader.dataset)
@@ -1626,6 +1634,8 @@ def train_sequence(
         head_total / denom,
         sym_total / denom,
         pump_total / denom,
+        mass_imb_total / denom,
+        head_viol_total / denom,
     )
 
 
@@ -1645,7 +1655,7 @@ def evaluate_sequence(
     pressure_loss: bool = False,
     pump_loss: bool = False,
     node_mask: Optional[torch.Tensor] = None,
-    w_mass: float = 1.0,
+    w_mass: float = 2.0,
     w_head: float = 1.0,
     w_pump: float = 1.0,
     w_press: float = 3.0,
@@ -1653,12 +1663,13 @@ def evaluate_sequence(
     w_flow: float = 1.0,
     amp: bool = False,
     progress: bool = True,
-) -> Tuple[float, float, float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float, float, float, float]:
     global interrupted
     model.eval()
     total_loss = 0.0
     press_total = cl_total = flow_total = 0.0
     mass_total = head_total = sym_total = pump_total = 0.0
+    mass_imb_total = head_viol_total = 0.0
     node_count = int(edge_index.max()) + 1
     data_iter = iter(tqdm(loader, disable=not progress))
     with torch.no_grad():
@@ -1733,12 +1744,13 @@ def evaluate_sequence(
                             dem_mean = model.x_mean[0].to(device)
                             dem_std = model.x_std[0].to(device)
                             demand_mb = demand_mb * dem_std + dem_mean
-                        mass_loss = compute_mass_balance_loss(
+                        mass_loss, mass_imb = compute_mass_balance_loss(
                             flows_mb,
                             edge_index.to(device),
                             node_count,
                             demand=demand_mb,
                             node_type=nt,
+                            return_imbalance=True,
                         )
                         sym_errors = []
                         for i, j in edge_pairs:
@@ -1755,6 +1767,7 @@ def evaluate_sequence(
                     else:
                         mass_loss = torch.tensor(0.0, device=device)
                         sym_loss = torch.tensor(0.0, device=device)
+                        mass_imb = torch.tensor(0.0, device=device)
                     if pressure_loss:
                         press = preds['node_outputs'][..., 0].float()
                         flow = edge_preds.squeeze(-1)
@@ -1768,15 +1781,17 @@ def evaluate_sequence(
                                 flow = flow * q_std + q_mean
                             else:
                                 press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                        head_loss = pressure_headloss_consistency_loss(
+                        head_loss, head_violation = pressure_headloss_consistency_loss(
                             press,
                             flow,
                             edge_index.to(device),
                             edge_attr_phys.to(device),
                             edge_type=et,
+                            return_violation=True,
                         )
                     else:
                         head_loss = torch.tensor(0.0, device=device)
+                        head_violation = torch.tensor(0.0, device=device)
                     if pump_loss and pump_coeffs is not None:
                         flow_pc = edge_preds.squeeze(-1)
                         if hasattr(model, 'y_mean') and model.y_mean is not None:
@@ -1804,6 +1819,7 @@ def evaluate_sequence(
                     Y_seq = Y_seq.to(device)
                     loss_press = loss_cl = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
                     head_loss = pump_loss_val = torch.tensor(0.0, device=device)
+                    mass_imb = head_violation = torch.tensor(0.0, device=device)
                     loss = _apply_loss(preds, Y_seq.float(), loss_fn)
             total_loss += loss.item() * X_seq.size(0)
             press_total += loss_press.item() * X_seq.size(0)
@@ -1813,6 +1829,8 @@ def evaluate_sequence(
             head_total += head_loss.item() * X_seq.size(0)
             sym_total += sym_loss.item() * X_seq.size(0)
             pump_total += pump_loss_val.item() * X_seq.size(0)
+            mass_imb_total += mass_imb.item() * X_seq.size(0)
+            head_viol_total += head_violation.item() * X_seq.size(0)
             if interrupted:
                 break
     denom = len(loader.dataset)
@@ -1825,6 +1843,8 @@ def evaluate_sequence(
         head_total / denom,
         sym_total / denom,
         pump_total / denom,
+        mass_imb_total / denom,
+        head_viol_total / denom,
     )
 
 # Resolve important directories relative to the repository root so that training
@@ -2214,7 +2234,7 @@ def main(args: argparse.Namespace):
         f.write(f"device: {device}\n")
         if seq_mode:
             f.write(
-                "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,val_press_loss,val_cl_loss,val_flow_loss,lr\n"
+                "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation,val_press_loss,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation,lr\n"
             )
         else:
             f.write("epoch,train_loss,val_loss,lr\n")
@@ -2249,7 +2269,7 @@ def main(args: argparse.Namespace):
                     progress=args.progress,
                 )
                 loss = loss_tuple[0]
-                press_l, cl_l, flow_l, mass_l, head_l, sym_l, pump_l = loss_tuple[1:]
+                press_l, cl_l, flow_l, mass_l, head_l, sym_l, pump_l, mass_imb, head_viols = loss_tuple[1:]
                 comp = [press_l, cl_l, flow_l, mass_l, sym_l]
                 if args.pressure_loss:
                     comp.append(head_l)
@@ -2283,10 +2303,11 @@ def main(args: argparse.Namespace):
                         progress=args.progress,
                     )
                     val_loss = val_tuple[0]
-                    val_press_l, val_cl_l, val_flow_l = val_tuple[1:4]
+                    val_press_l, val_cl_l, val_flow_l, val_mass_imb, val_head_viols = val_tuple[1:6]
                 else:
                     val_loss = loss
                     val_press_l, val_cl_l, val_flow_l = press_l, cl_l, flow_l
+                    val_mass_imb, val_head_viols = mass_imb, head_viols
             else:
                 loss = train(
                     model,
@@ -2316,8 +2337,8 @@ def main(args: argparse.Namespace):
             losses.append((loss, val_loss))
             if seq_mode:
                 f.write(
-                    f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
-                    f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e}\n"
+                    f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},{mass_imb:.6f},{head_viols:.6f},"
+                    f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols:.6f},{curr_lr:.6e}\n"
                 )
                 if tb_writer is not None:
                     tb_writer.add_scalars(
@@ -2340,13 +2361,23 @@ def main(args: argparse.Namespace):
                         },
                         epoch,
                     )
+                    tb_writer.add_scalars(
+                        "metrics/mass_imbalance",
+                        {"train": mass_imb, "val": val_mass_imb},
+                        epoch,
+                    )
+                    tb_writer.add_scalars(
+                        "metrics/head_violation_pct",
+                        {"train": head_viols * 100.0, "val": val_head_viols * 100.0},
+                        epoch,
+                    )
                 if args.physics_loss:
                     msg = (
                         f"Epoch {epoch}: press={press_l:.3f}, cl={cl_l:.3f}, flow={flow_l:.3f}, "
-                        f"mass={mass_l:.3f}, sym={sym_l:.3f}"
+                        f"mass={mass_l:.3f}, sym={sym_l:.3f}, imb={mass_imb:.3f}"
                     )
                     if args.pressure_loss:
-                        msg += f", head={head_l:.3f}"
+                        msg += f", head={head_l:.3f}, viol%={head_viols * 100:.2f}"
                     if args.pump_loss:
                         msg += f", pump={pump_l:.3f}"
                     print(msg)
@@ -2779,13 +2810,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--w_mass",
         type=float,
-        default=1.0,
+        default=2.0,
         help="Weight of the mass conservation loss term",
     )
     parser.add_argument(
         "--w_head",
         type=float,
-        default=0.25,
+        default=1.0,
         help="Weight of the head loss consistency term",
     )
     parser.add_argument(

@@ -141,9 +141,9 @@ Add ``--loss-fn huber`` to the command above to train with Huber loss or
 ``--loss-fn mse`` to minimize mean squared error instead.
 Pass ``--no-progress`` to disable the training progress bars or
 ``--progress`` to re-enable them if disabled.
-Pressure–headloss consistency is now enforced by default with a weight of ``0.25``.
+Pressure–headloss consistency is now enforced by default with a weight of ``1.0``.
 Pass ``--no-pressure-loss`` if this coupling should be disabled.  To remove the
-mass balance penalty (still weighted ``1.0`` by default) use ``--no-physics-loss``.
+mass balance penalty (now weighted ``2.0`` by default) use ``--no-physics-loss``.
 The surrogate clamps predicted pressures and chlorine concentrations to
 non-negative values and applies L2 regularization controlled by
 ``--weight-decay`` (default ``1e-5``) to avoid degenerate solutions.
@@ -172,11 +172,13 @@ Reservoirs and tanks are excluded from the mass balance calculation while tank
 pressures are no longer part of the direct MSE loss.  Disable the physics terms
 with ``--no-physics-loss`` if necessary. ``--pressure_loss`` is enabled by
 default to enforce pressure–headloss consistency via the Hazen--Williams
-equation.  The mass and flow penalties keep a default weight of ``1.0`` while
-the headloss term uses ``0.25``. Node pressure and chlorine terms now have
+equation.  The mass penalty uses a default weight of ``2.0`` while
+the headloss term uses ``1.0``. Node pressure and chlorine terms now have
 independent weights ``--w-press`` (default ``3.0``) and ``--w-cl`` (``1.0``),
 and pipe flows are scaled by ``--w-flow`` (``1.0``). The relative importance can
 still be tuned via these flags together with ``--w_mass`` and ``--w_head``.
+Training logs also report the average mass imbalance per batch and the
+percentage of edges with inconsistent headloss signs.
 
 The trained model now supports validation loss tracking and early stopping.
 Normalization is applied automatically so the ``--normalize`` flag is optional.
