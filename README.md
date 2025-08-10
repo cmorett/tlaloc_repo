@@ -207,7 +207,7 @@ looks like:
 ```bash
 python scripts/data_generation.py \
     --num-scenarios 2000 --output-dir data/ --seed 42 \
-    --extreme-event-prob 0.2
+    --extreme-rate 0.03 --pump-outage-rate 0.1 --local-surge-rate 0.1
 ```
 The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.npy`` and
 ``pump_coeffs.npy`` alongside the feature and label arrays. It utilizes all available CPU cores by default. The value
@@ -219,25 +219,29 @@ If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.
 
-Set ``--extreme-event-prob`` to inject rare scenarios such as fire flows,
-pump failures or source quality changes.  Scenario labels are stored alongside
-the sequence arrays when ``--sequence-length`` is greater than one.
-Initial tank levels are now drawn from a Gaussian around the values in
-``CTown.inp`` so each scenario begins with slightly different volumes.
-Chlorine decay is enabled in the example network via a global bulk reaction
-coefficient of ``-0.05`` 1/h which EPANET applies during water quality
-simulations.
-Pipe roughness coefficients are left unchanged; only demand multipliers and
-pump schedules vary between scenarios. Pump speeds now follow a continuous
-randomization strategy: each pump starts from a value in ``[0.3, 0.9]`` and is
-perturbed by small, temporally correlated Gaussian noise each hour. A short
-dwell time around the ``0.05`` threshold prevents rapid cycling and a safeguard
-ensures at least one pump remains active at any time.
+``--pump-outage-rate`` randomly shuts off one pump for 2–4 hours while
+``--local-surge-rate`` applies ±80% demand changes to a small subnetwork for a
+similar duration. ``--extreme-rate`` injects a small fraction of stress tests
+that scale demands and disable assets to drive pressures near zero. When an
+outage occurs a random pipe may also be closed to mimic maintenance. Initial
+tank levels are drawn uniformly from the fraction range specified by
+``--tank-level-range`` (default ``0 1`` covers the entire feasible range).
+Scenario labels are stored alongside the sequence arrays when
+``--sequence-length`` is greater than one. Chlorine decay is enabled in the
+example network via a global bulk reaction coefficient of ``-0.05`` 1/h which
+EPANET applies during water quality simulations. Pipe roughness coefficients are
+left unchanged; only demand multipliers and pump schedules vary between
+scenarios. Pump speeds follow a continuous randomization strategy: each pump
+starts from ``[0.3, 0.9]`` and is perturbed by small, temporally correlated
+Gaussian noise each hour with a dwell time to avoid rapid cycling.
 
-After scenario generation finishes a plot ``dataset_distributions_<timestamp>.png``
-is created under ``plots/`` summarising the sampled demand multipliers and pump
-speed settings.  Checking this figure helps ensure the dataset spans diverse
-operating conditions before proceeding to training.
+After scenario generation finishes plots ``dataset_distributions_<timestamp>.png``
+and ``pressure_hist_<timestamp>.png`` are created under ``plots/``. The first
+summarises the sampled demand multipliers and pump speeds, while the latter
+compares the pressure distribution before (normal scenarios) and after the
+augmented extremes. A ``manifest.json`` file in the output directory lists the
+min/median/max pressure for each scenario and counts how many runs fall below
+10 m to verify coverage of extreme low-pressure events.
 
 To create sequence datasets for the recurrent surrogate specify ``--sequence-length``:
 

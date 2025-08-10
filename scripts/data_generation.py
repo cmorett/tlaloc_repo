@@ -62,6 +62,8 @@ import numpy as np
 import wntr
 from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
+import networkx as nx
+import json
 
 
 def simulate_extreme_event(
@@ -102,7 +104,12 @@ def simulate_extreme_event(
 def _build_randomized_network(
     inp_file: str,
     idx: int,
-    event_type: Optional[str] = None,
+    *,
+    pump_outage: bool = False,
+    local_surge: bool = False,
+    pipe_closure: bool = False,
+    tank_level_range: Tuple[float, float] = (0.0, 1.0),
+    stress_test: bool = False,
 ) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Create a network with randomized demand patterns and pump controls.
 
@@ -110,9 +117,9 @@ def _build_randomized_network(
     continuously: each pump begins from a random speed in ``[0.3, 0.9]`` and is
     perturbed by small, temporally correlated Gaussian noise (a truncated
     random walk).  A short dwell time around zero prevents unrealistic rapid
-    cycling and at least one pump remains active every hour.  If
-    ``event_type`` is not ``None`` an extreme scenario such as ``fire_flow`` or
-    ``pump_failure`` is injected after the randomized controls are created.
+    cycling and at least one pump remains active every hour.  Additional
+    modifications such as local demand surges, pump outages and pipe closures
+    can be injected via flags.
     """
 
     wn = wntr.network.WaterNetworkModel(inp_file)
@@ -122,23 +129,18 @@ def _build_randomized_network(
     wn.options.time.report_timestep = 3600
     wn.options.quality.parameter = "CHEMICAL"
 
-    # Pipe roughness coefficients (Hazen--Williams C) remain fixed so the
-    # surrogate only sees variations from demand patterns and pump controls.
-
-    # Randomize initial tank levels while keeping values within the
-    # feasible range.  Sample from a Gaussian centred on the original
-    # value so typical operating conditions remain likely.
+    # Randomize initial tank levels uniformly across the provided range
     for tname in wn.tank_name_list:
         tank = wn.get_node(tname)
         span = max(tank.max_level - tank.min_level, 1e-6)
-        std = 0.1 * span
-        level = random.gauss(tank.init_level, std)
-        level = min(max(level, tank.min_level), tank.max_level)
-        tank.init_level = level
+        frac = random.uniform(tank_level_range[0], tank_level_range[1])
+        level = tank.min_level + frac * span
+        tank.init_level = min(max(level, tank.min_level), tank.max_level)
 
     hours = int(wn.options.time.duration // wn.options.time.hydraulic_timestep)
 
     scale_dict: Dict[str, np.ndarray] = {}
+    pattern_dict: Dict[str, wntr.network.elements.Pattern] = {}
     for jname in wn.junction_name_list:
         node = wn.get_node(jname)
         ts = node.demand_timeseries_list[0]
@@ -147,14 +149,31 @@ def _build_randomized_network(
         else:
             base_mult = np.array(ts.pattern.multipliers, dtype=float)
         multipliers = base_mult.copy()
-        # Sample demand multipliers uniformly in [0.8, 1.2] for broader variation
         scale_factors = np.random.uniform(0.8, 1.2, size=len(multipliers))
         multipliers = multipliers * scale_factors
         multipliers = np.clip(multipliers, a_min=0.0, a_max=None)
         pat_name = f"{jname}_pat_{idx}"
-        wn.add_pattern(pat_name, wntr.network.elements.Pattern(pat_name, multipliers))
+        pat = wntr.network.elements.Pattern(pat_name, multipliers)
+        wn.add_pattern(pat_name, pat)
         ts.pattern_name = pat_name
         scale_dict[jname] = multipliers
+        pattern_dict[jname] = pat
+
+    # Apply localized demand surge on a subnetwork
+    if local_surge and wn.junction_name_list:
+        G = wn.get_graph()
+        start_node = random.choice(list(wn.junction_name_list))
+        radius = random.randint(1, 2)
+        nodes = [n for n in nx.ego_graph(G, start_node, radius=radius).nodes() if n in scale_dict]
+        start_h = random.randint(0, max(hours - 4, 0))
+        duration = random.randint(2, 4)
+        factor = 1.8 if random.random() < 0.5 else 0.2
+        for n in nodes:
+            arr = scale_dict[n]
+            arr[start_h : start_h + duration] *= factor
+            arr = np.clip(arr, 0.0, None)
+            scale_dict[n] = arr
+            pattern_dict[n].multipliers = arr
 
     pump_controls: Dict[str, List[float]] = {pn: [] for pn in wn.pump_name_list}
 
@@ -177,14 +196,12 @@ def _build_randomized_network(
         is_on[pn] = spd > 0.05
         dwell_time[pn] = 1
 
-    # Generate schedule for remaining hours using a correlated random walk
     for _h in range(1, hours):
         for pn in wn.pump_name_list:
             prev = current_speed[pn]
             step = random.gauss(0.0, 0.05)
             step = float(np.clip(step, -max_step, max_step))
             cand = prev + step
-            # Enforce dwell time around the on/off threshold of 0.05
             if is_on[pn] and cand <= 0.05 and dwell_time[pn] < min_dwell:
                 cand = max(cand, 0.1)
             if not is_on[pn] and cand > 0.05 and dwell_time[pn] < min_dwell:
@@ -198,14 +215,41 @@ def _build_randomized_network(
                 is_on[pn] = cand > 0.05
                 dwell_time[pn] = 1
 
-        # Safeguard to keep at least one pump running
-        if all(pump_controls[pn][-1] <= 0.05 for pn in wn.pump_name_list):
+        if wn.pump_name_list and all(pump_controls[pn][-1] <= 0.05 for pn in wn.pump_name_list):
             keep_on = random.choice(wn.pump_name_list)
             forced = random.uniform(0.3, 0.9)
             pump_controls[keep_on][-1] = forced
             current_speed[keep_on] = forced
             is_on[keep_on] = True
             dwell_time[keep_on] = 1
+
+    # Inject pump outage by forcing a pump off for a short period
+    if pump_outage and wn.pump_name_list:
+        pump_id = random.choice(list(wn.pump_name_list))
+        start_h = random.randint(0, max(hours - 4, 0))
+        duration = random.randint(2, 4)
+        speeds = pump_controls[pump_id]
+        for h in range(start_h, min(start_h + duration, hours)):
+            speeds[h] = 0.0
+
+    # Inject pipe closure
+    if pipe_closure and wn.pipe_name_list:
+        pipe_id = random.choice(list(wn.pipe_name_list))
+        wn.get_link(pipe_id).initial_status = LinkStatus.Closed
+
+    # Stress tests drastically increase demands and shut off a pump and pipe
+    if stress_test:
+        for jname in scale_dict:
+            arr = scale_dict[jname] * random.uniform(2.0, 3.0)
+            arr = np.clip(arr, 0.0, None)
+            scale_dict[jname] = arr
+            pattern_dict[jname].multipliers = arr
+        if wn.pump_name_list:
+            pid = random.choice(list(wn.pump_name_list))
+            pump_controls[pid] = [0.0] * hours
+        if wn.pipe_name_list:
+            pid = random.choice(list(wn.pipe_name_list))
+            wn.get_link(pid).initial_status = LinkStatus.Closed
 
     for pn in wn.pump_name_list:
         link = wn.get_link(pn)
@@ -217,16 +261,19 @@ def _build_randomized_network(
         link.base_speed = 1.0
         link.speed_pattern_name = pat_name
 
-    if event_type is not None:
-        simulate_extreme_event(wn, pump_controls, idx, event_type)
-
     return wn, scale_dict, pump_controls
 
 
 def _run_single_scenario(
     args,
-    extreme_event_prob: float = 0.0,
-) -> Optional[Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]]:
+    extreme_rate: float = 0.0,
+    pump_outage_rate: float = 0.0,
+    local_surge_rate: float = 0.0,
+    tank_level_range: Tuple[float, float] = (0.0, 1.0),
+    extreme_event_prob: Optional[float] = None,
+) -> Optional[
+    Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
+]:
     """Run a single randomized scenario.
 
     EPANET occasionally fails to write results when the hydraulics become
@@ -235,24 +282,40 @@ def _run_single_scenario(
     ``None`` is returned so the caller can skip this scenario.
     """
 
-    idx, inp_file, seed = args
+    if extreme_event_prob is not None:  # backward compatibility
+        extreme_rate = extreme_event_prob
 
-    scenario_label = "normal"
+    idx, inp_file, seed = args
 
     for attempt in range(3):
         if seed is not None:
             random.seed(seed + idx + attempt)
             np.random.seed(seed + idx + attempt)
 
-        if random.random() < extreme_event_prob:
-            scenario_label = random.choice(
-                ["fire_flow", "pump_failure", "quality_variation"]
-            )
-            wn, scale_dict, pump_controls = _build_randomized_network(
-                inp_file, idx, scenario_label
-            )
-        else:
-            wn, scale_dict, pump_controls = _build_randomized_network(inp_file, idx)
+        stress = random.random() < extreme_rate
+        pump_out = stress or (random.random() < pump_outage_rate)
+        surge = stress or (random.random() < local_surge_rate)
+
+        wn, scale_dict, pump_controls = _build_randomized_network(
+            inp_file,
+            idx,
+            pump_outage=pump_out,
+            local_surge=surge,
+            pipe_closure=pump_out or stress,
+            tank_level_range=tank_level_range,
+            stress_test=stress,
+        )
+
+        events = []
+        if surge:
+            events.append("local_surge")
+        if pump_out:
+            events.append("pump_outage")
+        if stress:
+            events.append("stress")
+        if pump_out or stress:
+            events.append("pipe_closure")
+        scenario_label = "+".join(events) if events else "normal"
 
         prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}_{attempt}"
         try:
@@ -266,7 +329,6 @@ def _run_single_scenario(
                 return None
             else:
                 continue
-
 
     flows = sim_results.link["flowrate"]
     heads = sim_results.node["head"]
@@ -305,7 +367,10 @@ def run_scenarios(
     inp_file: str,
     num_scenarios: int,
     seed: Optional[int] = None,
-    extreme_event_prob: float = 0.0,
+    extreme_rate: float = 0.0,
+    pump_outage_rate: float = 0.0,
+    local_surge_rate: float = 0.0,
+    tank_level_range: Tuple[float, float] = (0.0, 1.0),
     num_workers: Optional[int] = None,
     show_progress: bool = False,
 ) -> List[
@@ -324,7 +389,13 @@ def run_scenarios(
         num_workers = max(cpu_count() - 1, 1)
 
     with Pool(processes=num_workers) as pool:
-        func = partial(_run_single_scenario, extreme_event_prob=extreme_event_prob)
+        func = partial(
+            _run_single_scenario,
+            extreme_rate=extreme_rate,
+            pump_outage_rate=pump_outage_rate,
+            local_surge_rate=local_surge_rate,
+            tank_level_range=tank_level_range,
+        )
         if show_progress and tqdm is not None:
             raw_results = [
                 res for res in tqdm(
@@ -375,6 +446,31 @@ def plot_dataset_distributions(
     if not return_fig:
         plt.close(fig)
     return fig if return_fig else None
+
+
+def plot_pressure_histogram(
+    pressures_all: Iterable[float],
+    pressures_base: Iterable[float],
+    out_prefix: str,
+    plots_dir: Path = PLOTS_DIR,
+) -> None:
+    """Plot histogram of pressures before/after augmentation."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    all_arr = np.asarray(list(pressures_all), dtype=float)
+    base_arr = np.asarray(list(pressures_base), dtype=float)
+    fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+    if len(base_arr) > 0:
+        ax.hist(base_arr, bins=50, alpha=0.5, label="before")
+    ax.hist(all_arr, bins=50, alpha=0.5, label="after")
+    ax.set_xlabel("Pressure [m]")
+    ax.set_ylabel("Frequency")
+    ax.set_title("Pressure Distribution")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"pressure_hist_{out_prefix}.png")
+    plt.close(fig)
 
 
 def split_results(
@@ -682,10 +778,30 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument(
-        "--extreme-event-prob",
+        "--extreme-rate",
         type=float,
-        default=0.2,
-        help="Probability of injecting an extreme scenario in each run",
+        default=0.03,
+        help="Fraction of scenarios that act as stress tests with near-zero pressures",
+    )
+    parser.add_argument(
+        "--pump-outage-rate",
+        type=float,
+        default=0.1,
+        help="Probability of randomly shutting off a pump in each scenario",
+    )
+    parser.add_argument(
+        "--local-surge-rate",
+        type=float,
+        default=0.1,
+        help="Probability of applying a localized demand surge",
+    )
+    parser.add_argument(
+        "--tank-level-range",
+        type=float,
+        nargs=2,
+        metavar=("MIN", "MAX"),
+        default=(0.0, 1.0),
+        help="Fractional range for initial tank levels (0=minimum, 1=maximum)",
     )
     parser.add_argument(
         "--output-dir",
@@ -718,7 +834,10 @@ def main() -> None:
         str(inp_file),
         N,
         seed=args.seed,
-        extreme_event_prob=args.extreme_event_prob,
+        extreme_rate=args.extreme_rate,
+        pump_outage_rate=args.pump_outage_rate,
+        local_surge_rate=args.local_surge_rate,
+        tank_level_range=tuple(args.tank_level_range),
         num_workers=args.num_workers,
         show_progress=args.show_progress,
     )
@@ -726,13 +845,31 @@ def main() -> None:
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     demand_mults: List[float] = []
     pump_speeds: List[float] = []
-    for _sim, scale_dict, pump_ctrl in results:
+    all_pressures: List[float] = []
+    base_pressures: List[float] = []
+    manifest_records: List[Dict[str, float]] = []
+    for i, (sim, scale_dict, pump_ctrl) in enumerate(results):
+        p_vals = sim.node["pressure"].values.astype(float).ravel()
+        all_pressures.extend(p_vals.tolist())
+        if getattr(sim, "scenario_type", "normal") == "normal":
+            base_pressures.extend(p_vals.tolist())
+        manifest_records.append(
+            {
+                "scenario": i,
+                "label": getattr(sim, "scenario_type", "normal"),
+                "min_pressure": float(np.min(p_vals)),
+                "median_pressure": float(np.median(p_vals)),
+                "max_pressure": float(np.max(p_vals)),
+            }
+        )
         for arr in scale_dict.values():
             demand_mults.extend(arr.ravel().tolist())
         for speeds in pump_ctrl.values():
             pump_speeds.extend(list(speeds))
 
     plot_dataset_distributions(demand_mults, pump_speeds, run_ts)
+    plot_pressure_histogram(all_pressures, base_pressures, run_ts)
+    extreme_count = sum(m["min_pressure"] < 10.0 for m in manifest_records)
     train_res, val_res, test_res = split_results(results)
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
@@ -770,6 +907,14 @@ def main() -> None:
     np.save(os.path.join(out_dir, "edge_attr.npy"), edge_attr)
     np.save(os.path.join(out_dir, "edge_type.npy"), edge_type)
     np.save(os.path.join(out_dir, "pump_coeffs.npy"), pump_coeffs)
+
+    manifest = {
+        "num_extreme": int(extreme_count),
+        "total_scenarios": len(manifest_records),
+        "scenarios": manifest_records,
+    }
+    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
 
     with open(os.path.join(out_dir, "train_results_list.pkl"), "wb") as f:
         pickle.dump(train_res, f)
