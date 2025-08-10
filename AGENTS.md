@@ -56,6 +56,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `test_tank_dynamics.py`
   - `test_tank_initial_randomization.py`
   - `test_validate_surrogate.py`
+  - `test_rollout_eval.py`
   - `test_visualizations.py`
   - `test_workers.py`
 - `data/` – ignored by git; used for generated datasets and temporary simulation outputs.

@@ -42,6 +42,8 @@ TEMP_DIR = DATA_DIR / "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
 PLOTS_DIR = REPO_ROOT / "plots"
 os.makedirs(PLOTS_DIR, exist_ok=True)
+RUNS_DIR = REPO_ROOT / "runs"
+os.makedirs(RUNS_DIR, exist_ok=True)
 
 
 def energy_pressure_tradeoff(
@@ -428,6 +430,117 @@ def validate_surrogate(
     return metrics, err_arr, err_times
 
 
+def rollout_surrogate(
+    model: torch.nn.Module,
+    edge_index: torch.Tensor,
+    edge_attr: Optional[torch.Tensor],
+    wn: wntr.network.WaterNetworkModel,
+    test_results: List,
+    device: torch.device,
+    steps: int,
+    node_types_tensor: Optional[torch.Tensor] = None,
+    edge_types_tensor: Optional[torch.Tensor] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Roll out surrogate predictions for multiple steps without EPANET feedback.
+
+    Returns per-step RMSE for pressure and chlorine averaged across scenarios.
+    """
+
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+
+    model.eval()
+    edge_index = edge_index.to(device)
+    if edge_attr is not None:
+        edge_attr = edge_attr.to(device)
+        if hasattr(model, "edge_mean") and getattr(model, "edge_mean") is not None:
+            edge_attr = (edge_attr - model.edge_mean) / model.edge_std
+
+    sq_p = np.zeros(steps, dtype=float)
+    sq_c = np.zeros(steps, dtype=float)
+    counts = np.zeros(steps, dtype=int)
+
+    with torch.no_grad():
+        for res in test_results:
+            if isinstance(res, tuple):
+                res = res[0]
+            pressures_df = res.node["pressure"].clip(lower=MIN_PRESSURE)
+            chlorine_df = res.node["quality"]
+            demand_df = res.node.get("demand")
+            pump_df = res.link["setting"][wn.pump_name_list]
+            pump_array = np.clip(pump_df.values, 0.0, 1.0)
+
+            current_p = {n: float(v) for n, v in pressures_df.iloc[0].to_dict().items()}
+            current_c = {n: float(v) for n, v in chlorine_df.iloc[0].to_dict().items()}
+
+            max_steps = min(steps, len(pressures_df.index) - 1)
+            for t in range(max_steps):
+                dem = demand_df.iloc[t].to_dict() if demand_df is not None else None
+                controls = pump_array[t]
+                feats = _prepare_features(wn, current_p, current_c, controls, model, dem)
+                x = feats.to(device, non_blocking=True)
+                if hasattr(model, "x_mean") and model.x_mean is not None:
+                    x = (x - model.x_mean) / model.x_std
+                if hasattr(model, "rnn"):
+                    seq_in = x.unsqueeze(0).unsqueeze(0)
+                    pred = model(
+                        seq_in,
+                        edge_index,
+                        edge_attr,
+                        node_types_tensor,
+                        edge_types_tensor,
+                    )
+                    if isinstance(pred, dict):
+                        node_pred = pred.get("node_outputs")[0, 0]
+                    else:
+                        node_pred = pred
+                else:
+                    pred = model(
+                        x,
+                        edge_index,
+                        edge_attr,
+                        node_types_tensor,
+                        edge_types_tensor,
+                    )
+                    if isinstance(pred, dict):
+                        node_pred = pred.get("node_outputs")
+                    else:
+                        node_pred = pred
+                if hasattr(model, "y_mean") and model.y_mean is not None:
+                    if isinstance(model.y_mean, dict):
+                        y_mean_node = model.y_mean["node_outputs"].to(node_pred.device)
+                        y_std_node = model.y_std["node_outputs"].to(node_pred.device)
+                        node_pred = node_pred * y_std_node + y_mean_node
+                    else:
+                        node_pred = (
+                            node_pred * model.y_std.to(node_pred.device)
+                            + model.y_mean.to(node_pred.device)
+                        )
+                pred_p = node_pred[:, 0].cpu().numpy()
+                pred_c = np.expm1(node_pred[:, 1].cpu().numpy()) * 1000.0
+                true_p = pressures_df.iloc[t + 1].to_numpy()
+                for j, name in enumerate(wn.node_name_list):
+                    if name in wn.reservoir_name_list:
+                        true_p[j] = wn.get_node(name).base_head
+                true_c = chlorine_df.iloc[t + 1].to_numpy()
+                diff_p = pred_p - true_p
+                diff_c = pred_c - true_c
+                if node_types_tensor is not None:
+                    mask = (node_types_tensor == 0).cpu().numpy()
+                    diff_p = diff_p[mask]
+                    diff_c = diff_c[mask]
+                sq_p[t] += float((diff_p ** 2).sum())
+                sq_c[t] += float((diff_c ** 2).sum())
+                counts[t] += len(diff_p)
+
+                current_p = {n: float(pred_p[i]) for i, n in enumerate(wn.node_name_list)}
+                current_c = {n: float(pred_c[i]) for i, n in enumerate(wn.node_name_list)}
+
+    rmse_p = np.sqrt(np.divide(sq_p, counts, out=np.zeros_like(sq_p), where=counts > 0))
+    rmse_c = np.sqrt(np.divide(sq_c, counts, out=np.zeros_like(sq_c), where=counts > 0))
+    return rmse_p, rmse_c
+
+
 def run_all_pumps_on(
     wn: wntr.network.WaterNetworkModel,
     pump_names: List[str],
@@ -625,8 +738,19 @@ def main() -> None:
         action="store_true",
         help="Disable TorchScript compilation of the surrogate",
     )
+    parser.add_argument(
+        "--rollout-steps",
+        type=int,
+        default=24,
+        help="Number of steps for surrogate roll-out evaluation",
+    )
+    parser.add_argument(
+        "--rollout-eval",
+        action="store_true",
+        help="Run N-step surrogate roll-out validation",
+    )
     args = parser.parse_args()
-
+    run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     (
         wn,
@@ -652,7 +776,7 @@ def main() -> None:
             wn,
             test_res,
             device,
-            args.run_name or "",
+            run_name,
             torch.tensor(node_types, dtype=torch.long, device=device),
             torch.tensor(edge_types, dtype=torch.long, device=device),
         )
@@ -664,8 +788,39 @@ def main() -> None:
             err_times,
             wn.node_name_list,
             args.inp,
-            args.run_name or "",
+            run_name,
         )
+        if args.rollout_eval:
+            rmse_p, rmse_c = rollout_surrogate(
+                model,
+                edge_index,
+                edge_attr,
+                wn,
+                test_res,
+                device,
+                args.rollout_steps,
+                torch.tensor(node_types, dtype=torch.long, device=device),
+                torch.tensor(edge_types, dtype=torch.long, device=device),
+            )
+            run_dir = RUNS_DIR / run_name
+            run_dir.mkdir(parents=True, exist_ok=True)
+            rollout_df = pd.DataFrame(
+                {
+                    "t": np.arange(1, len(rmse_p) + 1),
+                    "pressure_rmse": rmse_p,
+                    "chlorine_rmse": rmse_c,
+                }
+            )
+            rollout_df.to_csv(run_dir / "rollout_rmse.csv", index=False)
+            plt.figure()
+            plt.plot(rollout_df["t"], rollout_df["pressure_rmse"], label="pressure_rmse")
+            plt.plot(rollout_df["t"], rollout_df["chlorine_rmse"], label="chlorine_rmse")
+            plt.xlabel("t")
+            plt.ylabel("RMSE")
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(run_dir / "rollout_rmse.png")
+            plt.close()
     else:
         print(f"{args.test_pkl} not found. Skipping surrogate validation.")
 
@@ -694,7 +849,6 @@ def main() -> None:
         wntr.network.WaterNetworkModel(args.inp), pump_names
     )
 
-    run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
     aggregate_and_plot({"mpc": mpc_df, "heuristic": heur_df, "all_on": all_on_df}, run_name, args.Pmin)
 
 
