@@ -29,6 +29,15 @@ The script moves a small tensor through a GCN layer on the GPU and prints the
 output shape. If this command fails, ensure the CUDA drivers and dependencies
 are installed before continuing.
 
+## Reproducibility
+
+All entry scripts expose a `--seed` flag that seeds Python, NumPy and PyTorch
+for repeatable runs. Passing `--deterministic` additionally configures
+`CUBLAS_WORKSPACE_CONFIG` and enables `torch.use_deterministic_algorithms`, which
+may reduce performance but guarantees deterministic CUDA kernels. Each run saves
+its arguments, normalization statistics checksum, model hyperparameters and the
+current Git commit to `logs/config.yaml` for provenance.
+
 ## Training
 
 The repository provides a simple training script `scripts/train_gnn.py` which
@@ -212,6 +221,7 @@ python scripts/data_generation.py \
     --num-scenarios 2000 --output-dir data/ --seed 42 \
     --extreme-rate 0.03 --pump-outage-rate 0.1 --local-surge-rate 0.1
 ```
+Append `--deterministic` to enforce deterministic CUDA kernels.
 The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.npy`` and
 ``pump_coeffs.npy`` alongside the feature and label arrays. It utilizes all available CPU cores by default. The value
 ``2000`` matches the new default of ``--num-scenarios``. Use
@@ -253,6 +263,7 @@ python scripts/data_generation.py \
     --num-scenarios 200 --sequence-length 24 --output-dir data/ \
     --seed 123
 ```
+Use `--deterministic` with `--seed` for bitwise reproducibility.
 This will also generate ``edge_index.npy``, ``edge_attr.npy`` and ``edge_type.npy``
 along with ``scenario_train.npy`` etc. recording the type of each scenario.
 Scenarios that do not contain at least ``sequence_length + 1`` time steps are

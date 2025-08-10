@@ -17,6 +17,11 @@ try:  # Optional progress bar
 except Exception:  # pragma: no cover - handled gracefully if unavailable
     tqdm = None
 
+try:
+    from .reproducibility import configure_seeds, save_config
+except ImportError:  # pragma: no cover
+    from reproducibility import configure_seeds, save_config
+
 # Minimum allowed pressure [m].  Values below this threshold are clipped
 # in both data generation and validation to keep preprocessing consistent.
 MIN_PRESSURE = 5.0
@@ -778,6 +783,11 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Enable deterministic PyTorch ops",
+    )
+    parser.add_argument(
         "--extreme-rate",
         type=float,
         default=0.03,
@@ -826,6 +836,10 @@ def main() -> None:
         help="Display a progress bar during scenario simulation",
     )
     args = parser.parse_args()
+
+    if args.seed is not None:
+        configure_seeds(args.seed, args.deterministic)
+    save_config(REPO_ROOT / "logs" / "config_data_generation.yaml", vars(args))
 
     inp_file = REPO_ROOT / "CTown.inp"
     N = args.num_scenarios

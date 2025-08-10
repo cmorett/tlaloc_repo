@@ -20,6 +20,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `mpc_control.py` – run gradient-based MPC using the trained surrogate.
   - `ablation_study.py` – run a small grid of model variants and report validation pressure MAE.
   - `train_gnn.py` – train a graph neural network surrogate on generated data.
+  - `reproducibility.py` – helper utilities for seeding and config logging.
 - `tests/` – pytest suite containing:
   - `test_accuracy_export.py`
   - `test_amp.py`

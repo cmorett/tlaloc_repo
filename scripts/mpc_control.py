@@ -18,6 +18,10 @@ import inspect
 from collections import deque
 from torch_geometric.nn import GCNConv, GATConv
 from sklearn.preprocessing import MinMaxScaler
+try:
+    from .reproducibility import configure_seeds, save_config
+except ImportError:  # pragma: no cover
+    from reproducibility import configure_seeds, save_config
 # Import ``HydroConv`` from the training module located in the same
 # directory.  Using a plain module import keeps the file executable both when
 # called directly (``python scripts/mpc_control.py``) and when loaded from
@@ -583,6 +587,7 @@ def load_surrogate_model(
         model.edge_mean = model.edge_std = None
 
     # Log shapes and checksum of normalization statistics for reproducibility
+    norm_hash: Optional[str] = None
     stats_tensors = []
     for attr in ["x_mean", "x_std", "y_mean", "y_std", "edge_mean", "edge_std"]:
         val = getattr(model, attr, None)
@@ -602,7 +607,9 @@ def load_surrogate_model(
             "edge_mean": tuple(model.edge_mean.shape) if getattr(model, "edge_mean", None) is not None else None,
             "edge_std": tuple(model.edge_std.shape) if getattr(model, "edge_std", None) is not None else None,
         }
-        print(f"Loaded normalization stats shapes: {shapes}, md5: {md5.hexdigest()}")
+        norm_hash = md5.hexdigest()
+        print(f"Loaded normalization stats shapes: {shapes}, md5: {norm_hash}")
+        model.norm_hash = norm_hash
 
     model.eval()
 
@@ -623,6 +630,8 @@ def load_surrogate_model(
             except Exception as e:  # pragma: no cover - optional optimisation
                 warnings.warn(f"TorchScript compilation failed: {e}")
 
+    if norm_hash is None:
+        model.norm_hash = None
     return model
 
 
@@ -1537,7 +1546,14 @@ def main():
         default=1,
         help="Number of residuals to average for bias correction",
     )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Enable deterministic PyTorch ops",
+    )
     args = parser.parse_args()
+    configure_seeds(args.seed, args.deterministic)
     if args.feedback_interval > 1:
         print(
             f"WARNING: --feedback-interval set to {args.feedback_interval}; "
@@ -1565,6 +1581,9 @@ def main():
     except FileNotFoundError as e:
         print(e)
         return
+    norm_md5 = getattr(model, "norm_hash", None)
+    model_layers = len(getattr(model, "layers", []))
+    model_hidden = getattr(getattr(model, "layers", [None])[0], "out_channels", None)
 
     expected_in_dim = 4 + len(pump_names)
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", expected_in_dim)
@@ -1607,6 +1626,13 @@ def main():
         args.bias_correction,
         args.bias_window,
     )
+
+    cfg_extra = {
+        "norm_stats_md5": norm_md5,
+        "model_layers": model_layers,
+        "model_hidden_dim": model_hidden,
+    }
+    save_config(REPO_ROOT / "logs" / "config.yaml", vars(args), cfg_extra)
 
 
 if __name__ == "__main__":

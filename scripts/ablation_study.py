@@ -4,6 +4,11 @@ import time
 from pathlib import Path
 import pandas as pd
 
+try:  # when executed as module
+    from .reproducibility import configure_seeds, save_config
+except ImportError:  # pragma: no cover - script execution
+    from reproducibility import configure_seeds, save_config
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = REPO_ROOT / "logs"
 MODEL_DIR = REPO_ROOT / "models"
@@ -28,7 +33,16 @@ def main():
     p.add_argument("--inp-path", required=True)
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--seed", type=int, default=42, help="Random seed")
+    p.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Enable deterministic PyTorch ops",
+    )
     args = p.parse_args()
+
+    configure_seeds(args.seed, args.deterministic)
+    save_config(LOG_DIR / "config_ablation.yaml", vars(args))
 
     base_cmd = [
         "python", str(REPO_ROOT / "scripts" / "train_gnn.py"),
@@ -38,9 +52,12 @@ def main():
         "--inp-path", args.inp_path,
         "--epochs", str(args.epochs),
         "--batch-size", str(args.batch_size),
+        "--seed", str(args.seed),
     ]
     if args.edge_attr_path:
         base_cmd += ["--edge-attr-path", args.edge_attr_path]
+    if args.deterministic:
+        base_cmd.append("--deterministic")
 
     configs = [
         ("baseline", []),

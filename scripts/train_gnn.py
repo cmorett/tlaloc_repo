@@ -1,5 +1,6 @@
 import argparse
 import os
+import random
 from pathlib import Path
 from datetime import datetime
 import sys
@@ -18,6 +19,11 @@ import wntr
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 from typing import Optional, Sequence, List, Tuple, Dict
+
+try:  # pylint: disable=ungrouped-imports
+    from .reproducibility import configure_seeds, save_config
+except ImportError:  # pragma: no cover
+    from reproducibility import configure_seeds, save_config
 import networkx as nx
 from tqdm.auto import tqdm
 
@@ -1385,8 +1391,7 @@ PLOTS_DIR = REPO_ROOT / "plots"
 
 
 def main(args: argparse.Namespace):
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    configure_seeds(args.seed, args.deterministic)
     signal.signal(signal.SIGINT, _signal_handler)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     edge_index_np = np.load(args.edge_index_path)
@@ -1509,6 +1514,7 @@ def main(args: argparse.Namespace):
         val_list = []
         val_loader = None
 
+    norm_md5 = None
     if args.normalize:
         if seq_mode:
             x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
@@ -1558,6 +1564,20 @@ def main(args: argparse.Namespace):
             if len(y_mean) >= 2:
                 print("Pressure mean/std:", y_mean[0].item(), y_std[0].item())
                 print("Chlorine mean/std:", y_mean[1].item(), y_std[1].item())
+
+        import hashlib
+
+        md5 = hashlib.md5()
+        arrays = [x_mean, x_std, y_mean, y_std, edge_mean, edge_std]
+        for arr in arrays:
+            if arr is None:
+                continue
+            if isinstance(arr, dict):
+                for v in arr.values():
+                    md5.update(v.cpu().numpy().tobytes())
+            else:
+                md5.update(arr.cpu().numpy().tobytes())
+        norm_md5 = md5.hexdigest()
     else:
         x_mean = x_std = y_mean = y_std = None
 
@@ -2152,6 +2172,14 @@ def main(args: argparse.Namespace):
             X_flat = X_raw.reshape(-1, X_raw.shape[-1])
             correlation_heatmap(X_flat, labels, run_name)
 
+    cfg_extra = {
+        "norm_stats_md5": norm_md5,
+        "model_layers": len(getattr(model, "layers", [])),
+        "model_hidden_dim": getattr(getattr(model, "layers", [None])[0], "out_channels", None),
+        "run_name": run_name,
+    }
+    save_config(REPO_ROOT / "logs" / f"config_train_{run_name}.yaml", vars(args), cfg_extra)
+
     if tb_writer is not None:
         tb_writer.close()
     print(f"Best model saved to {model_path}")
@@ -2418,6 +2446,11 @@ if __name__ == "__main__":
         "--inp-path",
         default=os.path.join(REPO_ROOT, "CTown.inp"),
         help="EPANET input file used to determine the number of pumps",
+    )
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Enable deterministic PyTorch ops",
     )
     parser.add_argument(
         "--output",
