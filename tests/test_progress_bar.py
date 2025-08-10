@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 
-def _dummy_run(args, extreme_event_prob: float = 0.0):
+def _dummy_run(args, **kwargs):
     """Return a trivial result tuple for fast testing."""
     return (None, {}, {})
 
