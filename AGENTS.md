@@ -36,9 +36,10 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `test_interrupt_handler.py`
   - `test_load_surrogate.py`
   - `test_mass_balance.py`
-  - `test_metrics.py`
-  - `test_mpc_input_check.py`
-  - `test_nan_check.py`
+    - `test_metrics.py`
+    - `test_mpc_input_check.py`
+    - `test_mpc_normalization.py`
+    - `test_nan_check.py`
   - `test_normalization.py`
   - `test_normalized_negative.py`
   - `test_output_clamp.py`
