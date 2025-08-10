@@ -25,6 +25,11 @@ from wntr.metrics.economic import pump_energy
 import epyt
 from tqdm import tqdm
 
+try:
+    from .reproducibility import configure_seeds, save_config
+except ImportError:  # pragma: no cover
+    from reproducibility import configure_seeds, save_config
+
 # Minimum allowed pressure [m] applied during preprocessing.
 MIN_PRESSURE = 5.0
 # Ensure the repository root is importable when running this script directly
@@ -749,7 +754,17 @@ def main() -> None:
         action="store_true",
         help="Run N-step surrogate roll-out validation",
     )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Enable deterministic PyTorch ops",
+    )
+    parser.add_argument("--w_p", type=float, default=100.0, help="Weight on pressure violations")
+    parser.add_argument("--w_c", type=float, default=100.0, help="Weight on chlorine violations")
+    parser.add_argument("--w_e", type=float, default=1.0, help="Weight on energy usage")
     args = parser.parse_args()
+    configure_seeds(args.seed, args.deterministic)
     if args.feedback_interval > 1:
         print(
             f"WARNING: --feedback-interval set to {args.feedback_interval}; "
@@ -770,6 +785,9 @@ def main() -> None:
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device)
     model = load_surrogate_model(device, path=args.model, use_jit=not args.no_jit)
+    norm_md5 = getattr(model, "norm_hash", None)
+    model_layers = len(getattr(model, "layers", []))
+    model_hidden = getattr(getattr(model, "layers", [None])[0], "out_channels", None)
 
     if os.path.exists(args.test_pkl):
         with open(args.test_pkl, "rb") as f:
@@ -845,6 +863,9 @@ def main() -> None:
         args.Pmin,
         args.Cmin,
         args.feedback_interval,
+        w_p=args.w_p,
+        w_c=args.w_c,
+        w_e=args.w_e,
     )
 
     heur_df = run_heuristic_baseline(
@@ -855,6 +876,13 @@ def main() -> None:
     )
 
     aggregate_and_plot({"mpc": mpc_df, "heuristic": heur_df, "all_on": all_on_df}, run_name, args.Pmin)
+
+    cfg_extra = {
+        "norm_stats_md5": norm_md5,
+        "model_layers": model_layers,
+        "model_hidden_dim": model_hidden,
+    }
+    save_config(REPO_ROOT / "logs" / "config.yaml", vars(args), cfg_extra)
 
 
 if __name__ == "__main__":
