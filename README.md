@@ -65,7 +65,9 @@ training statistics. During evaluation both predictions **and** the
 corresponding ground truth labels are transformed back to physical units before
 plotting.
 When sequence models are used a component-wise loss curve
-``loss_components_<run>.png`` is stored alongside ``loss_curve_<run>.png``.
+``loss_components_<run>.png`` is stored alongside ``loss_curve_<run>.png`` and
+the per-component pressure, chlorine and flow losses are recorded each epoch in
+``training_<run>.log`` as well as TensorBoard summaries.
 For sequence datasets a time-series example ``time_series_example_<run>.png``
 plots predicted and actual pressure and chlorine for one node across all steps.
 
@@ -170,10 +172,11 @@ Reservoirs and tanks are excluded from the mass balance calculation while tank
 pressures are no longer part of the direct MSE loss.  Disable the physics terms
 with ``--no-physics-loss`` if necessary. ``--pressure_loss`` is enabled by
 default to enforce pressure–headloss consistency via the Hazen--Williams
-equation.  The mass and edge penalties keep a default weight of ``1.0`` while
-the headloss term uses ``0.25``. The relative importance can still be tuned via
-``--w_mass`` and ``--w_head`` along with the ``--w_edge`` coefficient
-controlling the flow loss.
+equation.  The mass and flow penalties keep a default weight of ``1.0`` while
+the headloss term uses ``0.25``. Node pressure and chlorine terms now have
+independent weights ``--w-press`` (default ``3.0``) and ``--w-cl`` (``1.0``),
+and pipe flows are scaled by ``--w-flow`` (``1.0``). The relative importance can
+still be tuned via these flags together with ``--w_mass`` and ``--w_head``.
 
 The trained model now supports validation loss tracking and early stopping.
 Normalization is applied automatically so the ``--normalize`` flag is optional.

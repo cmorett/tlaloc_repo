@@ -23,6 +23,11 @@ from typing import Optional, Sequence, List, Tuple, Dict
 import networkx as nx
 from tqdm.auto import tqdm
 
+try:  # TensorBoard is optional during tests
+    from torch.utils.tensorboard import SummaryWriter
+except Exception:  # pragma: no cover - missing optional dependency
+    SummaryWriter = None
+
 # Ensure the repository root is importable when running this file directly
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -33,6 +38,7 @@ from models.loss_utils import (
     pressure_headloss_consistency_loss,
     pump_curve_loss,
 )
+from models.losses import weighted_mtl_loss
 
 from scripts.metrics import accuracy_metrics, export_table
 
@@ -841,9 +847,11 @@ def plot_loss_components(
 
     arr = np.asarray(loss_components, dtype=float)
     epochs = np.arange(1, arr.shape[0] + 1)
-    labels = ["node", "edge", "mass", "sym"]
-    if arr.shape[1] == 5:
+    labels = ["pressure", "chlorine", "flow", "mass", "sym"]
+    if arr.shape[1] > len(labels):
         labels.append("head")
+    if arr.shape[1] > len(labels):
+        labels.append("pump")
 
     fig, ax = plt.subplots(figsize=(6, 4))
     for i, label in enumerate(labels):
@@ -1411,15 +1419,18 @@ def train_sequence(
     w_mass: float = 1.0,
     w_head: float = 1.0,
     w_pump: float = 1.0,
-    w_edge: float = 1.0,
+    w_press: float = 3.0,
+    w_cl: float = 1.0,
+    w_flow: float = 1.0,
     amp: bool = False,
     progress: bool = True,
-) -> Tuple[float, float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float, float]:
     global interrupted
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = 0.0
-    node_total = edge_total = mass_total = head_total = sym_total = pump_total = 0.0
+    press_total = cl_total = flow_total = 0.0
+    mass_total = head_total = sym_total = pump_total = 0.0
     node_count = int(edge_index.max()) + 1
     data_iter = iter(tqdm(loader, disable=not progress))
     while True:
@@ -1470,10 +1481,25 @@ def train_sequence(
             if node_mask is not None:
                 pred_nodes = pred_nodes[:, :, node_mask, :]
                 target_nodes = target_nodes[:, :, node_mask, :]
-            loss_node = _apply_loss(pred_nodes, target_nodes.float(), loss_fn)
             edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
             edge_preds = preds['edge_outputs'].float()
-            loss_edge = _apply_loss(edge_preds, edge_target.float(), loss_fn)
+            loss, loss_press, loss_cl, loss_edge = weighted_mtl_loss(
+                pred_nodes,
+                target_nodes.float(),
+                edge_preds,
+                edge_target.float(),
+                loss_fn=loss_fn,
+                w_press=w_press,
+                w_cl=w_cl,
+                w_flow=w_flow,
+            )
+            for name, val in [
+                ("pressure", loss_press),
+                ("chlorine", loss_cl),
+                ("flow", loss_edge),
+            ]:
+                if (not torch.isfinite(val)) or val.item() > 1e6:
+                    raise AssertionError(f"{name} loss {val.item():.3e} invalid")
             if physics_loss:
                 flows_mb = (
                     edge_preds.squeeze(-1)
@@ -1558,7 +1584,6 @@ def train_sequence(
                 )
             else:
                 pump_loss_val = torch.tensor(0.0, device=device)
-            loss = loss_node + w_edge * loss_edge
             if physics_loss:
                 loss = loss + w_mass * (mass_loss + sym_loss)
             if pressure_loss:
@@ -1567,7 +1592,8 @@ def train_sequence(
                 loss = loss + w_pump * pump_loss_val
         else:
             Y_seq = Y_seq.to(device)
-            loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
+            loss_press = loss_cl = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
+            head_loss = pump_loss_val = torch.tensor(0.0, device=device)
             with autocast(device_type=device.type, enabled=amp):
                 loss = _apply_loss(preds, Y_seq.float(), loss_fn)
         if amp:
@@ -1581,8 +1607,9 @@ def train_sequence(
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
         total_loss += loss.item() * X_seq.size(0)
-        node_total += loss_node.item() * X_seq.size(0)
-        edge_total += loss_edge.item() * X_seq.size(0)
+        press_total += loss_press.item() * X_seq.size(0)
+        cl_total += loss_cl.item() * X_seq.size(0)
+        flow_total += loss_edge.item() * X_seq.size(0)
         mass_total += mass_loss.item() * X_seq.size(0)
         head_total += head_loss.item() * X_seq.size(0)
         sym_total += sym_loss.item() * X_seq.size(0)
@@ -1592,8 +1619,9 @@ def train_sequence(
     denom = len(loader.dataset)
     return (
         total_loss / denom,
-        node_total / denom,
-        edge_total / denom,
+        press_total / denom,
+        cl_total / denom,
+        flow_total / denom,
         mass_total / denom,
         head_total / denom,
         sym_total / denom,
@@ -1620,14 +1648,17 @@ def evaluate_sequence(
     w_mass: float = 1.0,
     w_head: float = 1.0,
     w_pump: float = 1.0,
-    w_edge: float = 1.0,
+    w_press: float = 3.0,
+    w_cl: float = 1.0,
+    w_flow: float = 1.0,
     amp: bool = False,
     progress: bool = True,
-) -> Tuple[float, float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float, float]:
     global interrupted
     model.eval()
     total_loss = 0.0
-    node_total = edge_total = mass_total = head_total = sym_total = pump_total = 0.0
+    press_total = cl_total = flow_total = 0.0
+    mass_total = head_total = sym_total = pump_total = 0.0
     node_count = int(edge_index.max()) + 1
     data_iter = iter(tqdm(loader, disable=not progress))
     with torch.no_grad():
@@ -1667,10 +1698,18 @@ def evaluate_sequence(
                     if node_mask is not None:
                         pred_nodes = pred_nodes[:, :, node_mask, :]
                         target_nodes = target_nodes[:, :, node_mask, :]
-                    loss_node = _apply_loss(pred_nodes, target_nodes.float(), loss_fn)
                     edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
                     edge_preds = preds['edge_outputs'].float()
-                    loss_edge = _apply_loss(edge_preds, edge_target.float(), loss_fn)
+                    loss, loss_press, loss_cl, loss_edge = weighted_mtl_loss(
+                        pred_nodes,
+                        target_nodes.float(),
+                        edge_preds,
+                        edge_target.float(),
+                        loss_fn=loss_fn,
+                        w_press=w_press,
+                        w_cl=w_cl,
+                        w_flow=w_flow,
+                    )
                     if physics_loss:
                         flows_mb = (
                             edge_preds.squeeze(-1)
@@ -1755,7 +1794,6 @@ def evaluate_sequence(
                         )
                     else:
                         pump_loss_val = torch.tensor(0.0, device=device)
-                    loss = loss_node + w_edge * loss_edge
                     if physics_loss:
                         loss = loss + w_mass * (mass_loss + sym_loss)
                     if pressure_loss:
@@ -1764,11 +1802,13 @@ def evaluate_sequence(
                         loss = loss + w_pump * pump_loss_val
                 else:
                     Y_seq = Y_seq.to(device)
-                    loss_node = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
+                    loss_press = loss_cl = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
+                    head_loss = pump_loss_val = torch.tensor(0.0, device=device)
                     loss = _apply_loss(preds, Y_seq.float(), loss_fn)
             total_loss += loss.item() * X_seq.size(0)
-            node_total += loss_node.item() * X_seq.size(0)
-            edge_total += loss_edge.item() * X_seq.size(0)
+            press_total += loss_press.item() * X_seq.size(0)
+            cl_total += loss_cl.item() * X_seq.size(0)
+            flow_total += loss_edge.item() * X_seq.size(0)
             mass_total += mass_loss.item() * X_seq.size(0)
             head_total += head_loss.item() * X_seq.size(0)
             sym_total += sym_loss.item() * X_seq.size(0)
@@ -1778,8 +1818,9 @@ def evaluate_sequence(
     denom = len(loader.dataset)
     return (
         total_loss / denom,
-        node_total / denom,
-        edge_total / denom,
+        press_total / denom,
+        cl_total / denom,
+        flow_total / denom,
         mass_total / denom,
         head_total / denom,
         sym_total / denom,
@@ -2151,6 +2192,11 @@ def main(args: argparse.Namespace):
         log_path = os.path.join(DATA_DIR, f"training_{run_name}.log")
     losses = []
     loss_components = [] if seq_mode else None
+    tb_writer = None
+    if SummaryWriter is not None:
+        tb_log_dir = REPO_ROOT / "logs" / f"tb_{run_name}"
+        tb_log_dir.mkdir(parents=True, exist_ok=True)
+        tb_writer = SummaryWriter(log_dir=str(tb_log_dir))
 
     start_epoch = 0
     if args.resume:
@@ -2166,7 +2212,12 @@ def main(args: argparse.Namespace):
         f.write(f"args: {vars(args)}\n")
         f.write(f"seed: {args.seed}\n")
         f.write(f"device: {device}\n")
-        f.write("epoch,train_loss,val_loss,lr\n")
+        if seq_mode:
+            f.write(
+                "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,val_press_loss,val_cl_loss,val_flow_loss,lr\n"
+            )
+        else:
+            f.write("epoch,train_loss,val_loss,lr\n")
         best_val = float("inf")
         patience = 0
         for epoch in range(start_epoch, args.epochs):
@@ -2191,13 +2242,15 @@ def main(args: argparse.Namespace):
                     w_mass=args.w_mass,
                     w_head=args.w_head,
                     w_pump=args.w_pump,
-                    w_edge=args.w_edge,
+                    w_press=args.w_press,
+                    w_cl=args.w_cl,
+                    w_flow=args.w_flow,
                     amp=args.amp,
                     progress=args.progress,
                 )
                 loss = loss_tuple[0]
-                node_l, edge_l, mass_l, head_l, sym_l, pump_l = loss_tuple[1:]
-                comp = [node_l, edge_l, mass_l, sym_l]
+                press_l, cl_l, flow_l, mass_l, head_l, sym_l, pump_l = loss_tuple[1:]
+                comp = [press_l, cl_l, flow_l, mass_l, sym_l]
                 if args.pressure_loss:
                     comp.append(head_l)
                 if args.pump_loss:
@@ -2223,13 +2276,17 @@ def main(args: argparse.Namespace):
                         w_mass=args.w_mass,
                         w_head=args.w_head,
                         w_pump=args.w_pump,
-                        w_edge=args.w_edge,
+                        w_press=args.w_press,
+                        w_cl=args.w_cl,
+                        w_flow=args.w_flow,
                         amp=args.amp,
                         progress=args.progress,
                     )
                     val_loss = val_tuple[0]
+                    val_press_l, val_cl_l, val_flow_l = val_tuple[1:4]
                 else:
                     val_loss = loss
+                    val_press_l, val_cl_l, val_flow_l = press_l, cl_l, flow_l
             else:
                 loss = train(
                     model,
@@ -2257,16 +2314,53 @@ def main(args: argparse.Namespace):
             scheduler.step(val_loss)
             curr_lr = optimizer.param_groups[0]['lr']
             losses.append((loss, val_loss))
-            f.write(f"{epoch},{loss:.6f},{val_loss:.6f},{curr_lr:.6e}\n")
-            if args.physics_loss and seq_mode:
-                msg = (
-                    f"Epoch {epoch}: node={node_l:.3f}, edge={edge_l:.3f}, "
-                    f"mass={mass_l:.3f}, sym={sym_l:.3f}"
+            if seq_mode:
+                f.write(
+                    f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
+                    f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e}\n"
                 )
-                if args.pressure_loss:
-                    msg += f", head={head_l:.3f}"
-                print(msg)
+                if tb_writer is not None:
+                    tb_writer.add_scalars(
+                        "loss/train",
+                        {
+                            "total": loss,
+                            "pressure": press_l,
+                            "chlorine": cl_l,
+                            "flow": flow_l,
+                        },
+                        epoch,
+                    )
+                    tb_writer.add_scalars(
+                        "loss/val",
+                        {
+                            "total": val_loss,
+                            "pressure": val_press_l,
+                            "chlorine": val_cl_l,
+                            "flow": val_flow_l,
+                        },
+                        epoch,
+                    )
+                if args.physics_loss:
+                    msg = (
+                        f"Epoch {epoch}: press={press_l:.3f}, cl={cl_l:.3f}, flow={flow_l:.3f}, "
+                        f"mass={mass_l:.3f}, sym={sym_l:.3f}"
+                    )
+                    if args.pressure_loss:
+                        msg += f", head={head_l:.3f}"
+                    if args.pump_loss:
+                        msg += f", pump={pump_l:.3f}"
+                    print(msg)
+                else:
+                    print(f"Epoch {epoch}")
             else:
+                f.write(f"{epoch},{loss:.6f},{val_loss:.6f},{curr_lr:.6e}\n")
+                if tb_writer is not None:
+                    tb_writer.add_scalars(
+                        "loss/train", {"total": loss}, epoch
+                    )
+                    tb_writer.add_scalars(
+                        "loss/val", {"total": val_loss}, epoch
+                    )
                 print(f"Epoch {epoch}")
             if val_loss < best_val - 1e-6:
                 best_val = val_loss
@@ -2498,6 +2592,8 @@ def main(args: argparse.Namespace):
             X_flat = X_raw.reshape(-1, X_raw.shape[-1])
             correlation_heatmap(X_flat, labels, run_name)
 
+    if tb_writer is not None:
+        tb_writer.close()
     print(f"Best model saved to {model_path}")
 
 
@@ -2699,7 +2795,19 @@ if __name__ == "__main__":
         help="Weight of the pump curve loss term",
     )
     parser.add_argument(
-        "--w_edge",
+        "--w-press",
+        type=float,
+        default=3.0,
+        help="Weight of the node pressure loss term",
+    )
+    parser.add_argument(
+        "--w-cl",
+        type=float,
+        default=1.0,
+        help="Weight of the node chlorine loss term",
+    )
+    parser.add_argument(
+        "--w-flow",
         type=float,
         default=1.0,
         help="Weight of the edge (flow) loss term",
