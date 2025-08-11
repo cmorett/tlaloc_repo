@@ -426,3 +426,18 @@ themselves.  They generate prediction scatter plots, MPC time series,
 energy–pressure trade-off charts and convergence curves.  All images are
 written to the `plots/` directory so they can be included in reports or
 presentations easily.
+
+## Hyperparameter sweep
+
+Use `scripts/sweep_training.py` to evaluate different loss weights and model
+architectures.  The script iterates over combinations of `w_press`, `w_mass`,
+`w_head`, network depth, hidden dimension and residual connections, training
+each configuration and writing the metrics to `data/sweep_results.csv`.
+
+Visualise the resulting pressure errors with:
+
+```bash
+python scripts/plot_sweep.py data/sweep_results.csv
+```
+
+which saves `plots/pressure_mae_vs_config.png`.
