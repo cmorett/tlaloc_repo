@@ -548,7 +548,30 @@ def load_surrogate_model(
     else:
         model = GNNSurrogate(conv_layers, fc_out=fc_layer).to(device)
 
-    model.load_state_dict(state, strict=False)
+    tank_keys = ["tank_indices", "tank_areas", "tank_edges", "tank_signs"]
+    present_tanks = [k for k in tank_keys if k in state]
+    if present_tanks:
+        missing_tanks = [k for k in tank_keys if k not in state]
+        if missing_tanks:
+            raise KeyError(f"Missing tank parameters in checkpoint: {missing_tanks}")
+        for k in tank_keys:
+            model.register_buffer(k, state[k])
+
+    load_res = model.load_state_dict(state, strict=False)
+    if isinstance(load_res, tuple):
+        missing_keys = load_res[0]
+    else:
+        missing_keys = load_res.missing_keys
+    critical_missing = [
+        k
+        for k in missing_keys
+        if k.startswith("decoder")
+        or k.startswith("node_decoder")
+        or k.startswith("edge_decoder")
+        or k.startswith("tank_")
+    ]
+    if critical_missing:
+        raise KeyError(f"Missing keys in state dict: {critical_missing}")
 
     # ensure LayerNorm modules expose ``normalized_shape`` for compatibility
     enc = getattr(model, "encoder", None)
