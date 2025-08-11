@@ -73,6 +73,11 @@ When normalization is enabled (the default) the test data is scaled using the
 training statistics. During evaluation both predictions **and** the
 corresponding ground truth labels are transformed back to physical units before
 plotting.
+The training script saves feature and target means and standard deviations on
+the model.  ``mpc_control.py`` loads these tensors and checks their shapes so
+inference uses the exact same statistics.  This normalization contract prevents
+silent scaling mismatches; pass ``--skip-normalization`` to operate entirely on
+raw values.
 When sequence models are used a component-wise loss curve
 ``loss_components_<run>.png`` is stored alongside ``loss_curve_<run>.png`` and
 the per-component pressure, chlorine and flow losses are recorded each epoch in
@@ -88,6 +93,11 @@ Edge attributes describing pipe length, diameter and roughness are stored in
 file by default via ``--edge-attr-path``. Pump curve coefficients are saved as
 ``pump_coeffs.npy`` and included in a dedicated pump curve loss during training
 (``--pump-loss``) with weight ``--w_pump``.
+Optional physics losses in ``models/loss_utils.py`` further regularise
+training. ``compute_mass_balance_loss`` penalises node flow imbalance,
+``pressure_headloss_consistency_loss`` enforces Hazen–Williams head losses and
+``pump_curve_loss`` discourages infeasible pump operating points. Combine these
+terms with data losses to keep predictions physically plausible.
 
 Training performs node-wise regression and by default optimizes the mean
 absolute error (MAE).  Specify ``--loss-fn`` to switch between MAE (``mae``),
@@ -349,10 +359,12 @@ truth feedback is applied, and the magnitude range of the current bias is
 logged each hour.
 
 ``mpc_control.py`` exposes weights on pressure, chlorine and energy terms as
-``--w_p``, ``--w_c`` and ``--w_e`` respectively.  The default configuration
-scales pump energy from Joules to megawatt-hours via ``--energy-scale 1e-9``
-and sets ``w_p``/``w_c`` to 100 so constraint violations dominate energy
-trade-offs.  ``--barrier`` selects how violations are penalised: ``softplus``
+``--w_p``, ``--w_c`` and ``--w_e`` respectively.  Raw hourly pump energy can reach
+``1e8``–``1e9`` Joules, so the default configuration rescales it to
+megawatt-hours via ``--energy-scale 1e-9`` before applying the cost.  This keeps
+energy magnitudes comparable to pressure penalties and lets ``w_e`` remain near
+unity while ``w_p``/``w_c`` default to 100 so constraint violations dominate.
+``--barrier`` selects how violations are penalised: ``softplus``
 applies a smooth barrier (default), ``exp`` uses an exponential barrier and
 ``cubic`` reverts to the previous hinge. Gradients on the control variables are
 clipped to ``[-gmax, gmax]`` with ``--gmax`` to improve numerical robustness.
@@ -372,6 +384,10 @@ interval exceeds one hour to highlight potential drift. Results are written to
 `data/mpc_history.csv`.  A summary listing constraint violations and total
 energy consumption (in Joules) is printed at the end of the run and saved to
 ``logs/mpc_summary.json``.
+The ``--feedback-interval`` flag controls how often EPANET provides ground
+truth. ``1`` (default) refreshes the state each hour, ``0`` disables feedback
+entirely for a fully surrogate rollout, and larger values propagate the
+surrogate for multiple steps before synchronising with EPANET.
 The controller updates node demands each hour using the diurnal patterns
 specified in ``CTown.inp`` so the surrogate remains aligned with its training
 distribution.

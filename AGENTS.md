@@ -23,6 +23,9 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `sweep_training.py` – run hyperparameter sweeps over loss weights and architecture.
   - `plot_sweep.py` – visualise pressure MAE across sweep configurations.
   - `reproducibility.py` – helper utilities for seeding and config logging.
+- `notebooks/` – quickstart notebooks visualising common analyses.
+  - `00_validate_surrogate_rollout.ipynb` – compare 1-step and multi-step surrogate errors.
+  - `01_mpc_cost_sensitivity.ipynb` – explore pressure–energy trade-offs under different cost weights.
 - `tests/` – pytest suite containing:
   - `test_accuracy_export.py`
   - `test_amp.py`
