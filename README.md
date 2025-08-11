@@ -140,8 +140,11 @@ python scripts/train_gnn.py \
     --epochs 100 --batch-size 32 --hidden-dim 128 --num-layers 4 \
     --lstm-hidden 64 --workers 8 \
     --dropout 0.1 --residual --early-stop-patience 10 \
-    --weight-decay 1e-5
+    --weight-decay 1e-5 --w-press 5.0 --w-flow 3.0 --w-cl 0.0
 ```
+Chlorine supervision is disabled by default. Pass a positive weight such as
+``--w-cl 1.0`` to train on chlorine again.
+
 GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8}) and ``--hidden-dim`` ({128,256}).
 Use ``--residual`` to enable skip connections and ``--use-attention`` for graph attention on node updates.
 The LSTM hidden size can be set with ``--lstm-hidden`` (64 or 128).
@@ -195,10 +198,11 @@ pressures are no longer part of the direct MSE loss.  Disable the physics terms
 with ``--no-physics-loss`` if necessary. ``--pressure_loss`` is enabled by
 default to enforce pressure–headloss consistency via the Hazen--Williams
 equation.  The mass penalty uses a default weight of ``2.0`` while
-the headloss term uses ``1.0``. Node pressure and chlorine terms now have
-independent weights ``--w-press`` (default ``3.0``) and ``--w-cl`` (``1.0``),
-and pipe flows are scaled by ``--w-flow`` (``1.0``). The relative importance can
-still be tuned via these flags together with ``--w_mass`` and ``--w_head``.
+the headloss term uses ``1.0``. Node pressure, chlorine and flow terms use
+weights ``--w-press`` (default ``5.0``), ``--w-cl`` (``0.0``) and ``--w-flow``
+(``3.0``). Chlorine is thus ignored unless a positive weight is provided. The
+relative importance can still be tuned via these flags together with
+``--w_mass`` and ``--w_head``.
 Training logs also report the average mass imbalance per batch and the
 percentage of edges with inconsistent headloss signs.
 

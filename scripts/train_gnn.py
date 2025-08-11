@@ -2388,19 +2388,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--w-press",
         type=float,
-        default=3.0,
+        default=5.0,
         help="Weight of the node pressure loss term",
     )
     parser.add_argument(
         "--w-cl",
         type=float,
-        default=1.0,
+        default=0.0,
         help="Weight of the node chlorine loss term",
     )
     parser.add_argument(
         "--w-flow",
         type=float,
-        default=1.0,
+        default=3.0,
         help="Weight of the edge (flow) loss term",
     )
     parser.add_argument(
