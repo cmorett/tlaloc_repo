@@ -21,9 +21,9 @@ def weighted_mtl_loss(
     edge_target: torch.Tensor,
     *,
     loss_fn: str = "mae",
-    w_press: float = 3.0,
-    w_cl: float = 1.0,
-    w_flow: float = 1.0,
+    w_press: float = 5.0,
+    w_cl: float = 0.0,
+    w_flow: float = 3.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return total and component losses for pressure, chlorine and flow.
 
@@ -41,7 +41,9 @@ def weighted_mtl_loss(
     loss_fn: {"mae", "mse", "huber"}
         Base loss applied per component.
     w_press, w_cl, w_flow: float
-        Weights for pressure, chlorine and flow losses respectively.
+        Weights for pressure, chlorine and flow losses respectively. The
+        defaults emphasise pressure and flow (``5.0`` and ``3.0``) while
+        chlorine is disabled (``0.0``).
     """
     press_loss = _apply_loss(pred_nodes[..., 0], target_nodes[..., 0], loss_fn)
     cl_loss = _apply_loss(pred_nodes[..., 1], target_nodes[..., 1], loss_fn)
