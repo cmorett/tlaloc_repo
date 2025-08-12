@@ -523,12 +523,23 @@ def rollout_surrogate(
                     if isinstance(model.y_mean, dict):
                         y_mean_node = model.y_mean["node_outputs"].to(node_pred.device)
                         y_std_node = model.y_std["node_outputs"].to(node_pred.device)
+                        num_targets = y_std_node.numel()
+                        if node_pred.shape[1] < num_targets:
+                            raise ValueError(
+                                "node_pred has fewer columns than model.y_std"
+                            )
+                        node_pred = node_pred[:, :num_targets]
                         node_pred = node_pred * y_std_node + y_mean_node
                     else:
-                        node_pred = (
-                            node_pred * model.y_std.to(node_pred.device)
-                            + model.y_mean.to(node_pred.device)
-                        )
+                        y_mean = model.y_mean.to(node_pred.device)
+                        y_std = model.y_std.to(node_pred.device)
+                        num_targets = y_std.numel()
+                        if node_pred.shape[1] < num_targets:
+                            raise ValueError(
+                                f"node_pred has {node_pred.shape[1]} columns but y_std expects {num_targets}"
+                            )
+                        node_pred = node_pred[:, :num_targets]
+                        node_pred = node_pred * y_std + y_mean
                 pred_p = node_pred[:, 0].cpu().numpy()
                 pred_c = np.expm1(node_pred[:, 1].cpu().numpy()) * 1000.0
                 true_p = pressures_df.iloc[t + 1].to_numpy()
