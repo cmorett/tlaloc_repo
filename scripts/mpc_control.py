@@ -300,7 +300,7 @@ def load_surrogate_model(
         raise FileNotFoundError(
             f"{full_path} not found. Run train_gnn.py to generate the surrogate weights."
         )
-    checkpoint = torch.load(str(full_path), map_location=device)
+    checkpoint = torch.load(str(full_path), map_location=device, weights_only=False)
     state = (
         checkpoint["model_state_dict"]
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
@@ -584,7 +584,35 @@ def load_surrogate_model(
     model.edge_dim = edge_dim if edge_dim is not None else 0
 
     norm_path = str(full_path.with_suffix("")) + "_norm.npz"
-    if os.path.exists(norm_path):
+    norm_stats = (
+        checkpoint.get("norm_stats")
+        if isinstance(checkpoint, dict)
+        else None
+    )
+    if norm_stats is not None:
+        model.x_mean = torch.tensor(norm_stats["x_mean"], dtype=torch.float32, device=device)
+        model.x_std = torch.tensor(norm_stats["x_std"], dtype=torch.float32, device=device)
+        y_mean_np = norm_stats.get("y_mean")
+        y_std_np = norm_stats.get("y_std")
+        if isinstance(y_mean_np, dict):
+            model.y_mean = torch.tensor(y_mean_np.get("node_outputs"), dtype=torch.float32, device=device)
+            model.y_std = torch.tensor(y_std_np.get("node_outputs"), dtype=torch.float32, device=device)
+        elif y_mean_np is not None:
+            model.y_mean = torch.tensor(y_mean_np, dtype=torch.float32, device=device)
+            model.y_std = torch.tensor(y_std_np, dtype=torch.float32, device=device)
+        else:
+            model.y_mean = model.y_std = None
+
+        model.y_mean_energy = None
+        model.y_std_energy = None
+        edge_mean_np = norm_stats.get("edge_mean")
+        edge_std_np = norm_stats.get("edge_std")
+        if edge_mean_np is not None:
+            model.edge_mean = torch.tensor(edge_mean_np, dtype=torch.float32, device=device)
+            model.edge_std = torch.tensor(edge_std_np, dtype=torch.float32, device=device)
+        else:
+            model.edge_mean = model.edge_std = None
+    elif os.path.exists(norm_path):
         arr = np.load(norm_path)
         # Moved normalization constants to GPU to avoid device transfer
         model.x_mean = torch.tensor(arr["x_mean"], dtype=torch.float32, device=device)
@@ -631,6 +659,27 @@ def load_surrogate_model(
             "edge_std": tuple(model.edge_std.shape) if getattr(model, "edge_std", None) is not None else None,
         }
         norm_hash = md5.hexdigest()
+        if norm_stats is not None:
+            stored_hash = norm_stats.get("hash")
+            if stored_hash and stored_hash != norm_hash:
+                raise ValueError("Stored normalization stats hash mismatch")
+            if os.path.exists(norm_path):
+                arr = np.load(norm_path)
+                md5_npz = hashlib.md5()
+                npz_arrays = [arr["x_mean"], arr["x_std"]]
+                if "y_mean" in arr:
+                    npz_arrays.extend([arr["y_mean"], arr["y_std"]])
+                elif "y_mean_node" in arr:
+                    npz_arrays.extend([arr["y_mean_node"], arr["y_std_node"]])
+                    if "y_mean_edge" in arr:
+                        npz_arrays.extend([arr["y_mean_edge"], arr["y_std_edge"]])
+                if "edge_mean" in arr:
+                    npz_arrays.extend([arr["edge_mean"], arr["edge_std"]])
+                for a in npz_arrays:
+                    md5_npz.update(a.tobytes())
+                npz_hash = md5_npz.hexdigest()
+                if stored_hash and npz_hash != stored_hash:
+                    raise ValueError("_norm.npz hash mismatch with checkpoint")
         print(f"Loaded normalization stats shapes: {shapes}, md5: {norm_hash}")
         model.norm_hash = norm_hash
 

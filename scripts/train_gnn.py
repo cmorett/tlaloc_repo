@@ -808,6 +808,7 @@ def handle_keyboard_interrupt(
     optimizer: torch.optim.Optimizer,
     scheduler: _LRScheduler,
     epoch: int,
+    norm_stats: Optional[Dict[str, np.ndarray]] = None,
 ) -> None:
     """Save final checkpoint when training is interrupted."""
     checkpoint = {
@@ -816,6 +817,8 @@ def handle_keyboard_interrupt(
         "scheduler_state_dict": scheduler.state_dict(),
         "epoch": epoch,
     }
+    if norm_stats is not None:
+        checkpoint["norm_stats"] = norm_stats
     torch.save(checkpoint, model_path)
     print(f"Training interrupted. Saved checkpoint to {model_path}")
 
@@ -1740,8 +1743,22 @@ def main(args: argparse.Namespace):
             else:
                 md5.update(arr.cpu().numpy().tobytes())
         norm_md5 = md5.hexdigest()
+        norm_stats = {
+            "x_mean": x_mean.cpu().numpy(),
+            "x_std": x_std.cpu().numpy(),
+            "edge_mean": edge_mean.cpu().numpy(),
+            "edge_std": edge_std.cpu().numpy(),
+        }
+        if isinstance(y_mean, dict):
+            norm_stats["y_mean"] = {k: v.cpu().numpy() for k, v in y_mean.items()}
+            norm_stats["y_std"] = {k: y_std[k].cpu().numpy() for k in y_mean}
+        else:
+            norm_stats["y_mean"] = y_mean.cpu().numpy()
+            norm_stats["y_std"] = y_std.cpu().numpy()
+        norm_stats["hash"] = norm_md5
     else:
         x_mean = x_std = y_mean = y_std = None
+        norm_stats = None
 
     if not seq_mode:
         if args.neighbor_sampling:
@@ -2004,7 +2021,7 @@ def main(args: argparse.Namespace):
 
     start_epoch = 0
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location=device)
+        checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
@@ -2218,37 +2235,39 @@ def main(args: argparse.Namespace):
                 best_val = val_loss
                 patience = 0
                 os.makedirs(os.path.dirname(model_path), exist_ok=True)
-                torch.save(
-                    {
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "scheduler_state_dict": scheduler.state_dict(),
-                        "epoch": epoch,
-                    },
-                    model_path,
-                )
-                if x_mean is not None:
-                    if isinstance(y_mean, dict):
+                ckpt = {
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "epoch": epoch,
+                }
+                if norm_stats is not None:
+                    ckpt["norm_stats"] = norm_stats
+                torch.save(ckpt, model_path)
+                if norm_stats is not None:
+                    y_mean_np = norm_stats["y_mean"]
+                    y_std_np = norm_stats["y_std"]
+                    if isinstance(y_mean_np, dict):
                         np.savez(
                             norm_path,
-                            x_mean=x_mean.numpy(),
-                            x_std=x_std.numpy(),
-                            y_mean_node=y_mean["node_outputs"].numpy(),
-                            y_std_node=y_std["node_outputs"].numpy(),
-                            y_mean_edge=y_mean["edge_outputs"].numpy(),
-                            y_std_edge=y_std["edge_outputs"].numpy(),
-                            edge_mean=edge_mean.numpy(),
-                            edge_std=edge_std.numpy(),
+                            x_mean=norm_stats["x_mean"],
+                            x_std=norm_stats["x_std"],
+                            y_mean_node=y_mean_np["node_outputs"],
+                            y_std_node=y_std_np["node_outputs"],
+                            y_mean_edge=y_mean_np["edge_outputs"],
+                            y_std_edge=y_std_np["edge_outputs"],
+                            edge_mean=norm_stats["edge_mean"],
+                            edge_std=norm_stats["edge_std"],
                         )
                     else:
                         np.savez(
                             norm_path,
-                            x_mean=x_mean.numpy(),
-                            x_std=x_std.numpy(),
-                            y_mean=y_mean.numpy(),
-                            y_std=y_std.numpy(),
-                            edge_mean=edge_mean.numpy(),
-                            edge_std=edge_std.numpy(),
+                            x_mean=norm_stats["x_mean"],
+                            x_std=norm_stats["x_std"],
+                            y_mean=y_mean_np,
+                            y_std=y_std_np,
+                            edge_mean=norm_stats["edge_mean"],
+                            edge_std=norm_stats["edge_std"],
                         )
             else:
                 patience += 1
@@ -2257,7 +2276,7 @@ def main(args: argparse.Namespace):
             if patience >= args.early_stop_patience:
                 break
         if interrupted:
-            handle_keyboard_interrupt(model_path, model, optimizer, scheduler, epoch)
+            handle_keyboard_interrupt(model_path, model, optimizer, scheduler, epoch, norm_stats)
 
     os.makedirs(PLOTS_DIR, exist_ok=True)
     # plot loss curve
@@ -2328,7 +2347,7 @@ def main(args: argparse.Namespace):
                 pin_memory=torch.cuda.is_available(),
                 persistent_workers=args.workers > 0,
             )
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         state = (
             checkpoint["model_state_dict"]
             if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
