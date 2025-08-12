@@ -247,6 +247,11 @@ The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.np
 ``--num-workers`` to override the number of parallel workers if needed.
 Pass ``--show-progress`` to display a live progress bar during simulation
 when ``tqdm`` is installed.
+Use ``--no-include-chlorine`` to omit chlorine concentration from the
+generated node features and targets. The resulting node features become
+``[d_t, p_t, elev, pump_speeds...]`` and the targets only contain next-step
+pressure. The training script automatically detects this layout and adjusts
+its output dimension accordingly.
 If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.

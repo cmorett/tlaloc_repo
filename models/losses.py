@@ -46,7 +46,10 @@ def weighted_mtl_loss(
         chlorine is disabled (``0.0``).
     """
     press_loss = _apply_loss(pred_nodes[..., 0], target_nodes[..., 0], loss_fn)
-    cl_loss = _apply_loss(pred_nodes[..., 1], target_nodes[..., 1], loss_fn)
+    if pred_nodes.size(-1) > 1:
+        cl_loss = _apply_loss(pred_nodes[..., 1], target_nodes[..., 1], loss_fn)
+    else:
+        cl_loss = pred_nodes.new_tensor(0.0)
     flow_loss = _apply_loss(edge_preds, edge_target, loss_fn)
     total = w_press * press_loss + w_cl * cl_loss + w_flow * flow_loss
     return total, press_loss, cl_loss, flow_loss

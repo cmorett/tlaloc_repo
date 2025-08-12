@@ -191,54 +191,69 @@ def _to_numpy(seq: Sequence[float]) -> np.ndarray:
 def predicted_vs_actual_scatter(
     true_pressure: Sequence[float],
     pred_pressure: Sequence[float],
-    true_chlorine: Sequence[float],
-    pred_chlorine: Sequence[float],
+    true_chlorine: Optional[Sequence[float]],
+    pred_chlorine: Optional[Sequence[float]],
     run_name: str,
     plots_dir: Optional[Path] = None,
     return_fig: bool = False,
     mask: Optional[Sequence[bool]] = None,
 ) -> Optional[plt.Figure]:
-    """Scatter plots comparing surrogate predictions with EPANET results."""
+    """Scatter plots comparing surrogate predictions with EPANET results.
+
+    ``true_chlorine`` and ``pred_chlorine`` may be ``None`` when the dataset
+    excludes chlorine targets.
+    """
     if plots_dir is None:
         plots_dir = PLOTS_DIR
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     tp = _to_numpy(true_pressure)
     pp = _to_numpy(pred_pressure)
-    tc = _to_numpy(true_chlorine)
-    pc = _to_numpy(pred_chlorine)
+    tc = _to_numpy(true_chlorine) if true_chlorine is not None else None
+    pc = _to_numpy(pred_chlorine) if pred_chlorine is not None else None
 
     if mask is not None:
         m = np.asarray(mask, dtype=bool)
         tp = tp[m]
         pp = pp[m]
-        tc = tc[m]
-        pc = pc[m]
+        if tc is not None and pc is not None:
+            tc = tc[m]
+            pc = pc[m]
 
-    # chlorine values are stored in log space (log1p). Convert back to mg/L
-    # before plotting so the axes reflect physical units.
-    tc = np.expm1(tc) * 1000.0
-    pc = np.expm1(pc) * 1000.0
+    if tc is not None and pc is not None:
+        # chlorine values are stored in log space (log1p). Convert back to mg/L
+        # before plotting so the axes reflect physical units.
+        tc = np.expm1(tc) * 1000.0
+        pc = np.expm1(pc) * 1000.0
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        axes[0].scatter(tp, pp, label="Pressure", color="tab:blue", alpha=0.7)
+        min_p, max_p = tp.min(), tp.max()
+        axes[0].plot([min_p, max_p], [min_p, max_p], "k--", lw=1)
+        axes[0].set_xlabel("Actual Pressure (m)")
+        axes[0].set_ylabel("Predicted Pressure (m)")
+        axes[0].set_title("Pressure")
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        axes[1].scatter(tc, pc, label="Chlorine", color="tab:orange", alpha=0.7)
+        min_c, max_c = tc.min(), tc.max()
+        axes[1].plot([min_c, max_c], [min_c, max_c], "k--", lw=1)
+        axes[1].set_xlabel("Actual Chlorine (mg/L)")
+        axes[1].set_ylabel("Predicted Chlorine (mg/L)")
+        axes[1].set_title("Chlorine")
 
-    axes[0].scatter(tp, pp, label="Pressure", color="tab:blue", alpha=0.7)
-    min_p, max_p = tp.min(), tp.max()
-    axes[0].plot([min_p, max_p], [min_p, max_p], "k--", lw=1)
-    axes[0].set_xlabel("Actual Pressure (m)")
-    axes[0].set_ylabel("Predicted Pressure (m)")
-    axes[0].set_title("Pressure")
-
-    axes[1].scatter(tc, pc, label="Chlorine", color="tab:orange", alpha=0.7)
-    min_c, max_c = tc.min(), tc.max()
-    axes[1].plot([min_c, max_c], [min_c, max_c], "k--", lw=1)
-    axes[1].set_xlabel("Actual Chlorine (mg/L)")
-    axes[1].set_ylabel("Predicted Chlorine (mg/L)")
-    axes[1].set_title("Chlorine")
-
-    fig.suptitle("Surrogate Model Prediction Accuracy for Pressure and Chlorine")
-    fig.tight_layout()
-    fig.subplots_adjust(top=0.85)
+        fig.suptitle("Surrogate Model Prediction Accuracy for Pressure and Chlorine")
+        fig.tight_layout()
+        fig.subplots_adjust(top=0.85)
+    else:
+        fig, axes = plt.subplots(1, 1, figsize=(5, 4))
+        ax = axes if isinstance(axes, plt.Axes) else axes[0]
+        ax.scatter(tp, pp, label="Pressure", color="tab:blue", alpha=0.7)
+        min_p, max_p = tp.min(), tp.max()
+        ax.plot([min_p, max_p], [min_p, max_p], "k--", lw=1)
+        ax.set_xlabel("Actual Pressure (m)")
+        ax.set_ylabel("Predicted Pressure (m)")
+        ax.set_title("Pressure")
+        fig.suptitle("Surrogate Model Prediction Accuracy for Pressure")
+        fig.tight_layout()
 
     fig.savefig(plots_dir / f"pred_vs_actual_{run_name}.png")
     if not return_fig:
@@ -279,9 +294,10 @@ def save_scatter_plots(
     # also store individual scatter images for backward compatibility
     axes = fig.axes
     axes[0].figure.savefig(plots_dir / f"pred_vs_actual_pressure_{run_name}.png")
-    axes[1].figure.savefig(
-        plots_dir / f"pred_vs_actual_chlorine_{run_name}.png"
-    )
+    if len(axes) > 1:
+        axes[1].figure.savefig(
+            plots_dir / f"pred_vs_actual_chlorine_{run_name}.png"
+        )
     plt.close(fig)
 
 
@@ -302,21 +318,22 @@ def save_accuracy_metrics(
     logs_dir.mkdir(parents=True, exist_ok=True)
     tp = _to_numpy(true_p)
     pp = _to_numpy(preds_p)
-    tc = _to_numpy(true_c)
-    pc = _to_numpy(preds_c)
+    tc = _to_numpy(true_c) if true_c is not None else None
+    pc = _to_numpy(preds_c) if preds_c is not None else None
 
     if mask is not None:
         m = np.asarray(mask, dtype=bool)
         tp = tp[m]
         pp = pp[m]
-        tc = tc[m]
-        pc = pc[m]
+        if tc is not None and pc is not None:
+            tc = tc[m]
+            pc = pc[m]
 
     df = accuracy_metrics(
         tp,
         pp,
-        np.expm1(tc) * 1000.0,
-        np.expm1(pc) * 1000.0,
+        None if tc is None else np.expm1(tc) * 1000.0,
+        None if pc is None else np.expm1(pc) * 1000.0,
     )
     if true_f is not None and preds_f is not None:
         tf = _to_numpy(true_f)
@@ -332,7 +349,7 @@ def save_accuracy_metrics(
 
 def plot_error_histograms(
     err_p: Sequence[float],
-    err_c: Sequence[float],
+    err_c: Optional[Sequence[float]],
     run_name: str,
     plots_dir: Optional[Path] = None,
     return_fig: bool = False,
@@ -344,36 +361,52 @@ def plot_error_histograms(
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     ep = _to_numpy(err_p)
-    ec = _to_numpy(err_c)
+    ec = _to_numpy(err_c) if err_c is not None else None
 
     if mask is not None:
         m = np.asarray(mask, dtype=bool)
         ep = ep[m]
-        ec = ec[m]
+        if ec is not None:
+            ec = ec[m]
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
-    axes[0, 0].hist(ep, bins=50, color="tab:blue", alpha=0.7)
-    axes[0, 0].set_title("Pressure Error")
-    axes[0, 0].set_xlabel("Prediction Error (m)")
-    axes[0, 0].set_ylabel("Count")
+    if ec is not None:
+        fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+        axes[0, 0].hist(ep, bins=50, color="tab:blue", alpha=0.7)
+        axes[0, 0].set_title("Pressure Error")
+        axes[0, 0].set_xlabel("Prediction Error (m)")
+        axes[0, 0].set_ylabel("Count")
 
-    axes[0, 1].hist(ec, bins=50, color="tab:orange", alpha=0.7)
-    axes[0, 1].set_title("Chlorine Error")
-    axes[0, 1].set_xlabel("Prediction Error (mg/L)")
-    axes[0, 1].set_ylabel("Count")
+        axes[0, 1].hist(ec, bins=50, color="tab:orange", alpha=0.7)
+        axes[0, 1].set_title("Chlorine Error")
+        axes[0, 1].set_xlabel("Prediction Error (mg/L)")
+        axes[0, 1].set_ylabel("Count")
 
-    axes[1, 0].boxplot(ep, vert=False)
-    axes[1, 0].set_yticklabels(["Pressure"])
-    axes[1, 0].set_xlabel("Prediction Error (m)")
-    axes[1, 0].set_title("Pressure Error Box")
+        axes[1, 0].boxplot(ep, vert=False)
+        axes[1, 0].set_yticklabels(["Pressure"])
+        axes[1, 0].set_xlabel("Prediction Error (m)")
+        axes[1, 0].set_title("Pressure Error Box")
 
-    axes[1, 1].boxplot(ec, vert=False)
-    axes[1, 1].set_yticklabels(["Chlorine"])
-    axes[1, 1].set_xlabel("Prediction Error (mg/L)")
-    axes[1, 1].set_title("Chlorine Error Box")
+        axes[1, 1].boxplot(ec, vert=False)
+        axes[1, 1].set_yticklabels(["Chlorine"])
+        axes[1, 1].set_xlabel("Prediction Error (mg/L)")
+        axes[1, 1].set_title("Chlorine Error Box")
 
-    for ax in axes.ravel():
-        ax.tick_params(labelsize=8)
+        for ax in axes.ravel():
+            ax.tick_params(labelsize=8)
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        axes[0].hist(ep, bins=50, color="tab:blue", alpha=0.7)
+        axes[0].set_title("Pressure Error")
+        axes[0].set_xlabel("Prediction Error (m)")
+        axes[0].set_ylabel("Count")
+
+        axes[1].boxplot(ep, vert=False)
+        axes[1].set_yticklabels(["Pressure"])
+        axes[1].set_xlabel("Prediction Error (m)")
+        axes[1].set_title("Pressure Error Box")
+
+        for ax in axes.ravel():
+            ax.tick_params(labelsize=8)
 
     fig.tight_layout()
     fig.savefig(plots_dir / f"error_histograms_{run_name}.png")
@@ -1626,6 +1659,21 @@ def main(args: argparse.Namespace):
     else:
         val_list = []
         val_loader = None
+    pump_count = len(wn.pump_name_list)
+    if seq_mode:
+        sample_dim = data_ds.X.shape[-1]
+    else:
+        sample_dim = data_list[0].num_node_features
+    base_dim = sample_dim - pump_count
+    if base_dim == 4:
+        has_chlorine = True
+    elif base_dim == 3:
+        has_chlorine = False
+    else:
+        raise ValueError(
+            f"Dataset provides {sample_dim} features per node but the network has {pump_count} pumps."
+        )
+    args.output_dim = 2 if has_chlorine else 1
 
     norm_md5 = None
     if args.normalize:
@@ -1668,14 +1716,15 @@ def main(args: argparse.Namespace):
                 y_mean["node_outputs"][0].item(),
                 y_std["node_outputs"][0].item(),
             )
-            print(
-                "Chlorine mean/std:",
-                y_mean["node_outputs"][1].item(),
-                y_std["node_outputs"][1].item(),
-            )
+            if has_chlorine:
+                print(
+                    "Chlorine mean/std:",
+                    y_mean["node_outputs"][1].item(),
+                    y_std["node_outputs"][1].item(),
+                )
         else:
-            if len(y_mean) >= 2:
-                print("Pressure mean/std:", y_mean[0].item(), y_std[0].item())
+            print("Pressure mean/std:", y_mean[0].item(), y_std[0].item())
+            if has_chlorine and len(y_mean) > 1:
                 print("Chlorine mean/std:", y_mean[1].item(), y_std[1].item())
 
         import hashlib
@@ -1734,7 +1783,7 @@ def main(args: argparse.Namespace):
                     persistent_workers=args.workers > 0,
                 )
 
-    expected_in_dim = 4 + len(wn.pump_name_list)
+    expected_in_dim = (4 if has_chlorine else 3) + len(wn.pump_name_list)
 
     if seq_mode:
         sample_dim = data_ds.X.shape[-1]
@@ -1749,7 +1798,7 @@ def main(args: argparse.Namespace):
                 in_channels=sample_dim,
                 hidden_channels=args.hidden_dim,
                 edge_dim=edge_attr.shape[1],
-                node_output_dim=2,
+                node_output_dim=2 if has_chlorine else 1,
                 edge_output_dim=1,
                 num_layers=args.num_layers,
                 use_attention=args.use_attention,
@@ -2311,9 +2360,10 @@ def main(args: argparse.Namespace):
                             node_pred = node_pred * y_std + y_mean
                             Y_node = Y_node * y_std + y_mean
                     preds_p.extend(node_pred[..., 0].cpu().numpy().ravel())
-                    preds_c.extend(node_pred[..., 1].cpu().numpy().ravel())
                     true_p.extend(Y_node[..., 0].cpu().numpy().ravel())
-                    true_c.extend(Y_node[..., 1].cpu().numpy().ravel())
+                    if has_chlorine and node_pred.shape[-1] > 1:
+                        preds_c.extend(node_pred[..., 1].cpu().numpy().ravel())
+                        true_c.extend(Y_node[..., 1].cpu().numpy().ravel())
                     if edge_pred is not None and Y_edge is not None:
                         preds_f.extend(edge_pred.squeeze(-1).cpu().numpy().ravel())
                         true_f.extend(Y_edge.squeeze(-1).cpu().numpy().ravel())
@@ -2361,25 +2411,28 @@ def main(args: argparse.Namespace):
                         edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
                         edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
                     preds_p.extend(node_out[:, 0].cpu().numpy())
-                    preds_c.extend(node_out[:, 1].cpu().numpy())
                     true_p.extend(batch_y[:, 0].cpu().numpy())
-                    true_c.extend(batch_y[:, 1].cpu().numpy())
+                    if has_chlorine and node_out.shape[1] > 1:
+                        preds_c.extend(node_out[:, 1].cpu().numpy())
+                        true_c.extend(batch_y[:, 1].cpu().numpy())
                     if edge_out is not None and edge_y is not None:
                         preds_f.extend(edge_out.squeeze(-1).cpu().numpy())
                         true_f.extend(edge_y.squeeze(-1).cpu().numpy())
         if preds_p:
             preds_p = np.array(preds_p)
-            preds_c = np.array(preds_c)
             true_p = np.array(true_p)
-            true_c = np.array(true_c)
             if preds_f:
                 preds_f = np.array(preds_f)
                 true_f = np.array(true_f)
             else:
                 preds_f = true_f = None
-
+            if has_chlorine and preds_c:
+                preds_c = np.array(preds_c)
+                true_c = np.array(true_c)
+                err_c = preds_c - true_c
+            else:
+                preds_c = true_c = err_c = None
             err_p = preds_p - true_p
-            err_c = preds_c - true_c
 
             exclude = set(wn.reservoir_name_list) | set(wn.tank_name_list)
             node_mask = np.array([n not in exclude for n in wn.node_name_list])
@@ -2407,12 +2460,11 @@ def main(args: argparse.Namespace):
                 preds_f=preds_f,
             )
             plot_error_histograms(err_p, err_c, run_name, mask=full_mask)
-            labels = [
-                "demand",
-                "pressure",
-                "chlorine",
-                "elevation",
-            ] + [f"pump_{i}" for i in range(len(wn.pump_name_list))]
+            labels = ["demand", "pressure"]
+            if has_chlorine:
+                labels.append("chlorine")
+            labels.append("elevation")
+            labels += [f"pump_{i}" for i in range(len(wn.pump_name_list))]
             X_flat = X_raw.reshape(-1, X_raw.shape[-1])
             correlation_heatmap(X_flat, labels, run_name)
 
