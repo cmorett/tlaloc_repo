@@ -202,7 +202,12 @@ the headloss term uses ``1.0``. Node pressure, chlorine and flow terms use
 weights ``--w-press`` (default ``5.0``), ``--w-cl`` (``0.0``) and ``--w-flow``
 (``3.0``). Chlorine is thus ignored unless a positive weight is provided. The
 relative importance can still be tuned via these flags together with
-``--w_mass`` and ``--w_head``.
+``--w_mass`` and ``--w_head``.  To keep the physics penalties on a comparable
+scale the script estimates baseline magnitudes for the mass, headloss and pump
+curve terms during the first pass over the training data. These values are used
+to normalise the respective losses before applying the user-specified weights.
+The automatically detected scales can be overridden via ``--mass-scale``,
+``--head-scale`` and ``--pump-scale`` if manual tuning or logging is desired.
 Training logs also report the average mass imbalance per batch and the
 percentage of edges with inconsistent headloss signs.
 
