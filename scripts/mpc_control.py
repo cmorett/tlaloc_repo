@@ -649,7 +649,7 @@ def load_surrogate_model(
 
         md5 = hashlib.md5()
         for t in stats_tensors:
-            md5.update(t.numpy().tobytes())
+            md5.update(t.to(torch.float32).numpy().tobytes())
         shapes = {
             "x_mean": tuple(model.x_mean.shape) if getattr(model, "x_mean", None) is not None else None,
             "x_std": tuple(model.x_std.shape) if getattr(model, "x_std", None) is not None else None,
