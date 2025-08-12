@@ -106,7 +106,20 @@ def load_dataset(
                 # reservoir heads) with zeros so that training does not produce
                 # ``NaN`` losses.
                 node_feat = torch.nan_to_num(node_feat)
-            data = Data(x=node_feat, edge_index=edge_index, y=torch.tensor(label))
+
+            edge_target = None
+            node_target = label
+            if isinstance(label, dict):
+                node_target = label.get("node_outputs")
+                edge_target = label.get("edge_outputs")
+
+            data = Data(
+                x=node_feat,
+                edge_index=edge_index,
+                y=torch.tensor(node_target, dtype=torch.float32),
+            )
+            if edge_target is not None:
+                data.edge_y = torch.tensor(edge_target, dtype=torch.float32).unsqueeze(-1)
             if edge_attr_tensor is not None:
                 data.edge_attr = edge_attr_tensor
             if node_type_tensor is not None:
@@ -122,15 +135,19 @@ def load_dataset(
             node_feat = torch.tensor(node_feat, dtype=torch.float32)
             if torch.isnan(node_feat).any():
                 node_feat = torch.nan_to_num(node_feat)
+            edge_target = None
+            node_target = label
             if isinstance(label, dict):
                 # ``label`` may contain multiple targets (e.g., edge labels).
-                # Only use the node-level outputs during training.
-                label = label["node_outputs"]
+                node_target = label.get("node_outputs")
+                edge_target = label.get("edge_outputs")
             data = Data(
                 x=node_feat,
                 edge_index=edge_index,
-                y=torch.tensor(label, dtype=torch.float32),
+                y=torch.tensor(node_target, dtype=torch.float32),
             )
+            if edge_target is not None:
+                data.edge_y = torch.tensor(edge_target, dtype=torch.float32).unsqueeze(-1)
             if edge_attr_tensor is not None:
                 data.edge_attr = edge_attr_tensor
             if node_type_tensor is not None:
@@ -145,11 +162,24 @@ def load_dataset(
 def compute_norm_stats(data_list):
     """Compute mean and std per feature/target dimension from ``data_list``."""
     all_x = torch.cat([d.x for d in data_list], dim=0)
-    all_y = torch.cat([d.y for d in data_list], dim=0)
     x_mean = all_x.mean(dim=0)
     x_std = all_x.std(dim=0) + 1e-8
-    y_mean = all_y.mean(dim=0)
-    y_std = all_y.std(dim=0) + 1e-8
+
+    if any(getattr(d, "edge_y", None) is not None for d in data_list):
+        all_y_node = torch.cat([d.y for d in data_list], dim=0)
+        all_y_edge = torch.cat([d.edge_y for d in data_list], dim=0)
+        y_mean = {
+            "node_outputs": all_y_node.mean(dim=0),
+            "edge_outputs": all_y_edge.mean(dim=0),
+        }
+        y_std = {
+            "node_outputs": all_y_node.std(dim=0) + 1e-8,
+            "edge_outputs": all_y_edge.std(dim=0) + 1e-8,
+        }
+    else:
+        all_y = torch.cat([d.y for d in data_list], dim=0)
+        y_mean = all_y.mean(dim=0)
+        y_std = all_y.std(dim=0) + 1e-8
     return x_mean, x_std, y_mean, y_std
 
 
@@ -263,6 +293,8 @@ def save_accuracy_metrics(
     run_name: str,
     logs_dir: Optional[Path] = None,
     mask: Optional[Sequence[bool]] = None,
+    true_f: Optional[Sequence[float]] = None,
+    preds_f: Optional[Sequence[float]] = None,
 ) -> None:
     """Compute and export accuracy metrics to a CSV file."""
     if logs_dir is None:
@@ -286,6 +318,15 @@ def save_accuracy_metrics(
         np.expm1(tc) * 1000.0,
         np.expm1(pc) * 1000.0,
     )
+    if true_f is not None and preds_f is not None:
+        tf = _to_numpy(true_f)
+        pf = _to_numpy(preds_f)
+        abs_f = np.abs(tf - pf)
+        mae_f = abs_f.mean()
+        rmse_f = np.sqrt(((tf - pf) ** 2).mean())
+        mape_f = (abs_f / np.maximum(np.abs(tf), 1e-8)).mean() * 100.0
+        max_err_f = abs_f.max()
+        df["Flow (m^3/h)"] = [mae_f, rmse_f, mape_f, max_err_f]
     export_table(df, str(logs_dir / f"accuracy_{run_name}.csv"))
 
 
@@ -393,8 +434,8 @@ def plot_loss_components(
         labels.append("pump")
 
     fig, ax = plt.subplots(figsize=(6, 4))
-    for i, label in enumerate(labels):
-        ax.loglog(epochs, arr[:, i], label=label)
+    for i in range(arr.shape[1]):
+        ax.loglog(epochs, arr[:, i], label=labels[i])
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
     ax.set_title("Component-wise Training Loss")
@@ -502,7 +543,12 @@ def apply_normalization(
 ):
     for d in data_list:
         d.x = (d.x - x_mean) / x_std
-        d.y = (d.y - y_mean) / y_std
+        if isinstance(y_mean, dict):
+            d.y = (d.y - y_mean["node_outputs"]) / y_std["node_outputs"]
+            if getattr(d, "edge_y", None) is not None:
+                d.edge_y = (d.edge_y - y_mean["edge_outputs"]) / y_std["edge_outputs"]
+        else:
+            d.y = (d.y - y_mean) / y_std
         if edge_attr_mean is not None and getattr(d, "edge_attr", None) is not None:
             d.edge_attr = (d.edge_attr - edge_attr_mean) / edge_attr_std
 
@@ -853,7 +899,7 @@ def train(
 ):
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
-    total_loss = 0
+    total_loss = press_total = cl_total = flow_total = 0.0
     for batch in tqdm(loader, disable=not progress):
         batch = batch.to(device, non_blocking=True)
         if torch.isnan(batch.x).any() or torch.isnan(batch.y).any():
@@ -869,13 +915,33 @@ def train(
                 getattr(batch, "node_type", None),
                 getattr(batch, "edge_type", None),
             )
-            target = batch.y.float()
-            if node_mask is not None:
-                repeat = out.size(0) // node_mask.numel()
-                mask = node_mask.repeat(repeat)
-                out = out[mask]
-                target = target[mask]
-            loss = _apply_loss(out, target, loss_fn)
+            if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
+                pred_nodes = out["node_outputs"].float()
+                edge_pred = out["edge_outputs"].float()
+                target_nodes = batch.y.float()
+                edge_target = batch.edge_y.float()
+                if node_mask is not None:
+                    repeat = pred_nodes.size(0) // node_mask.numel()
+                    mask = node_mask.repeat(repeat)
+                    pred_nodes = pred_nodes[mask]
+                    target_nodes = target_nodes[mask]
+                loss, press_l, cl_l, flow_l = weighted_mtl_loss(
+                    pred_nodes,
+                    target_nodes,
+                    edge_pred,
+                    edge_target,
+                    loss_fn=loss_fn,
+                )
+            else:
+                out_t = out if not isinstance(out, dict) else out["node_outputs"]
+                target = batch.y.float()
+                if node_mask is not None:
+                    repeat = out_t.size(0) // node_mask.numel()
+                    mask = node_mask.repeat(repeat)
+                    out_t = out_t[mask]
+                    target = target[mask]
+                loss = _apply_loss(out_t, target, loss_fn)
+                press_l = cl_l = flow_l = torch.tensor(0.0, device=device)
         if amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -890,7 +956,16 @@ def train(
         else:
             optimizer.step()
         total_loss += loss.item() * batch.num_graphs
-    return total_loss / len(loader.dataset)
+        press_total += press_l.item() * batch.num_graphs
+        cl_total += cl_l.item() * batch.num_graphs
+        flow_total += flow_l.item() * batch.num_graphs
+    denom = len(loader.dataset)
+    return (
+        total_loss / denom,
+        press_total / denom,
+        cl_total / denom,
+        flow_total / denom,
+    )
 
 
 def evaluate(
@@ -904,7 +979,7 @@ def evaluate(
 ):
     global interrupted
     model.eval()
-    total_loss = 0
+    total_loss = press_total = cl_total = flow_total = 0.0
     data_iter = iter(tqdm(loader, disable=not progress))
     with torch.no_grad():
         while True:
@@ -925,17 +1000,46 @@ def evaluate(
                     getattr(batch, "node_type", None),
                     getattr(batch, "edge_type", None),
                 )
-                target = batch.y.float()
-                if node_mask is not None:
-                    repeat = out.size(0) // node_mask.numel()
-                    mask = node_mask.repeat(repeat)
-                    out = out[mask]
-                    target = target[mask]
-                loss = _apply_loss(out, target, loss_fn)
+                if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
+                    pred_nodes = out["node_outputs"].float()
+                    edge_pred = out["edge_outputs"].float()
+                    target_nodes = batch.y.float()
+                    edge_target = batch.edge_y.float()
+                    if node_mask is not None:
+                        repeat = pred_nodes.size(0) // node_mask.numel()
+                        mask = node_mask.repeat(repeat)
+                        pred_nodes = pred_nodes[mask]
+                        target_nodes = target_nodes[mask]
+                    loss, press_l, cl_l, flow_l = weighted_mtl_loss(
+                        pred_nodes,
+                        target_nodes,
+                        edge_pred,
+                        edge_target,
+                        loss_fn=loss_fn,
+                    )
+                else:
+                    out_t = out if not isinstance(out, dict) else out["node_outputs"]
+                    target = batch.y.float()
+                    if node_mask is not None:
+                        repeat = out_t.size(0) // node_mask.numel()
+                        mask = node_mask.repeat(repeat)
+                        out_t = out_t[mask]
+                        target = target[mask]
+                    loss = _apply_loss(out_t, target, loss_fn)
+                    press_l = cl_l = flow_l = torch.tensor(0.0, device=device)
             total_loss += loss.item() * batch.num_graphs
+            press_total += press_l.item() * batch.num_graphs
+            cl_total += cl_l.item() * batch.num_graphs
+            flow_total += flow_l.item() * batch.num_graphs
             if interrupted:
                 break
-    return total_loss / len(loader.dataset)
+    denom = len(loader.dataset)
+    return (
+        total_loss / denom,
+        press_total / denom,
+        cl_total / denom,
+        flow_total / denom,
+    )
 
 
 def train_sequence(
@@ -1443,17 +1547,6 @@ def main(args: argparse.Namespace):
     X_raw = np.load(args.x_path, allow_pickle=True)
     Y_raw = np.load(args.y_path, allow_pickle=True)
     seq_mode = X_raw.ndim == 4
-    if not seq_mode:
-        first_label = Y_raw[0]
-        if isinstance(first_label, dict) or (
-            isinstance(first_label, np.ndarray) and Y_raw.dtype == object
-        ):
-            # Treat single-step multi-task data as sequences of length one
-            X_raw = X_raw[:, None, ...]
-            Y_raw = np.array([
-                {k: v[None, ...] for k, v in y.items()} for y in Y_raw
-            ], dtype=object)
-            seq_mode = True
 
     if seq_mode:
         data_ds = SequenceDataset(
@@ -1830,7 +1923,7 @@ def main(args: argparse.Namespace):
         norm_path = f"{base}_{run_name}_norm.npz"
         log_path = os.path.join(DATA_DIR, f"training_{run_name}.log")
     losses = []
-    loss_components = [] if seq_mode else None
+    loss_components = []
     tb_writer = None
     if SummaryWriter is not None:
         tb_log_dir = REPO_ROOT / "logs" / f"tb_{run_name}"
@@ -1859,7 +1952,9 @@ def main(args: argparse.Namespace):
                 "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation,val_press_loss,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation,lr\n"
             )
         else:
-            f.write("epoch,train_loss,val_loss,lr\n")
+            f.write(
+                "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,val_press_loss,val_cl_loss,val_flow_loss,lr\n"
+            )
         best_val = float("inf")
         patience = 0
         for epoch in range(start_epoch, args.epochs):
@@ -1937,7 +2032,7 @@ def main(args: argparse.Namespace):
                     val_press_l, val_cl_l, val_flow_l = press_l, cl_l, flow_l
                     val_mass_imb, val_head_viols = mass_imb, head_viols
             else:
-                loss = train(
+                loss, press_l, cl_l, flow_l = train(
                     model,
                     loader,
                     optimizer,
@@ -1948,8 +2043,9 @@ def main(args: argparse.Namespace):
                     node_mask=loss_mask,
                     progress=args.progress,
                 )
+                loss_components.append((press_l, cl_l, flow_l))
                 if val_loader is not None and not interrupted:
-                    val_loss = evaluate(
+                    val_loss, val_press_l, val_cl_l, val_flow_l = evaluate(
                         model,
                         val_loader,
                         device,
@@ -1960,6 +2056,7 @@ def main(args: argparse.Namespace):
                     )
                 else:
                     val_loss = loss
+                    val_press_l, val_cl_l, val_flow_l = press_l, cl_l, flow_l
             scheduler.step(val_loss)
             curr_lr = optimizer.param_groups[0]['lr']
             losses.append((loss, val_loss))
@@ -2017,15 +2114,34 @@ def main(args: argparse.Namespace):
                 else:
                     print(f"Epoch {epoch}")
             else:
-                f.write(f"{epoch},{loss:.6f},{val_loss:.6f},{curr_lr:.6e}\n")
+                f.write(
+                    f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
+                    f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e}\n"
+                )
                 if tb_writer is not None:
                     tb_writer.add_scalars(
-                        "loss/train", {"total": loss}, epoch
+                        "loss/train",
+                        {
+                            "total": loss,
+                            "pressure": press_l,
+                            "chlorine": cl_l,
+                            "flow": flow_l,
+                        },
+                        epoch,
                     )
                     tb_writer.add_scalars(
-                        "loss/val", {"total": val_loss}, epoch
+                        "loss/val",
+                        {
+                            "total": val_loss,
+                            "pressure": val_press_l,
+                            "chlorine": val_cl_l,
+                            "flow": val_flow_l,
+                        },
+                        epoch,
                     )
-                print(f"Epoch {epoch}")
+                print(
+                    f"Epoch {epoch}: press={press_l:.3f}, cl={cl_l:.3f}, flow={flow_l:.3f}"
+                )
             if val_loss < best_val - 1e-6:
                 best_val = val_loss
                 patience = 0
@@ -2086,7 +2202,7 @@ def main(args: argparse.Namespace):
         plt.savefig(os.path.join(PLOTS_DIR, f"loss_curve_{run_name}.png"))
         plt.close()
 
-    if seq_mode and loss_components:
+    if loss_components:
         plot_loss_components(loss_components, run_name)
 
     # scatter plot of predictions vs actual on test set
@@ -2150,8 +2266,10 @@ def main(args: argparse.Namespace):
         model.eval()
         preds_p = []
         preds_c = []
+        preds_f = []
         true_p = []
         true_c = []
+        true_f = []
         with torch.no_grad():
             if seq_mode:
                 ei = test_ds.edge_index.to(device)
@@ -2164,18 +2282,29 @@ def main(args: argparse.Namespace):
                         out = model(X_seq, ei, ea, nt, et)
                     if isinstance(out, dict):
                         node_pred = out["node_outputs"]
+                        edge_pred = out.get("edge_outputs")
                     else:
                         node_pred = out
+                        edge_pred = None
                     if isinstance(Y_seq, dict):
                         Y_node = Y_seq["node_outputs"].to(node_pred.device)
+                        Y_edge = Y_seq.get("edge_outputs")
+                        if Y_edge is not None:
+                            Y_edge = Y_edge.to(node_pred.device)
                     else:
                         Y_node = Y_seq.to(node_pred.device)
+                        Y_edge = None
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         if isinstance(model.y_mean, dict):
                             y_mean_node = model.y_mean['node_outputs'].to(node_pred.device)
                             y_std_node = model.y_std['node_outputs'].to(node_pred.device)
                             node_pred = node_pred * y_std_node + y_mean_node
                             Y_node = Y_node * y_std_node + y_mean_node
+                            if edge_pred is not None and Y_edge is not None:
+                                y_mean_edge = model.y_mean['edge_outputs'].to(node_pred.device)
+                                y_std_edge = model.y_std['edge_outputs'].to(node_pred.device)
+                                edge_pred = edge_pred * y_std_edge + y_mean_edge
+                                Y_edge = Y_edge * y_std_edge + y_mean_edge
                         else:
                             y_std = model.y_std.to(node_pred.device)
                             y_mean = model.y_mean.to(node_pred.device)
@@ -2185,6 +2314,9 @@ def main(args: argparse.Namespace):
                     preds_c.extend(node_pred[..., 1].cpu().numpy().ravel())
                     true_p.extend(Y_node[..., 0].cpu().numpy().ravel())
                     true_c.extend(Y_node[..., 1].cpu().numpy().ravel())
+                    if edge_pred is not None and Y_edge is not None:
+                        preds_f.extend(edge_pred.squeeze(-1).cpu().numpy().ravel())
+                        true_f.extend(Y_edge.squeeze(-1).cpu().numpy().ravel())
             else:
                 for batch in test_loader:
 
@@ -2201,24 +2333,50 @@ def main(args: argparse.Namespace):
                         if isinstance(model.y_mean, dict):
                             y_mean_node = model.y_mean['node_outputs'].to(out.device)
                             y_std_node = model.y_std['node_outputs'].to(out.device)
-                            out = out * y_std_node + y_mean_node
+                            node_out = (
+                                out["node_outputs"] if isinstance(out, dict) else out
+                            )
+                            node_out = node_out * y_std_node + y_mean_node
                             batch_y = batch.y * y_std_node + y_mean_node
+                            if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
+                                y_mean_edge = model.y_mean['edge_outputs'].to(out.device)
+                                y_std_edge = model.y_std['edge_outputs'].to(out.device)
+                                edge_out = out["edge_outputs"] * y_std_edge + y_mean_edge
+                                edge_y = batch.edge_y * y_std_edge + y_mean_edge
+                            else:
+                                edge_out = edge_y = None
                         else:
                             y_std = model.y_std.to(out.device)
                             y_mean = model.y_mean.to(out.device)
-                            out = out * y_std + y_mean
+                            node_out = (
+                                out["node_outputs"] if isinstance(out, dict) else out
+                            )
+                            node_out = node_out * y_std + y_mean
                             batch_y = batch.y * y_std + y_mean
+                            edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
+                            edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
                     else:
+                        node_out = out["node_outputs"] if isinstance(out, dict) else out
                         batch_y = batch.y
-                    preds_p.extend(out[:, 0].cpu().numpy())
-                    preds_c.extend(out[:, 1].cpu().numpy())
+                        edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
+                        edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
+                    preds_p.extend(node_out[:, 0].cpu().numpy())
+                    preds_c.extend(node_out[:, 1].cpu().numpy())
                     true_p.extend(batch_y[:, 0].cpu().numpy())
                     true_c.extend(batch_y[:, 1].cpu().numpy())
+                    if edge_out is not None and edge_y is not None:
+                        preds_f.extend(edge_out.squeeze(-1).cpu().numpy())
+                        true_f.extend(edge_y.squeeze(-1).cpu().numpy())
         if preds_p:
             preds_p = np.array(preds_p)
             preds_c = np.array(preds_c)
             true_p = np.array(true_p)
             true_c = np.array(true_c)
+            if preds_f:
+                preds_f = np.array(preds_f)
+                true_f = np.array(true_f)
+            else:
+                preds_f = true_f = None
 
             err_p = preds_p - true_p
             err_c = preds_c - true_c
@@ -2245,6 +2403,8 @@ def main(args: argparse.Namespace):
                 preds_c,
                 run_name,
                 mask=full_mask,
+                true_f=true_f,
+                preds_f=preds_f,
             )
             plot_error_histograms(err_p, err_c, run_name, mask=full_mask)
             labels = [
