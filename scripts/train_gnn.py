@@ -161,13 +161,13 @@ def load_dataset(
 
 def compute_norm_stats(data_list):
     """Compute mean and std per feature/target dimension from ``data_list``."""
-    all_x = torch.cat([d.x for d in data_list], dim=0)
+    all_x = torch.cat([d.x.float() for d in data_list], dim=0)
     x_mean = all_x.mean(dim=0)
     x_std = all_x.std(dim=0) + 1e-8
 
     if any(getattr(d, "edge_y", None) is not None for d in data_list):
-        all_y_node = torch.cat([d.y for d in data_list], dim=0)
-        all_y_edge = torch.cat([d.edge_y for d in data_list], dim=0)
+        all_y_node = torch.cat([d.y.float() for d in data_list], dim=0)
+        all_y_edge = torch.cat([d.edge_y.float() for d in data_list], dim=0)
         y_mean = {
             "node_outputs": all_y_node.mean(dim=0),
             "edge_outputs": all_y_edge.mean(dim=0),
@@ -177,7 +177,7 @@ def compute_norm_stats(data_list):
             "edge_outputs": all_y_edge.std(dim=0) + 1e-8,
         }
     else:
-        all_y = torch.cat([d.y for d in data_list], dim=0)
+        all_y = torch.cat([d.y.float() for d in data_list], dim=0)
         y_mean = all_y.mean(dim=0)
         y_std = all_y.std(dim=0) + 1e-8
     return x_mean, x_std, y_mean, y_std
@@ -1739,22 +1739,22 @@ def main(args: argparse.Namespace):
                 continue
             if isinstance(arr, dict):
                 for v in arr.values():
-                    md5.update(v.cpu().numpy().tobytes())
+                    md5.update(v.to(torch.float32).cpu().numpy().tobytes())
             else:
-                md5.update(arr.cpu().numpy().tobytes())
+                md5.update(arr.to(torch.float32).cpu().numpy().tobytes())
         norm_md5 = md5.hexdigest()
         norm_stats = {
-            "x_mean": x_mean.cpu().numpy(),
-            "x_std": x_std.cpu().numpy(),
-            "edge_mean": edge_mean.cpu().numpy(),
-            "edge_std": edge_std.cpu().numpy(),
+            "x_mean": x_mean.to(torch.float32).cpu().numpy(),
+            "x_std": x_std.to(torch.float32).cpu().numpy(),
+            "edge_mean": edge_mean.to(torch.float32).cpu().numpy(),
+            "edge_std": edge_std.to(torch.float32).cpu().numpy(),
         }
         if isinstance(y_mean, dict):
-            norm_stats["y_mean"] = {k: v.cpu().numpy() for k, v in y_mean.items()}
-            norm_stats["y_std"] = {k: y_std[k].cpu().numpy() for k in y_mean}
+            norm_stats["y_mean"] = {k: v.to(torch.float32).cpu().numpy() for k, v in y_mean.items()}
+            norm_stats["y_std"] = {k: y_std[k].to(torch.float32).cpu().numpy() for k in y_mean}
         else:
-            norm_stats["y_mean"] = y_mean.cpu().numpy()
-            norm_stats["y_std"] = y_std.cpu().numpy()
+            norm_stats["y_mean"] = y_mean.to(torch.float32).cpu().numpy()
+            norm_stats["y_std"] = y_std.to(torch.float32).cpu().numpy()
         norm_stats["hash"] = norm_md5
     else:
         x_mean = x_std = y_mean = y_std = None
