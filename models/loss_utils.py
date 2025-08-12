@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from typing import Optional
 
 from .losses import compute_mass_balance_loss, pressure_headloss_consistency_loss
@@ -24,6 +25,11 @@ def pump_curve_loss(
     a = coeff[:, 0]
     b = coeff[:, 1]
     c = coeff[:, 2]
+    # Clamp flows to a realistic range based on pump curve limits to avoid
+    # excessively large gradients when the network predicts out-of-distribution
+    # values.
+    q_max = (a / b).pow(1.0 / c) * 1.2  # 20% above zero-head flow
+    q = torch.clamp(q, -q_max, q_max)
     head = a - b * q.abs().pow(c)
     violation = torch.clamp(-head, min=0.0)
-    return torch.mean(violation ** 2)
+    return F.smooth_l1_loss(violation, torch.zeros_like(violation))
