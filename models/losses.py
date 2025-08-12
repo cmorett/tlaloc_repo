@@ -170,3 +170,35 @@ def pressure_headloss_consistency_loss(
 
     return loss
 
+
+def scale_physics_losses(
+    mass_loss: torch.Tensor,
+    head_loss: torch.Tensor,
+    pump_loss: torch.Tensor,
+    *,
+    mass_scale: float = 1.0,
+    head_scale: float = 1.0,
+    pump_scale: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Normalise physics-based losses by baseline magnitudes.
+
+    Parameters
+    ----------
+    mass_loss, head_loss, pump_loss: torch.Tensor
+        Raw physics loss values.
+    mass_scale, head_scale, pump_scale: float, optional
+        Baseline magnitudes for each loss. Values ``\le 0`` disable scaling.
+
+    Returns
+    -------
+    Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        Scaled ``mass_loss``, ``head_loss`` and ``pump_loss``.
+    """
+    if mass_scale > 0:
+        mass_loss = mass_loss / mass_scale
+    if head_scale > 0:
+        head_loss = head_loss / head_scale
+    if pump_scale > 0:
+        pump_loss = pump_loss / pump_scale
+    return mass_loss, head_loss, pump_loss
+

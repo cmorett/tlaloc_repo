@@ -42,6 +42,7 @@ from models.losses import (
     weighted_mtl_loss,
     compute_mass_balance_loss,
     pressure_headloss_consistency_loss,
+    scale_physics_losses,
 )
 from models.loss_utils import pump_curve_loss
 from models.gnn_surrogate import (
@@ -954,6 +955,9 @@ def train_sequence(
     pressure_loss: bool = False,
     pump_loss: bool = False,
     node_mask: Optional[torch.Tensor] = None,
+    mass_scale: float = 1.0,
+    head_scale: float = 1.0,
+    pump_scale: float = 1.0,
     w_mass: float = 2.0,
     w_head: float = 1.0,
     w_pump: float = 1.0,
@@ -1122,6 +1126,16 @@ def train_sequence(
                 )
             else:
                 pump_loss_val = torch.tensor(0.0, device=device)
+            mass_loss, head_loss, pump_loss_val = scale_physics_losses(
+                mass_loss,
+                head_loss,
+                pump_loss_val,
+                mass_scale=mass_scale,
+                head_scale=head_scale,
+                pump_scale=pump_scale,
+            )
+            if mass_scale > 0:
+                sym_loss = sym_loss / mass_scale
             if physics_loss:
                 loss = loss + w_mass * (mass_loss + sym_loss)
             if pressure_loss:
@@ -1188,6 +1202,9 @@ def evaluate_sequence(
     pressure_loss: bool = False,
     pump_loss: bool = False,
     node_mask: Optional[torch.Tensor] = None,
+    mass_scale: float = 1.0,
+    head_scale: float = 1.0,
+    pump_scale: float = 1.0,
     w_mass: float = 2.0,
     w_head: float = 1.0,
     w_pump: float = 1.0,
@@ -1337,6 +1354,16 @@ def evaluate_sequence(
                         )
                     else:
                         pump_loss_val = torch.tensor(0.0, device=device)
+                    mass_loss, head_loss, pump_loss_val = scale_physics_losses(
+                        mass_loss,
+                        head_loss,
+                        pump_loss_val,
+                        mass_scale=mass_scale,
+                        head_scale=head_scale,
+                        pump_scale=pump_scale,
+                    )
+                    if mass_scale > 0:
+                        sym_loss = sym_loss / mass_scale
                     if physics_loss:
                         loss = loss + w_mass * (mass_loss + sym_loss)
                     if pressure_loss:
@@ -1739,6 +1766,56 @@ def main(args: argparse.Namespace):
     )
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=6)
 
+    mass_scale = args.mass_scale
+    head_scale = args.head_scale
+    pump_scale = args.pump_scale
+    if seq_mode and (
+        (args.physics_loss and mass_scale <= 0)
+        or (args.pressure_loss and head_scale <= 0)
+        or (args.pump_loss and pump_scale <= 0)
+    ):
+        base_eval = evaluate_sequence(
+            model,
+            loader,
+            data_ds.edge_index,
+            data_ds.edge_attr,
+            edge_attr_phys,
+            data_ds.node_type,
+            data_ds.edge_type,
+            edge_pairs,
+            device,
+            pump_coeffs_tensor,
+            loss_fn=args.loss_fn,
+            physics_loss=args.physics_loss,
+            pressure_loss=args.pressure_loss,
+            pump_loss=args.pump_loss,
+            node_mask=loss_mask,
+            mass_scale=1.0,
+            head_scale=1.0,
+            pump_scale=1.0,
+            w_mass=args.w_mass,
+            w_head=args.w_head,
+            w_pump=args.w_pump,
+            w_press=args.w_press,
+            w_cl=args.w_cl,
+            w_flow=args.w_flow,
+            amp=args.amp,
+            progress=False,
+        )
+        if args.physics_loss and mass_scale <= 0:
+            mass_scale = float(base_eval[4]) if base_eval[4] > 0 else 1.0
+        if args.pressure_loss and head_scale <= 0:
+            head_scale = float(base_eval[5]) if base_eval[5] > 0 else 1.0
+        if args.pump_loss and pump_scale <= 0:
+            pump_scale = float(base_eval[7]) if base_eval[7] > 0 else 1.0
+    args.mass_scale = mass_scale
+    args.head_scale = head_scale
+    args.pump_scale = pump_scale
+    if seq_mode and (args.physics_loss or args.pressure_loss or args.pump_loss):
+        print(
+            f"Using physics loss scales: mass={mass_scale:.4e}, head={head_scale:.4e}, pump={pump_scale:.4e}"
+        )
+
     # prepare logging
     if args.resume:
         model_path = args.resume
@@ -1774,6 +1851,9 @@ def main(args: argparse.Namespace):
         f.write(f"args: {vars(args)}\n")
         f.write(f"seed: {args.seed}\n")
         f.write(f"device: {device}\n")
+        f.write(
+            f"scales: mass={mass_scale}, head={head_scale}, pump={pump_scale}\n"
+        )
         if seq_mode:
             f.write(
                 "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation,val_press_loss,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation,lr\n"
@@ -1801,6 +1881,9 @@ def main(args: argparse.Namespace):
                     pressure_loss=args.pressure_loss,
                     pump_loss=args.pump_loss,
                     node_mask=loss_mask,
+                    mass_scale=mass_scale,
+                    head_scale=head_scale,
+                    pump_scale=pump_scale,
                     w_mass=args.w_mass,
                     w_head=args.w_head,
                     w_pump=args.w_pump,
@@ -1835,6 +1918,9 @@ def main(args: argparse.Namespace):
                         pressure_loss=args.pressure_loss,
                         pump_loss=args.pump_loss,
                         node_mask=loss_mask,
+                        mass_scale=mass_scale,
+                        head_scale=head_scale,
+                        pump_scale=pump_scale,
                         w_mass=args.w_mass,
                         w_head=args.w_head,
                         w_pump=args.w_pump,
@@ -2400,6 +2486,24 @@ if __name__ == "__main__":
         type=float,
         default=3.0,
         help="Weight of the edge (flow) loss term",
+    )
+    parser.add_argument(
+        "--mass-scale",
+        type=float,
+        default=0.0,
+        help="Baseline magnitude for mass conservation loss (0 = auto-compute)",
+    )
+    parser.add_argument(
+        "--head-scale",
+        type=float,
+        default=0.0,
+        help="Baseline magnitude for head loss consistency (0 = auto-compute)",
+    )
+    parser.add_argument(
+        "--pump-scale",
+        type=float,
+        default=0.0,
+        help="Baseline magnitude for pump curve loss (0 = auto-compute)",
     )
     parser.add_argument(
         "--cluster-batch-size",
