@@ -152,6 +152,41 @@ def test_validate_surrogate_dict_stats():
     assert abs(arr[0, 0] - expected_diff_p) < 1e-6
 
 
+def test_validate_surrogate_handles_extra_output_dim():
+    """Models with additional outputs should not cause shape errors."""
+    device = torch.device('cpu')
+    (
+        wn,
+        node_to_index,
+        pump_names,
+        edge_index,
+        node_types,
+        edge_types,
+    ) = load_network('CTown.inp')
+    wn.options.time.duration = 2 * 3600
+    wn.options.time.hydraulic_timestep = 3600
+    wn.options.time.quality_timestep = 3600
+    wn.options.time.report_timestep = 3600
+    sim = wntr.sim.EpanetSimulator(wn)
+    res = sim.run_sim(str(TEMP_DIR / "temp_extra"))
+    model = DummyModel(out_dim=4).to(device)
+    model.y_mean = torch.zeros(2)
+    model.y_std = torch.ones(2)
+    metrics, arr, times = validate_surrogate(
+        model,
+        edge_index,
+        None,
+        wn,
+        [res],
+        device,
+        "test_extra",
+        torch.tensor(node_types, dtype=torch.long),
+        torch.tensor(edge_types, dtype=torch.long),
+    )
+    assert "pressure_rmse" in metrics
+    assert arr.shape[1] == len(wn.node_name_list)
+
+
 def test_validate_surrogate_edge_dim_check():
     device = torch.device('cpu')
     (
