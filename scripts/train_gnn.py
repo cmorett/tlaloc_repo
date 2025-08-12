@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 import sys
 import signal
+import warnings
 
 import numpy as np
 import torch
@@ -52,6 +53,8 @@ from models.gnn_surrogate import (
 )
 
 from scripts.metrics import accuracy_metrics, export_table
+
+PUMP_LOSS_WARN_THRESHOLD = 1.0
 
 
 
@@ -1929,6 +1932,11 @@ def main(args: argparse.Namespace):
                         msg += f", head={head_l:.3f}, viol%={head_viols * 100:.2f}"
                     if args.pump_loss:
                         msg += f", pump={pump_l:.3f}"
+                        if pump_l > PUMP_LOSS_WARN_THRESHOLD:
+                            warnings.warn(
+                                f"Pump loss {pump_l:.3f} exceeds {PUMP_LOSS_WARN_THRESHOLD}",
+                                stacklevel=2,
+                            )
                     print(msg)
                 else:
                     print(f"Epoch {epoch}")
