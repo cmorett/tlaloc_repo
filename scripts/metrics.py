@@ -1,7 +1,7 @@
 """Utility functions for reporting surrogate and MPC performance metrics."""
 
 from pathlib import Path
-from typing import Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -15,48 +15,47 @@ def _to_numpy(seq: Sequence[float]) -> np.ndarray:
 def accuracy_metrics(
     true_pressure: Sequence[float],
     pred_pressure: Sequence[float],
-    true_chlorine: Sequence[float],
-    pred_chlorine: Sequence[float],
+    true_chlorine: Optional[Sequence[float]] = None,
+    pred_chlorine: Optional[Sequence[float]] = None,
 ) -> pd.DataFrame:
-    """Return accuracy metrics for pressure and chlorine predictions.
+    """Return accuracy metrics for pressure predictions and optionally chlorine.
 
     Parameters
     ----------
     true_pressure, pred_pressure : sequence of floats
         Ground truth and predicted pressures in meters.
-    true_chlorine, pred_chlorine : sequence of floats
+    true_chlorine, pred_chlorine : sequence of floats, optional
         Ground truth and predicted chlorine levels in mg/L.
 
     Returns
     -------
     pd.DataFrame
-        Table with MAE, RMSE, MAPE and maximum error for pressure and chlorine.
+        Table with MAE, RMSE, MAPE and maximum error for pressure and, when
+        provided, chlorine.
     """
     tp = _to_numpy(true_pressure)
     pp = _to_numpy(pred_pressure)
-    tc = _to_numpy(true_chlorine)
-    pc = _to_numpy(pred_chlorine)
 
     abs_p = np.abs(tp - pp)
-    abs_c = np.abs(tc - pc)
-
     mae_p = abs_p.mean()
-    mae_c = abs_c.mean()
-
     rmse_p = np.sqrt(((tp - pp) ** 2).mean())
-    rmse_c = np.sqrt(((tc - pc) ** 2).mean())
-
-    # avoid divide-by-zero by adding a tiny epsilon
     mape_p = (abs_p / np.maximum(np.abs(tp), 1e-8)).mean() * 100.0
-    mape_c = (abs_c / np.maximum(np.abs(tc), 1e-8)).mean() * 100.0
-
     max_err_p = abs_p.max()
-    max_err_c = abs_c.max()
 
     data = {
-        "Pressure (m)": [mae_p, rmse_p, mape_p, max_err_p],
-        "Chlorine (mg/L)": [mae_c, rmse_c, mape_c, max_err_c],
+        "Pressure (m)": [mae_p, rmse_p, mape_p, max_err_p]
     }
+
+    if true_chlorine is not None and pred_chlorine is not None:
+        tc = _to_numpy(true_chlorine)
+        pc = _to_numpy(pred_chlorine)
+        abs_c = np.abs(tc - pc)
+        mae_c = abs_c.mean()
+        rmse_c = np.sqrt(((tc - pc) ** 2).mean())
+        mape_c = (abs_c / np.maximum(np.abs(tc), 1e-8)).mean() * 100.0
+        max_err_c = abs_c.max()
+        data["Chlorine (mg/L)"] = [mae_c, rmse_c, mape_c, max_err_c]
+
     index = [
         "Mean Absolute Error (MAE)",
         "Root Mean Squared Error (RMSE)",
