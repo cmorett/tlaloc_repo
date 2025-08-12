@@ -1745,26 +1745,32 @@ def main(args: argparse.Namespace):
 
     if not seq_mode:
         if args.neighbor_sampling:
-            sample_size = args.cluster_batch_size or max(1, int(0.2 * data_list[0].num_nodes))
-            data_list = NeighborSampleDataset(data_list, edge_index_np, sample_size)
-        loader = DataLoader(
-            data_list,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=args.workers,
-            pin_memory=torch.cuda.is_available(),
-            persistent_workers=args.workers > 0,
-        )
-        if val_loader is not None:
-            val_loader = DataLoader(
-                NeighborSampleDataset(val_list, edge_index_np, sample_size),
+            sample_size = args.cluster_batch_size or max(
+                1, int(0.2 * data_list[0].num_nodes)
+            )
+            data_list = NeighborSampleDataset(
+                data_list, edge_index_np, sample_size
+            )
+            loader = DataLoader(
+                data_list,
                 batch_size=args.batch_size,
+                shuffle=True,
                 num_workers=args.workers,
                 pin_memory=torch.cuda.is_available(),
                 persistent_workers=args.workers > 0,
             )
+            if val_loader is not None:
+                val_loader = DataLoader(
+                    NeighborSampleDataset(val_list, edge_index_np, sample_size),
+                    batch_size=args.batch_size,
+                    num_workers=args.workers,
+                    pin_memory=torch.cuda.is_available(),
+                    persistent_workers=args.workers > 0,
+                )
         elif args.cluster_batch_size > 0:
-            clusters = partition_graph_greedy(edge_index_np, data_list[0].num_nodes, args.cluster_batch_size)
+            clusters = partition_graph_greedy(
+                edge_index_np, data_list[0].num_nodes, args.cluster_batch_size
+            )
             data_list = ClusterSampleDataset(data_list, clusters)
             loader = DataLoader(
                 data_list,
@@ -1777,6 +1783,23 @@ def main(args: argparse.Namespace):
             if val_loader is not None:
                 val_loader = DataLoader(
                     ClusterSampleDataset(val_list, clusters),
+                    batch_size=args.batch_size,
+                    num_workers=args.workers,
+                    pin_memory=torch.cuda.is_available(),
+                    persistent_workers=args.workers > 0,
+                )
+        else:
+            loader = DataLoader(
+                data_list,
+                batch_size=args.batch_size,
+                shuffle=True,
+                num_workers=args.workers,
+                pin_memory=torch.cuda.is_available(),
+                persistent_workers=args.workers > 0,
+            )
+            if val_loader is not None:
+                val_loader = DataLoader(
+                    val_list,
                     batch_size=args.batch_size,
                     num_workers=args.workers,
                     pin_memory=torch.cuda.is_available(),
