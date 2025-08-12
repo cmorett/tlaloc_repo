@@ -1037,24 +1037,19 @@ def train_sequence(
                 if (not torch.isfinite(val)) or val.item() > 1e6:
                     raise AssertionError(f"{name} loss {val.item():.3e} invalid")
             if physics_loss:
+                flows_mb = edge_preds.squeeze(-1)
+                if hasattr(model, "y_mean") and model.y_mean is not None:
+                    q_mean = model.y_mean["edge_outputs"].to(device)
+                    q_std = model.y_std["edge_outputs"].to(device)
+                    flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                 flows_mb = (
-                    edge_preds.squeeze(-1)
-                    .permute(2, 0, 1)
+                    flows_mb.permute(2, 0, 1)
                     .reshape(edge_index.size(1), -1)
                 )
                 dem_seq = X_seq[..., 0]
                 if dem_seq.size(1) > 1:
                     dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
                 demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
-                if hasattr(model, "y_mean") and model.y_mean is not None:
-                    if isinstance(model.y_mean, dict):
-                        q_mean = model.y_mean["edge_outputs"].to(device)
-                        q_std = model.y_std["edge_outputs"].to(device)
-                        flows_mb = flows_mb * q_std.unsqueeze(1) + q_mean.unsqueeze(1)
-                    else:
-                        q_mean = model.y_mean[-1].to(device)
-                        q_std = model.y_std[-1].to(device)
-                        flows_mb = flows_mb * q_std + q_mean
                 if hasattr(model, "x_mean") and model.x_mean is not None:
                     dem_mean = model.x_mean[0].to(device)
                     dem_std = model.x_std[0].to(device)
@@ -1257,24 +1252,19 @@ def evaluate_sequence(
                         w_flow=w_flow,
                     )
                     if physics_loss:
+                        flows_mb = edge_preds.squeeze(-1)
+                        if hasattr(model, "y_mean") and model.y_mean is not None:
+                            q_mean = model.y_mean["edge_outputs"].to(device)
+                            q_std = model.y_std["edge_outputs"].to(device)
+                            flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                         flows_mb = (
-                            edge_preds.squeeze(-1)
-                            .permute(2, 0, 1)
+                            flows_mb.permute(2, 0, 1)
                             .reshape(edge_index.size(1), -1)
                         )
                         dem_seq = X_seq[..., 0]
                         if dem_seq.size(1) > 1:
                             dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
                         demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
-                        if hasattr(model, "y_mean") and model.y_mean is not None:
-                            if isinstance(model.y_mean, dict):
-                                q_mean = model.y_mean["edge_outputs"].to(device)
-                                q_std = model.y_std["edge_outputs"].to(device)
-                                flows_mb = flows_mb * q_std.unsqueeze(1) + q_mean.unsqueeze(1)
-                            else:
-                                q_mean = model.y_mean[-1].to(device)
-                                q_std = model.y_std[-1].to(device)
-                                flows_mb = flows_mb * q_std + q_mean
                         if hasattr(model, "x_mean") and model.x_mean is not None:
                             dem_mean = model.x_mean[0].to(device)
                             dem_std = model.x_std[0].to(device)
