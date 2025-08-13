@@ -1733,15 +1733,23 @@ def main(args: argparse.Namespace):
         import hashlib
 
         md5 = hashlib.md5()
-        arrays = [x_mean, x_std, y_mean, y_std, edge_mean, edge_std]
+        if isinstance(y_mean, dict):
+            arrays = [
+                x_mean,
+                x_std,
+                y_mean.get("node_outputs"),
+                y_std.get("node_outputs"),
+                y_mean.get("edge_outputs"),
+                y_std.get("edge_outputs"),
+                edge_mean,
+                edge_std,
+            ]
+        else:
+            arrays = [x_mean, x_std, y_mean, y_std, edge_mean, edge_std]
         for arr in arrays:
             if arr is None:
                 continue
-            if isinstance(arr, dict):
-                for v in arr.values():
-                    md5.update(v.to(torch.float32).cpu().numpy().tobytes())
-            else:
-                md5.update(arr.to(torch.float32).cpu().numpy().tobytes())
+            md5.update(arr.to(torch.float32).cpu().numpy().tobytes())
         norm_md5 = md5.hexdigest()
         norm_stats = {
             "x_mean": x_mean.to(torch.float32).cpu().numpy(),

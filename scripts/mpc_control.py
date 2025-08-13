@@ -595,13 +595,30 @@ def load_surrogate_model(
         y_mean_np = norm_stats.get("y_mean")
         y_std_np = norm_stats.get("y_std")
         if isinstance(y_mean_np, dict):
-            model.y_mean = torch.tensor(y_mean_np.get("node_outputs"), dtype=torch.float32, device=device)
-            model.y_std = torch.tensor(y_std_np.get("node_outputs"), dtype=torch.float32, device=device)
+            model.y_mean = torch.tensor(
+                y_mean_np.get("node_outputs"), dtype=torch.float32, device=device
+            )
+            model.y_std = torch.tensor(
+                y_std_np.get("node_outputs"), dtype=torch.float32, device=device
+            )
+            y_mean_edge_np = y_mean_np.get("edge_outputs")
+            y_std_edge_np = y_std_np.get("edge_outputs")
+            if y_mean_edge_np is not None:
+                model.y_mean_edge = torch.tensor(
+                    y_mean_edge_np, dtype=torch.float32, device=device
+                )
+                model.y_std_edge = torch.tensor(
+                    y_std_edge_np, dtype=torch.float32, device=device
+                )
+            else:
+                model.y_mean_edge = model.y_std_edge = None
         elif y_mean_np is not None:
             model.y_mean = torch.tensor(y_mean_np, dtype=torch.float32, device=device)
             model.y_std = torch.tensor(y_std_np, dtype=torch.float32, device=device)
+            model.y_mean_edge = model.y_std_edge = None
         else:
             model.y_mean = model.y_std = None
+            model.y_mean_edge = model.y_std_edge = None
 
         model.y_mean_energy = None
         model.y_std_energy = None
@@ -620,11 +637,22 @@ def load_surrogate_model(
         if "y_mean" in arr:
             model.y_mean = torch.tensor(arr["y_mean"], dtype=torch.float32, device=device)
             model.y_std = torch.tensor(arr["y_std"], dtype=torch.float32, device=device)
+            model.y_mean_edge = model.y_std_edge = None
         elif "y_mean_node" in arr:
             model.y_mean = torch.tensor(arr["y_mean_node"], dtype=torch.float32, device=device)
             model.y_std = torch.tensor(arr["y_std_node"], dtype=torch.float32, device=device)
+            if "y_mean_edge" in arr:
+                model.y_mean_edge = torch.tensor(
+                    arr["y_mean_edge"], dtype=torch.float32, device=device
+                )
+                model.y_std_edge = torch.tensor(
+                    arr["y_std_edge"], dtype=torch.float32, device=device
+                )
+            else:
+                model.y_mean_edge = model.y_std_edge = None
         else:
             model.y_mean = model.y_std = None
+            model.y_mean_edge = model.y_std_edge = None
 
         model.y_mean_energy = None
         model.y_std_energy = None
@@ -635,15 +663,25 @@ def load_surrogate_model(
             model.edge_mean = model.edge_std = None
     else:
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
+        model.y_mean_edge = model.y_std_edge = None
         model.edge_mean = model.edge_std = None
 
     # Log shapes and checksum of normalization statistics for reproducibility
     norm_hash: Optional[str] = None
     stats_tensors = []
-    for attr in ["x_mean", "x_std", "y_mean", "y_std", "edge_mean", "edge_std"]:
-        val = getattr(model, attr, None)
-        if val is not None:
-            stats_tensors.append(val.detach().cpu())
+    if getattr(model, "x_mean", None) is not None:
+        stats_tensors.append(model.x_mean.detach().cpu())
+    if getattr(model, "x_std", None) is not None:
+        stats_tensors.append(model.x_std.detach().cpu())
+    if getattr(model, "y_mean", None) is not None:
+        stats_tensors.append(model.y_mean.detach().cpu())
+        stats_tensors.append(model.y_std.detach().cpu())
+    if getattr(model, "y_mean_edge", None) is not None:
+        stats_tensors.append(model.y_mean_edge.detach().cpu())
+        stats_tensors.append(model.y_std_edge.detach().cpu())
+    if getattr(model, "edge_mean", None) is not None:
+        stats_tensors.append(model.edge_mean.detach().cpu())
+        stats_tensors.append(model.edge_std.detach().cpu())
     if stats_tensors:
         import hashlib
 
@@ -653,8 +691,10 @@ def load_surrogate_model(
         shapes = {
             "x_mean": tuple(model.x_mean.shape) if getattr(model, "x_mean", None) is not None else None,
             "x_std": tuple(model.x_std.shape) if getattr(model, "x_std", None) is not None else None,
-            "y_mean": tuple(model.y_mean.shape) if getattr(model, "y_mean", None) is not None else None,
-            "y_std": tuple(model.y_std.shape) if getattr(model, "y_std", None) is not None else None,
+            "y_mean_node": tuple(model.y_mean.shape) if getattr(model, "y_mean", None) is not None else None,
+            "y_std_node": tuple(model.y_std.shape) if getattr(model, "y_std", None) is not None else None,
+            "y_mean_edge": tuple(model.y_mean_edge.shape) if getattr(model, "y_mean_edge", None) is not None else None,
+            "y_std_edge": tuple(model.y_std_edge.shape) if getattr(model, "y_std_edge", None) is not None else None,
             "edge_mean": tuple(model.edge_mean.shape) if getattr(model, "edge_mean", None) is not None else None,
             "edge_std": tuple(model.edge_std.shape) if getattr(model, "edge_std", None) is not None else None,
         }
@@ -667,12 +707,12 @@ def load_surrogate_model(
                 arr = np.load(norm_path)
                 md5_npz = hashlib.md5()
                 npz_arrays = [arr["x_mean"], arr["x_std"]]
-                if "y_mean" in arr:
-                    npz_arrays.extend([arr["y_mean"], arr["y_std"]])
-                elif "y_mean_node" in arr:
+                if "y_mean_node" in arr:
                     npz_arrays.extend([arr["y_mean_node"], arr["y_std_node"]])
                     if "y_mean_edge" in arr:
                         npz_arrays.extend([arr["y_mean_edge"], arr["y_std_edge"]])
+                elif "y_mean" in arr:
+                    npz_arrays.extend([arr["y_mean"], arr["y_std"]])
                 if "edge_mean" in arr:
                     npz_arrays.extend([arr["edge_mean"], arr["edge_std"]])
                 for a in npz_arrays:
