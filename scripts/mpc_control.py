@@ -905,7 +905,11 @@ def compute_mpc_cost(
                 flows = None
 
         if getattr(model, "y_mean", None) is not None:
-            pred = pred * (model.y_std + EPS) + model.y_mean
+            y_mean = model.y_mean
+            y_std = model.y_std
+            if pred.dim() == 2 and pred.shape[1] != y_mean.shape[0] and pred.shape[0] == y_mean.shape[0]:
+                pred = pred.t()
+            pred = pred * (y_std.view(1, -1) + EPS) + y_mean.view(1, -1)
         assert not torch.isnan(pred).any(), "NaN prediction"
         pred_p = pred[:, 0]
         pred_c = torch.expm1(pred[:, 1]) * 1000.0
