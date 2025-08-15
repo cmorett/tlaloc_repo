@@ -921,8 +921,15 @@ def compute_mpc_cost(
                 pred = pred.unsqueeze(-1)
             if pred.dim() == 2 and pred.shape[1] != y_mean.shape[0] and pred.shape[0] == y_mean.shape[0]:
                 pred = pred.t()
-            out_dim = pred.shape[1]
-            pred = pred * (y_std[:out_dim].view(1, -1) + EPS) + y_mean[:out_dim].view(1, -1)
+            target_dim = min(pred.shape[1], y_mean.shape[0])
+            pred = torch.cat(
+                [
+                    pred[:, :target_dim] * (y_std[:target_dim].view(1, -1) + EPS)
+                    + y_mean[:target_dim].view(1, -1),
+                    pred[:, target_dim:],
+                ],
+                dim=1,
+            )
         assert not torch.isnan(pred).any(), "NaN prediction"
         pred_p = pred[:, 0]
         if pred.shape[1] > 1:
