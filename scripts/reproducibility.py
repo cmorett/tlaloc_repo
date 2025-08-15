@@ -1,3 +1,4 @@
+import argparse
 import os
 import random
 import subprocess
@@ -39,14 +40,34 @@ def get_commit_hash() -> Optional[str]:
         return None
 
 
-def save_config(path: Path, args: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> None:
+def save_config(
+    path: Path, args: Dict[str, Any], extra: Optional[Dict[str, Any]] = None
+) -> None:
     """Save run configuration to ``path`` in YAML format."""
-    cfg: Dict[str, Any] = dict(args)
+
+    if isinstance(args, argparse.Namespace):
+        cfg: Dict[str, Any] = vars(args).copy()
+    else:
+        cfg = dict(args)
+
     if extra:
         cfg.update({k: v for k, v in extra.items() if v is not None})
+
     commit = get_commit_hash()
     if commit:
         cfg["commit"] = commit
+
+    def _convert(v: Any) -> Any:
+        if isinstance(v, Path):
+            return v.as_posix()
+        if isinstance(v, dict):
+            return {k: _convert(val) for k, val in v.items()}
+        if isinstance(v, (list, tuple)):
+            return type(v)(_convert(val) for val in v)
+        return v
+
+    cfg = _convert(cfg)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         yaml.safe_dump(cfg, f)
