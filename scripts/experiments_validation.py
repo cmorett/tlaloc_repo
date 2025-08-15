@@ -742,6 +742,12 @@ def main() -> None:
         "--model", default="models/gnn_surrogate.pth", help="Trained surrogate weights"
     )
     parser.add_argument(
+        "--norm-stats",
+        type=Path,
+        default=None,
+        help="Path to .npz file with normalization statistics",
+    )
+    parser.add_argument(
         "--test-pkl",
         default=os.path.join(DATA_DIR, "test_results_list.pkl"),
         help="Pickle file with test scenarios",
@@ -803,7 +809,17 @@ def main() -> None:
     ) = load_network(args.inp, return_edge_attr=True, return_features=True)
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device)
-    model = load_surrogate_model(device, path=args.model, use_jit=not args.no_jit)
+    model = load_surrogate_model(
+        device,
+        path=args.model,
+        use_jit=not args.no_jit,
+        norm_stats_path=str(args.norm_stats) if args.norm_stats else None,
+    )
+    if getattr(model, "y_mean", None) is None or getattr(model, "y_std", None) is None:
+        raise RuntimeError(
+            "Model is missing output normalization statistics. "
+            "Provide --norm-stats pointing to an .npz file with y_mean and y_std."
+        )
     norm_md5 = getattr(model, "norm_hash", None)
     model_layers = len(getattr(model, "layers", []))
     model_hidden = getattr(getattr(model, "layers", [None])[0], "out_channels", None)
