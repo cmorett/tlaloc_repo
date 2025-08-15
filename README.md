@@ -309,6 +309,11 @@ diverging over long horizons.  It now also reports mean absolute error (MAE)
 distribution.  All metrics are written to
 ``logs/surrogate_metrics.json`` for reproducibility.
 
+If your surrogate weights were saved separately from their normalization
+statistics, provide the path to the ``*.npz`` file via ``--norm-stats`` so the
+script can correctly de-normalize predictions.  The validation script aborts if
+``y_mean``/``y_std`` are missing to avoid evaluating normalized outputs.
+
 If the dimension of ``edge_attr.npy`` does not match the value stored in the
 surrogate checkpoint, ``validate_surrogate`` now raises a ``ValueError``.
 Regenerate the dataset or retrain the surrogate when this occurs.
@@ -317,7 +322,8 @@ Typical validation command:
 
 ```bash
 python scripts/experiments_validation.py \
-    --model models/gnn_surrogate.pth --inp CTown.inp \
+    --model models/gnn_surrogate.pth --norm-stats models/gnn_surrogate_norm.npz \
+    --inp CTown.inp \
     --horizon 6 --iterations 50 \
     --run-name baseline
 ```

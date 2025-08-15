@@ -267,6 +267,7 @@ def load_surrogate_model(
     device: torch.device,
     path: Optional[str] = None,
     use_jit: bool = True,
+    norm_stats_path: Optional[str] = None,
 ) -> GNNSurrogate:
     """Load trained GNN surrogate weights.
 
@@ -277,6 +278,9 @@ def load_surrogate_model(
     path : Optional[str], optional
         Location of the saved state dict.  If ``None`` the newest ``.pth`` file
         in the ``models`` directory is loaded.
+    norm_stats_path : Optional[str], optional
+        Explicit path to an ``.npz`` file containing normalization statistics.
+        Overrides the default ``*_norm.npz`` lookup based on ``path``.
 
     Returns
     -------
@@ -583,7 +587,13 @@ def load_surrogate_model(
     # store expected edge attribute dimension for input checks
     model.edge_dim = edge_dim if edge_dim is not None else 0
 
-    norm_path = str(full_path.with_suffix("")) + "_norm.npz"
+    if norm_stats_path is not None:
+        norm_path = Path(norm_stats_path)
+        if not norm_path.is_absolute():
+            norm_path = REPO_ROOT / norm_path
+    else:
+        norm_path = Path(str(full_path.with_suffix("")) + "_norm.npz")
+
     norm_stats = (
         checkpoint.get("norm_stats")
         if isinstance(checkpoint, dict)
@@ -629,7 +639,7 @@ def load_surrogate_model(
             model.edge_std = torch.tensor(edge_std_np, dtype=torch.float32, device=device)
         else:
             model.edge_mean = model.edge_std = None
-    elif os.path.exists(norm_path):
+    elif norm_path.exists():
         arr = np.load(norm_path)
         # Moved normalization constants to GPU to avoid device transfer
         model.x_mean = torch.tensor(arr["x_mean"], dtype=torch.float32, device=device)
@@ -703,7 +713,7 @@ def load_surrogate_model(
             stored_hash = norm_stats.get("hash")
             if stored_hash and stored_hash != norm_hash:
                 raise ValueError("Stored normalization stats hash mismatch")
-            if os.path.exists(norm_path):
+            if norm_path.exists():
                 arr = np.load(norm_path)
                 md5_npz = hashlib.md5()
                 npz_arrays = [arr["x_mean"], arr["x_std"]]
