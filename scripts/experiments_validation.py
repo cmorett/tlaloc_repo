@@ -901,7 +901,11 @@ def main() -> None:
         "model_layers": model_layers,
         "model_hidden_dim": model_hidden,
     }
-    save_config(REPO_ROOT / "logs" / "config.yaml", vars(args), cfg_extra)
+    save_config(
+        REPO_ROOT / "logs" / f"config_validation_{run_name}.yaml",
+        vars(args),
+        cfg_extra,
+    )
 
 
 if __name__ == "__main__":
