@@ -1714,6 +1714,7 @@ def main():
         )
         return
 
+    run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
     simulate_closed_loop(
         wn,
         model,
@@ -1730,7 +1731,7 @@ def main():
         args.Pmin,
         args.Cmin,
         args.feedback_interval,
-        datetime.now().strftime("%Y%m%d_%H%M%S"),
+        run_name,
         args.profile,
         args.skip_normalization,
         args.w_p,
@@ -1748,7 +1749,11 @@ def main():
         "model_layers": model_layers,
         "model_hidden_dim": model_hidden,
     }
-    save_config(REPO_ROOT / "logs" / "config.yaml", vars(args), cfg_extra)
+    save_config(
+        REPO_ROOT / "logs" / f"config_mpc_{run_name}.yaml",
+        vars(args),
+        cfg_extra,
+    )
 
 
 if __name__ == "__main__":
