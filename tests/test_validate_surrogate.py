@@ -144,9 +144,8 @@ def test_validate_surrogate_dict_stats():
         torch.tensor(edge_types, dtype=torch.long),
     )
     p_df = res.node["pressure"].clip(lower=5.0)
-    c_df = res.node["quality"]
+    _ = res.node["quality"]
     true_p = p_df.iloc[1, 0]
-    true_c = c_df.iloc[1, 0]
     expected_diff_p = 1.0 - true_p
     assert arr.shape[0] >= 1
     assert abs(arr[0, 0] - expected_diff_p) < 1e-6
@@ -225,7 +224,7 @@ def test_validate_surrogate_edge_dim_check():
         )
 
 
-def test_validate_surrogate_normalizes_edge_attr():
+def test_validate_surrogate_passes_edge_attr_unchanged():
     device = torch.device('cpu')
     (
         wn,
@@ -267,7 +266,7 @@ def test_validate_surrogate_normalizes_edge_attr():
         torch.tensor(node_types, dtype=torch.long),
         torch.tensor(edge_types, dtype=torch.long),
     )
-    expected = (edge_attr.to(device) - model.edge_mean) / model.edge_std
+    expected = edge_attr.to(device)
     assert model.seen is not None
     assert torch.allclose(model.seen, expected)
 

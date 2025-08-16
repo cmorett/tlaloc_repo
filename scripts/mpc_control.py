@@ -36,7 +36,6 @@ try:
         RecurrentGNNSurrogate,
         MultiTaskGNNSurrogate,
         build_edge_attr,
-        build_edge_type,
         build_node_type,
     )  # type: ignore
 except ImportError:  # pragma: no cover - executed when run as a script
@@ -45,7 +44,6 @@ except ImportError:  # pragma: no cover - executed when run as a script
         RecurrentGNNSurrogate,
         MultiTaskGNNSurrogate,
         build_edge_attr,
-        build_edge_type,
         build_node_type,
     )
 import wntr
@@ -225,7 +223,9 @@ def load_network(
             static_feats[idx, 3] = float(elev or 0.0)
 
     if return_edge_attr:
-        edge_attr = build_edge_attr(wn, edge_index.numpy())
+        edge_attr = build_edge_attr(wn, edge_index.numpy()).astype(np.float32)
+        edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
+        edge_attr = MinMaxScaler().fit_transform(edge_attr).astype(np.float32)
         edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
         if return_features:
             return (
