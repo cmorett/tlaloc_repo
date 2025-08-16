@@ -809,6 +809,7 @@ def handle_keyboard_interrupt(
     scheduler: _LRScheduler,
     epoch: int,
     norm_stats: Optional[Dict[str, np.ndarray]] = None,
+    model_meta: Optional[Dict[str, np.ndarray]] = None,
 ) -> None:
     """Save final checkpoint when training is interrupted."""
     checkpoint = {
@@ -819,6 +820,8 @@ def handle_keyboard_interrupt(
     }
     if norm_stats is not None:
         checkpoint["norm_stats"] = norm_stats
+    if model_meta is not None:
+        checkpoint["model_meta"] = model_meta
     torch.save(checkpoint, model_path)
     print(f"Training interrupted. Saved checkpoint to {model_path}")
 
@@ -1936,6 +1939,26 @@ def main(args: argparse.Namespace):
             num_edge_types=num_edge_types,
         ).to(device)
 
+    model_meta = {
+        "model_class": model.__class__.__name__,
+        "in_channels": sample_dim if seq_mode else sample.num_node_features,
+        "hidden_dim": args.hidden_dim,
+        "num_layers": args.num_layers,
+        "use_attention": args.use_attention,
+        "gat_heads": args.gat_heads,
+        "residual": args.residual,
+        "dropout": args.dropout,
+        "activation": args.activation,
+        "output_dim": args.output_dim,
+        "edge_dim": edge_attr.shape[1],
+        "rnn_hidden_dim": args.rnn_hidden_dim,
+        "share_weights": args.share_weights,
+        "num_node_types": num_node_types,
+        "num_edge_types": num_edge_types,
+        "edge_scaler": "MinMax",
+        "log_roughness": True,
+    }
+
     # expose normalization stats on the model for later un-normalisation
     if args.normalize:
         if seq_mode and getattr(data_ds, "multi", False):
@@ -2251,6 +2274,19 @@ def main(args: argparse.Namespace):
                 }
                 if norm_stats is not None:
                     ckpt["norm_stats"] = norm_stats
+                meta = dict(model_meta)
+                if norm_stats is not None:
+                    meta.update(
+                        {
+                            "x_mean": norm_stats["x_mean"],
+                            "x_std": norm_stats["x_std"],
+                            "y_mean": norm_stats["y_mean"],
+                            "y_std": norm_stats["y_std"],
+                            "edge_mean": norm_stats["edge_mean"],
+                            "edge_std": norm_stats["edge_std"],
+                        }
+                    )
+                ckpt["model_meta"] = meta
                 torch.save(ckpt, model_path)
                 if norm_stats is not None:
                     y_mean_np = norm_stats["y_mean"]
@@ -2284,7 +2320,9 @@ def main(args: argparse.Namespace):
             if patience >= args.early_stop_patience:
                 break
         if interrupted:
-            handle_keyboard_interrupt(model_path, model, optimizer, scheduler, epoch, norm_stats)
+            handle_keyboard_interrupt(
+                model_path, model, optimizer, scheduler, epoch, norm_stats, model_meta
+            )
 
     os.makedirs(PLOTS_DIR, exist_ok=True)
     # plot loss curve

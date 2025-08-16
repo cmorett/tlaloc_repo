@@ -11,8 +11,9 @@ import argparse
 import os
 import json
 import pickle
+import hashlib
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from datetime import datetime
 import sys
 
@@ -214,7 +215,9 @@ def validate_surrogate(
     run_name: str,
     node_types_tensor: Optional[torch.Tensor] = None,
     edge_types_tensor: Optional[torch.Tensor] = None,
-) -> Tuple[Dict[str, float], np.ndarray, List[int]]:
+    debug: bool = False,
+    debug_info: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, float], np.ndarray, List[int]] | Tuple[Dict[str, float], np.ndarray, List[int], Dict[str, Any]]:
     """Compute RMSE of surrogate predictions.
 
     ``test_results`` may either contain ``wntr`` ``NetworkResults`` objects or
@@ -234,15 +237,22 @@ def validate_surrogate(
     rmse_c = 0.0
     mae_p = 0.0
     mae_c = 0.0
+    rmse_p_all = 0.0
+    mae_p_all = 0.0
+    rmse_c_all = 0.0
+    mae_c_all = 0.0
     max_err_p = 0.0
     max_err_c = 0.0
     mass_total = 0.0
     mass_count = 0
     count = 0
+    count_all = 0
     err_p_all: List[float] = []
     err_c_all: List[float] = []
     err_matrix: List[np.ndarray] = []
     err_times: List[int] = []
+    if debug and debug_info is None:
+        debug_info = {}
     node_types = {
         n: (
             "junction"
@@ -290,9 +300,25 @@ def validate_surrogate(
                 dem = demand_df.iloc[i].to_dict() if demand_df is not None else None
                 controls = pump_array[i]
                 feats = _prepare_features(wn, p, c, controls, model, dem)
+                if debug and first and i == 0:
+                    feats_np = feats.cpu().numpy()
+                    debug_info["node_pre_norm_stats"] = {
+                        "min": feats_np.min(axis=0).tolist(),
+                        "max": feats_np.max(axis=0).tolist(),
+                        "mean": feats_np.mean(axis=0).tolist(),
+                        "std": feats_np.std(axis=0).tolist(),
+                    }
                 x = feats.to(device, non_blocking=True)
                 if hasattr(model, "x_mean") and model.x_mean is not None:
                     x = (x - model.x_mean) / model.x_std
+                    if debug and first and i == 0:
+                        x_np = x.cpu().numpy()
+                        debug_info["node_post_norm_stats"] = {
+                            "min": x_np.min(axis=0).tolist(),
+                            "max": x_np.max(axis=0).tolist(),
+                            "mean": x_np.mean(axis=0).tolist(),
+                            "std": x_np.std(axis=0).tolist(),
+                        }
                 if hasattr(model, "rnn"):
                     seq_in = x.unsqueeze(0).unsqueeze(0)
                     pred = model(
@@ -372,12 +398,17 @@ def validate_surrogate(
                 rmse_p += float((diff_p_masked ** 2).sum())
                 rmse_c += float((diff_c_masked ** 2).sum())
                 mae_p += float(np.abs(diff_p_masked).sum())
-                mae_c += float(np.abs(diff_c_masked).sum())
+                mae_c += float(np.abs(diff_p_masked).sum())
+                rmse_p_all += float((diff_p ** 2).sum())
+                rmse_c_all += float((diff_c ** 2).sum())
+                mae_p_all += float(np.abs(diff_p).sum())
+                mae_c_all += float(np.abs(diff_c).sum())
                 if diff_p_masked.size > 0:
                     max_err_p = max(max_err_p, float(np.max(np.abs(diff_p_masked))))
                 if diff_c_masked.size > 0:
                     max_err_c = max(max_err_c, float(np.max(np.abs(diff_c_masked))))
                 count += len(diff_p_masked)
+                count_all += len(diff_p)
                 if flow_pred is not None:
                     mass_loss = compute_mass_balance_loss(
                         flow_pred,
@@ -387,6 +418,23 @@ def validate_surrogate(
                     )
                     mass_total += mass_loss.item()
                     mass_count += 1
+                if debug and first and i == 0:
+                    mini_mae = float(np.abs(diff_p_masked).mean()) if diff_p_masked.size > 0 else float("nan")
+                    debug_info["mini_batch_mae"] = mini_mae
+                    mask_bool = mask if node_types_tensor is not None else np.ones_like(diff_p, dtype=bool)
+                    rows = []
+                    for idx, name in enumerate(wn.node_name_list):
+                        rows.append(
+                            {
+                                "node_id": name,
+                                "node_type": node_types[name],
+                                "true_pressure": float(y_true_p[idx]),
+                                "pred_pressure": float(pred_p[idx]),
+                                "error_m": float(diff_p[idx]),
+                                "included_in_mask": bool(mask_bool[idx]),
+                            }
+                        )
+                    debug_info["sample_df"] = pd.DataFrame(rows[:10])
             if first:
                 first = False
 
@@ -394,6 +442,17 @@ def validate_surrogate(
     rmse_c = (rmse_c / count) ** 0.5
     mae_p = mae_p / count
     mae_c = mae_c / count
+    if count_all > 0:
+        rmse_p_all = (rmse_p_all / count_all) ** 0.5
+        mae_p_all = mae_p_all / count_all
+    if debug_info is not None:
+        debug_info["mae_pressure_all"] = mae_p_all
+        debug_info["rmse_pressure_all"] = rmse_p_all
+        debug_info["node_type_counts"] = {k: len(v) for k, v in err_p_by_type.items()}
+        if node_types_tensor is not None:
+            mask_bool = (node_types_tensor == 0).cpu().numpy()
+            debug_info["mask_included"] = int(mask_bool.sum())
+            debug_info["mask_excluded"] = int(len(mask_bool) - mask_bool.sum())
 
     print(
         f"[Metrics] RMSE (Pressure): {rmse_p:.4f} | MAE: {mae_p:.4f} | Max Err: {max_err_p:.4f}"
@@ -438,6 +497,8 @@ def validate_surrogate(
         plt.close()
 
     err_arr = np.stack(err_matrix) if err_matrix else np.empty((0, len(wn.node_name_list)))
+    if debug:
+        return metrics, err_arr, err_times, (debug_info or {})
     return metrics, err_arr, err_times
 
 
@@ -765,6 +826,16 @@ def main() -> None:
         help="Disable TorchScript compilation of the surrogate",
     )
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable forensic debug mode with additional diagnostics",
+    )
+    parser.add_argument(
+        "--force-arch-mismatch",
+        action="store_true",
+        help="Force model loading even if architecture metadata mismatches",
+    )
+    parser.add_argument(
         "--rollout-steps",
         type=int,
         default=24,
@@ -793,6 +864,16 @@ def main() -> None:
         )
     run_name = args.run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.debug:
+        print(f"[DEBUG] model path: {args.model}")
+        if not os.path.exists(args.model):
+            raise FileNotFoundError(args.model)
+        if args.norm_stats:
+            print(f"[DEBUG] norm stats path: {args.norm_stats}")
+            if not args.norm_stats.exists():
+                raise FileNotFoundError(args.norm_stats)
+            md5 = hashlib.md5(args.norm_stats.read_bytes()).hexdigest()
+            print(f"[DEBUG] norm_stats_md5: {md5}")
     (
         wn,
         node_to_index,
@@ -805,12 +886,27 @@ def main() -> None:
     ) = load_network(args.inp, return_edge_attr=True, return_features=True)
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device)
+    if args.debug and edge_attr is not None:
+        ea = edge_attr.cpu().numpy()
+        edge_stats = {
+            "min": ea.min(axis=0).tolist(),
+            "max": ea.max(axis=0).tolist(),
+            "mean": ea.mean(axis=0).tolist(),
+            "std": ea.std(axis=0).tolist(),
+        }
+        print(f"[DEBUG] edge_attr_stats: {edge_stats}")
     model = load_surrogate_model(
         device,
         path=args.model,
         use_jit=not args.no_jit,
         norm_stats_path=str(args.norm_stats) if args.norm_stats else None,
+        force_arch_mismatch=args.force_arch_mismatch,
     )
+    torch.set_grad_enabled(False)
+    if args.debug:
+        params = sum(p.numel() for p in model.parameters())
+        first_w = next(model.parameters()).detach().abs().sum().item()
+        print(f"[DEBUG] model params: {params}, first_layer_abs_sum: {first_w:.4f}")
     if getattr(model, "y_mean", None) is None or getattr(model, "y_std", None) is None:
         raise RuntimeError(
             "Model is missing output normalization statistics. "
@@ -823,7 +919,7 @@ def main() -> None:
     if os.path.exists(args.test_pkl):
         with open(args.test_pkl, "rb") as f:
             test_res = pickle.load(f)
-        metrics, err_arr, err_times = validate_surrogate(
+        metrics, err_arr, err_times, dbg = validate_surrogate(
             model,
             edge_index,
             edge_attr,
@@ -833,7 +929,20 @@ def main() -> None:
             run_name,
             torch.tensor(node_types, dtype=torch.long, device=device),
             torch.tensor(edge_types, dtype=torch.long, device=device),
+            debug=args.debug,
         )
+        if args.debug:
+            dbg["edge_attr_stats"] = edge_stats if edge_attr is not None else {}
+            dbg["ckpt_meta"] = getattr(model, "_ckpt_meta", {})
+            debug_path = RUNS_DIR / "debug_validation_summary.json"
+            debug_path.parent.mkdir(parents=True, exist_ok=True)
+            if "sample_df" in dbg:
+                sample_path = RUNS_DIR / "debug_samples.csv"
+                dbg["sample_df"].to_csv(sample_path, index=False)
+                dbg["sample_df"] = sample_path.name
+            with open(debug_path, "w") as f:
+                json.dump(dbg, f, indent=2)
+            print(f"[DEBUG] summary saved to {debug_path}")
         pd.DataFrame([metrics]).to_csv(
             os.path.join(DATA_DIR, "surrogate_validation.csv"), index=False
         )
