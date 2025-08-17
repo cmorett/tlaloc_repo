@@ -314,6 +314,7 @@ def load_surrogate_model(
     )
     raw_state = dict(state)  # preserve original keys for loading
     ckpt_meta = checkpoint.get("model_meta") if isinstance(checkpoint, dict) else None
+    model_class_meta = ckpt_meta.get("model_class") if ckpt_meta else None
     if ckpt_meta is not None:
         arch_cfg = {
             k: ckpt_meta.get(k)
@@ -405,18 +406,19 @@ def load_surrogate_model(
         indices = sorted({int(k.split(".")[1]) for k in state if k.startswith("convs")})
         last_idx = max(indices)
         for k, v in state.items():
-            if not k.startswith("convs"):
-                continue
-            parts = k.split(".")
-            idx = int(parts[1])
-            rest = ".".join(parts[2:])
-            base_key = f"layers.{idx}.{rest}"
-            renamed[base_key] = v
-            if ckpt_meta is None:
-                if idx == 0:
-                    renamed[f"conv1.{rest}"] = v
-                if idx == last_idx:
-                    renamed[f"conv2.{rest}"] = v
+            if k.startswith("convs"):
+                parts = k.split(".")
+                idx = int(parts[1])
+                rest = ".".join(parts[2:])
+                base_key = f"layers.{idx}.{rest}"
+                renamed[base_key] = v
+                if ckpt_meta is None:
+                    if idx == 0:
+                        renamed[f"conv1.{rest}"] = v
+                    if idx == last_idx:
+                        renamed[f"conv2.{rest}"] = v
+            else:
+                renamed[k] = v
         state = renamed
 
     layer_keys = [
@@ -614,12 +616,17 @@ def load_surrogate_model(
         for k in tank_keys:
             model.register_buffer(k, state[k])
 
-    load_state = raw_state if ckpt_meta is not None else state
+    if model_class_meta in {"RecurrentGNNSurrogate", "MultiTaskGNNSurrogate"}:
+        load_state = raw_state
+    else:
+        load_state = state
+
     load_res = model.load_state_dict(load_state, strict=False)
     if isinstance(load_res, tuple):
-        missing_keys = load_res[0]
+        missing_keys, unexpected_keys = load_res
     else:
         missing_keys = load_res.missing_keys
+        unexpected_keys = load_res.unexpected_keys
     critical_missing = [
         k
         for k in missing_keys
@@ -631,11 +638,14 @@ def load_surrogate_model(
     if critical_missing:
         raise KeyError(f"Missing keys in state dict: {critical_missing}")
 
-    # Reload with strict=True when metadata is present; otherwise fall back to lenient loading
-    if ckpt_meta is not None:
+    strict_load = (
+        ckpt_meta is not None
+        and model_class_meta == model.__class__.__name__
+        and not missing_keys
+        and not unexpected_keys
+    )
+    if strict_load:
         model.load_state_dict(load_state, strict=True)
-    else:
-        model.load_state_dict(load_state, strict=False)
 
     # ensure LayerNorm modules expose ``normalized_shape`` for compatibility
     enc = getattr(model, "encoder", None)
