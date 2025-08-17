@@ -398,7 +398,7 @@ def validate_surrogate(
                 rmse_p += float((diff_p_masked ** 2).sum())
                 rmse_c += float((diff_c_masked ** 2).sum())
                 mae_p += float(np.abs(diff_p_masked).sum())
-                mae_c += float(np.abs(diff_p_masked).sum())
+                mae_c += float(np.abs(diff_c_masked).sum())
                 rmse_p_all += float((diff_p ** 2).sum())
                 rmse_c_all += float((diff_c ** 2).sum())
                 mae_p_all += float(np.abs(diff_p).sum())
