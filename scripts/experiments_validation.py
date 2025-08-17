@@ -926,7 +926,35 @@ def main() -> None:
             "Model is missing output normalization statistics. "
             "Provide --norm-stats pointing to an .npz file with y_mean and y_std."
         )
-    norm_md5 = getattr(model, "norm_hash", None)
+    # Compare normalization checksum from checkpoint metadata with the provided .npz
+    ckpt_hash = getattr(model, "_ckpt_meta", {}).get("norm_stats_md5")
+    stats_path = Path(args.norm_stats) if args.norm_stats else Path(str(Path(args.model).with_suffix("")) + "_norm.npz")
+    if not stats_path.is_absolute():
+        stats_path = REPO_ROOT / stats_path
+    if ckpt_hash is None or not stats_path.exists():
+        raise RuntimeError(
+            "Normalization statistics missing or checksum not found. "
+            "Regenerate or supply matching normalization files."
+        )
+    arr = np.load(stats_path)
+    md5 = hashlib.md5()
+    arrays = [arr["x_mean"], arr["x_std"]]
+    if "y_mean_node" in arr:
+        arrays.extend([arr["y_mean_node"], arr["y_std_node"]])
+        if "y_mean_edge" in arr:
+            arrays.extend([arr["y_mean_edge"], arr["y_std_edge"]])
+    elif "y_mean" in arr:
+        arrays.extend([arr["y_mean"], arr["y_std"]])
+    if "edge_mean" in arr:
+        arrays.extend([arr["edge_mean"], arr["edge_std"]])
+    for a in arrays:
+        md5.update(a.tobytes())
+    npz_hash = md5.hexdigest()
+    if npz_hash != ckpt_hash:
+        raise RuntimeError(
+            "Normalization statistics hash mismatch. Regenerate or supply matching normalization files."
+        )
+    norm_md5 = ckpt_hash
     model_layers = len(getattr(model, "layers", []))
     model_hidden = getattr(getattr(model, "layers", [None])[0], "out_channels", None)
 
