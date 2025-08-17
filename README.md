@@ -312,7 +312,10 @@ distribution.  All metrics are written to
 If your surrogate weights were saved separately from their normalization
 statistics, provide the path to the ``*.npz`` file via ``--norm-stats`` so the
 script can correctly de-normalize predictions.  The validation script aborts if
-``y_mean``/``y_std`` are missing to avoid evaluating normalized outputs.
+``y_mean``/``y_std`` are missing to avoid evaluating normalized outputs and it
+now cross-checks an MD5 hash stored in the checkpoint metadata against the
+contents of the ``*.npz``.  A mismatch triggers an error instructing you to
+regenerate or supply matching normalization files.
 
 If the dimension of ``edge_attr.npy`` does not match the value stored in the
 surrogate checkpoint, ``validate_surrogate`` now raises a ``ValueError``.

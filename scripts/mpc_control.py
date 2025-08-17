@@ -800,6 +800,8 @@ def load_surrogate_model(
                 npz_hash = md5_npz.hexdigest()
                 if stored_hash and npz_hash != stored_hash:
                     raise ValueError("_norm.npz hash mismatch with checkpoint")
+            if stored_hash:
+                norm_hash = stored_hash
         print(f"Loaded normalization stats shapes: {shapes}, md5: {norm_hash}")
         model.norm_hash = norm_hash
 
