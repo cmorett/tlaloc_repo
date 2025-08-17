@@ -940,8 +940,12 @@ def main() -> None:
                 sample_path = RUNS_DIR / "debug_samples.csv"
                 dbg["sample_df"].to_csv(sample_path, index=False)
                 dbg["sample_df"] = sample_path.name
+            def _to_serializable(obj):
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                return obj
             with open(debug_path, "w") as f:
-                json.dump(dbg, f, indent=2)
+                json.dump(dbg, f, indent=2, default=_to_serializable)
             print(f"[DEBUG] summary saved to {debug_path}")
         pd.DataFrame([metrics]).to_csv(
             os.path.join(DATA_DIR, "surrogate_validation.csv"), index=False
