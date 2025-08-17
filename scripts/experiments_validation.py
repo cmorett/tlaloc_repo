@@ -987,6 +987,8 @@ def main() -> None:
     else:
         print(f"{args.test_pkl} not found. Skipping surrogate validation.")
 
+    # Re-enable gradient calculations for MPC optimization
+    torch.set_grad_enabled(True)
     mpc_df = simulate_closed_loop(
         wntr.network.WaterNetworkModel(args.inp),
         model,
