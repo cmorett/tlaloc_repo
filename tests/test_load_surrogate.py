@@ -7,6 +7,7 @@ import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from scripts.mpc_control import load_surrogate_model
+from models.gnn_surrogate import RecurrentGNNSurrogate
 
 
 def test_load_surrogate_renames_old_keys(tmp_path):
@@ -21,6 +22,43 @@ def test_load_surrogate_renames_old_keys(tmp_path):
     model = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
     assert model.layers[0].out_channels == 4
     assert model.layers[-1].out_channels == 2
+
+
+def test_load_surrogate_handles_encoder_convs_with_meta(tmp_path):
+    model = RecurrentGNNSurrogate(
+        in_channels=1,
+        hidden_channels=4,
+        edge_dim=1,
+        output_dim=1,
+        num_layers=2,
+        use_attention=True,
+        gat_heads=1,
+        dropout=0.0,
+        residual=False,
+        rnn_hidden_dim=4,
+    )
+    ckpt = {
+        'model_state_dict': model.state_dict(),
+        'model_meta': {
+            'model_class': 'RecurrentGNNSurrogate',
+            'in_channels': 1,
+            'hidden_dim': 4,
+            'num_layers': 2,
+            'use_attention': True,
+            'gat_heads': 1,
+            'residual': False,
+            'dropout': 0.0,
+            'activation': 'relu',
+            'output_dim': 1,
+            'rnn_hidden_dim': 4,
+            'edge_dim': 1,
+        },
+    }
+    path = tmp_path / 'model_new.pth'
+    torch.save(ckpt, path)
+    loaded = load_surrogate_model(torch.device('cpu'), path=str(path), use_jit=False)
+    assert isinstance(loaded, RecurrentGNNSurrogate)
+    assert loaded.encoder.convs[0].out_channels == 4
 
 
 def test_load_surrogate_detects_nan(tmp_path):

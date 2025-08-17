@@ -312,6 +312,7 @@ def load_surrogate_model(
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
         else checkpoint
     )
+    raw_state = dict(state)  # preserve original keys for loading
     ckpt_meta = checkpoint.get("model_meta") if isinstance(checkpoint, dict) else None
     if ckpt_meta is not None:
         arch_cfg = {
@@ -355,65 +356,68 @@ def load_surrogate_model(
     )
     print(f"[ARCH] source   : {source}")
 
-    if ckpt_meta is None:
-        # Support both the current ``layers.X`` style parameter names as well as
-        # older checkpoints that used ``conv1``/``conv2``.  If the latter is
-        # detected, rename the keys so ``load_state_dict`` can succeed.
-        if any(k.startswith("conv1") for k in state) and not any(k.startswith("layers.0") for k in state):
-            renamed = {}
-            for k, v in state.items():
-                if k.startswith("conv1."):
-                    renamed["layers.0." + k.split(".", 1)[1]] = v
-                elif k.startswith("conv2."):
-                    renamed["layers.1." + k.split(".", 1)[1]] = v
-                else:
-                    renamed[k] = v
-            state = renamed
-        elif any(k.startswith("encoder.convs") for k in state):
-            # Models trained with ``EnhancedGNNEncoder`` store convolution weights
-            # under ``encoder.convs.X`` and the final fully connected layer under
-            # ``encoder.fc_out``.  Convert these to ``layers.X`` / ``fc_out`` and
-            # duplicate the first/last layer under ``conv1``/``conv2`` for backwards
-            # compatibility.
-            renamed = {}
-            indices = sorted({int(k.split(".")[2]) for k in state if k.startswith("encoder.convs")})
-            last_idx = max(indices)
-            for k, v in state.items():
-                if k.startswith("encoder.convs"):
-                    parts = k.split(".")
-                    idx = int(parts[2])
-                    rest = ".".join(parts[3:])
-                    if rest.startswith("lin.0."):
-                        rest = "lin." + rest.split(".", 2)[2]
-                    base_key = f"layers.{idx}.{rest}"
-                    renamed[base_key] = v
+    # Support different historical parameter naming schemes.  Regardless of
+    # whether checkpoint metadata is present, normalise keys so downstream
+    # logic can rely on the ``layers.X`` convention.
+    if any(k.startswith("conv1") for k in state) and not any(
+        k.startswith("layers.0") for k in state
+    ):
+        renamed = {}
+        for k, v in state.items():
+            if k.startswith("conv1."):
+                renamed["layers.0." + k.split(".", 1)[1]] = v
+            elif k.startswith("conv2."):
+                renamed["layers.1." + k.split(".", 1)[1]] = v
+            else:
+                renamed[k] = v
+        state = renamed
+    elif any(k.startswith("encoder.convs") for k in state):
+        # Models trained with ``EnhancedGNNEncoder`` store convolution weights
+        # under ``encoder.convs.X`` and the final fully connected layer under
+        # ``encoder.fc_out``.  Convert these to ``layers.X`` / ``fc_out`` and
+        # optionally duplicate the first/last layer under ``conv1``/``conv2`` for
+        # backwards compatibility when no metadata is available.
+        renamed = {}
+        indices = sorted({int(k.split(".")[2]) for k in state if k.startswith("encoder.convs")})
+        last_idx = max(indices)
+        for k, v in state.items():
+            if k.startswith("encoder.convs"):
+                parts = k.split(".")
+                idx = int(parts[2])
+                rest = ".".join(parts[3:])
+                if rest.startswith("lin.0."):
+                    rest = "lin." + rest.split(".", 2)[2]
+                base_key = f"layers.{idx}.{rest}"
+                renamed[base_key] = v
+                if ckpt_meta is None:
                     if idx == 0:
                         renamed[f"conv1.{rest}"] = v
                     if idx == last_idx:
                         renamed[f"conv2.{rest}"] = v
-                elif k.startswith("encoder.fc_out"):
-                    rest = k.split(".", 2)[2]
-                    renamed[f"fc_out.{rest}"] = v
-                else:
-                    renamed[k] = v
-            state = renamed
-        elif any(k.startswith("convs") for k in state):
-            renamed = {}
-            indices = sorted({int(k.split(".")[1]) for k in state if k.startswith("convs")})
-            last_idx = max(indices)
-            for k, v in state.items():
-                if not k.startswith("convs"):
-                    continue
-                parts = k.split(".")
-                idx = int(parts[1])
-                rest = ".".join(parts[2:])
-                base_key = f"layers.{idx}.{rest}"
-                renamed[base_key] = v
+            elif k.startswith("encoder.fc_out"):
+                rest = k.split(".", 2)[2]
+                renamed[f"fc_out.{rest}"] = v
+            else:
+                renamed[k] = v
+        state = renamed
+    elif any(k.startswith("convs") for k in state):
+        renamed = {}
+        indices = sorted({int(k.split(".")[1]) for k in state if k.startswith("convs")})
+        last_idx = max(indices)
+        for k, v in state.items():
+            if not k.startswith("convs"):
+                continue
+            parts = k.split(".")
+            idx = int(parts[1])
+            rest = ".".join(parts[2:])
+            base_key = f"layers.{idx}.{rest}"
+            renamed[base_key] = v
+            if ckpt_meta is None:
                 if idx == 0:
                     renamed[f"conv1.{rest}"] = v
                 if idx == last_idx:
                     renamed[f"conv2.{rest}"] = v
-            state = renamed
+        state = renamed
 
     layer_keys = [
         k
@@ -563,6 +567,8 @@ def load_surrogate_model(
     if multitask:
         node_out_dim, rnn_hidden_dim = state["node_decoder.weight"].shape
         edge_out_dim = state["edge_decoder.weight"].shape[0]
+        use_att = isinstance(conv_layers[0], GATConv)
+        heads = conv_layers[0].heads if use_att else 1
         model = MultiTaskGNNSurrogate(
             in_channels=conv_layers[0].in_channels,
             hidden_channels=hidden_dim,
@@ -570,8 +576,8 @@ def load_surrogate_model(
             node_output_dim=node_out_dim,
             edge_output_dim=edge_out_dim,
             num_layers=len(conv_layers),
-            use_attention=False,
-            gat_heads=1,
+            use_attention=use_att,
+            gat_heads=heads,
             dropout=0.0,
             residual=False,
             rnn_hidden_dim=rnn_hidden_dim,
@@ -580,14 +586,16 @@ def load_surrogate_model(
         ).to(device)
     elif has_rnn:
         out_dim, rnn_hidden_dim = state["decoder.weight"].shape
+        use_att = isinstance(conv_layers[0], GATConv)
+        heads = conv_layers[0].heads if use_att else 1
         model = RecurrentGNNSurrogate(
             in_channels=conv_layers[0].in_channels,
             hidden_channels=hidden_dim,
             edge_dim=edge_dim if edge_dim is not None else 0,
             output_dim=out_dim,
             num_layers=len(conv_layers),
-            use_attention=False,
-            gat_heads=1,
+            use_attention=use_att,
+            gat_heads=heads,
             dropout=0.0,
             residual=False,
             rnn_hidden_dim=rnn_hidden_dim,
@@ -606,7 +614,8 @@ def load_surrogate_model(
         for k in tank_keys:
             model.register_buffer(k, state[k])
 
-    load_res = model.load_state_dict(state, strict=False)
+    load_state = raw_state if ckpt_meta is not None else state
+    load_res = model.load_state_dict(load_state, strict=False)
     if isinstance(load_res, tuple):
         missing_keys = load_res[0]
     else:
@@ -624,9 +633,9 @@ def load_surrogate_model(
 
     # Reload with strict=True when metadata is present; otherwise fall back to lenient loading
     if ckpt_meta is not None:
-        model.load_state_dict(state, strict=True)
+        model.load_state_dict(load_state, strict=True)
     else:
-        model.load_state_dict(state, strict=False)
+        model.load_state_dict(load_state, strict=False)
 
     # ensure LayerNorm modules expose ``normalized_shape`` for compatibility
     enc = getattr(model, "encoder", None)
