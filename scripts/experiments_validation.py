@@ -267,6 +267,8 @@ def validate_surrogate(
     edge_index = edge_index.to(device)
     if edge_attr is not None:
         edge_attr = edge_attr.to(device)
+        if getattr(model, "edge_mean", None) is not None:
+            edge_attr = (edge_attr - model.edge_mean) / (model.edge_std + 1e-8)
 
     with torch.no_grad():
         first = True
@@ -523,6 +525,8 @@ def rollout_surrogate(
     edge_index = edge_index.to(device)
     if edge_attr is not None:
         edge_attr = edge_attr.to(device)
+        if getattr(model, "edge_mean", None) is not None:
+            edge_attr = (edge_attr - model.edge_mean) / (model.edge_std + 1e-8)
 
     sq_p = np.zeros(steps, dtype=float)
     sq_c = np.zeros(steps, dtype=float)

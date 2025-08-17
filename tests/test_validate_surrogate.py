@@ -224,7 +224,7 @@ def test_validate_surrogate_edge_dim_check():
         )
 
 
-def test_validate_surrogate_passes_edge_attr_unchanged():
+def test_validate_surrogate_normalizes_edge_attr():
     device = torch.device('cpu')
     (
         wn,
@@ -266,7 +266,7 @@ def test_validate_surrogate_passes_edge_attr_unchanged():
         torch.tensor(node_types, dtype=torch.long),
         torch.tensor(edge_types, dtype=torch.long),
     )
-    expected = edge_attr.to(device)
+    expected = (edge_attr.to(device) - model.edge_mean) / (model.edge_std + 1e-8)
     assert model.seen is not None
     assert torch.allclose(model.seen, expected)
 
