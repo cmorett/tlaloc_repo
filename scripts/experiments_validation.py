@@ -878,8 +878,20 @@ def main() -> None:
             print(f"[DEBUG] norm stats path: {args.norm_stats}")
             if not args.norm_stats.exists():
                 raise FileNotFoundError(args.norm_stats)
-            md5 = hashlib.md5(args.norm_stats.read_bytes()).hexdigest()
-            print(f"[DEBUG] norm_stats_md5: {md5}")
+            arr = np.load(args.norm_stats)
+            md5 = hashlib.md5()
+            arrays = [arr["x_mean"], arr["x_std"]]
+            if "y_mean_node" in arr:
+                arrays.extend([arr["y_mean_node"], arr["y_std_node"]])
+                if "y_mean_edge" in arr:
+                    arrays.extend([arr["y_mean_edge"], arr["y_std_edge"]])
+            elif "y_mean" in arr:
+                arrays.extend([arr["y_mean"], arr["y_std"]])
+            if "edge_mean" in arr:
+                arrays.extend([arr["edge_mean"], arr["edge_std"]])
+            for a in arrays:
+                md5.update(a.tobytes())
+            print(f"[DEBUG] norm_stats_md5: {md5.hexdigest()}")
     (
         wn,
         node_to_index,
