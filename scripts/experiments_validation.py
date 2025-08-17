@@ -281,11 +281,17 @@ def validate_surrogate(
             if isinstance(res, tuple):
                 res = res[0]
 
-            # Clip pressures to match the preprocessing used during data
-            # generation and avoid unrealistically low values.
-            pressures_df = res.node["pressure"].clip(lower=MIN_PRESSURE)
-            chlorine_df = res.node["quality"]
+            # Clip pressures to match preprocessing and align all DataFrame
+            # columns with the network's node ordering. This avoids
+            # misaligned ground-truth vectors when converting to numpy arrays.
+            pressures_df = (
+                res.node["pressure"].clip(lower=MIN_PRESSURE).reindex(columns=wn.node_name_list)
+            )
+            chlorine_df = res.node["quality"].reindex(columns=wn.node_name_list)
             demand_df = res.node.get("demand")
+            if demand_df is not None:
+                demand_df = demand_df.reindex(columns=wn.node_name_list)
+            assert list(pressures_df.columns) == wn.node_name_list
             pump_df = res.link["setting"][wn.pump_name_list]
             times = pressures_df.index
             pump_array = np.clip(pump_df.values, 0.0, 1.0)
