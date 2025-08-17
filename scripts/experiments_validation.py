@@ -338,7 +338,7 @@ def validate_surrogate(
                         node_pred = pred.get("node_outputs")[0, 0]
                         flow_pred = pred.get("edge_outputs")[0, 0].squeeze()
                     else:
-                        node_pred = pred
+                        node_pred = pred[0, 0]
                         flow_pred = None
                 else:
                     pred = model(
@@ -356,22 +356,14 @@ def validate_surrogate(
                         flow_pred = None
                 if hasattr(model, "y_mean") and model.y_mean is not None:
                     if isinstance(model.y_mean, dict):
-                        y_mean_node = model.y_mean["node_outputs"].to(node_pred.device)
-                        y_std_node = model.y_std["node_outputs"].to(node_pred.device)
-                        node_pred = node_pred * y_std_node + y_mean_node
+                        y_mean = model.y_mean["node_outputs"].to(node_pred.device)
+                        y_std = model.y_std["node_outputs"].to(node_pred.device)
                     else:
                         y_mean = model.y_mean.to(node_pred.device)
                         y_std = model.y_std.to(node_pred.device)
-                        target_dim = y_mean.shape[0]
-                        if node_pred.shape[1] >= target_dim:
-                            node_pred[:, :target_dim] = (
-                                node_pred[:, :target_dim] * y_std + y_mean
-                            )
-                        else:  # pragma: no cover - unexpected but handle gracefully
-                            node_pred = (
-                                node_pred * y_std[: node_pred.shape[1]]
-                                + y_mean[: node_pred.shape[1]]
-                            )
+                    target_dim = y_mean.shape[0]
+                    node_pred = node_pred[:, :target_dim]
+                    node_pred = node_pred * y_std + y_mean
                 pred_p = node_pred[:, 0].cpu().numpy()
                 pred_c = node_pred[:, 1].cpu().numpy()
                 y_true_p = pressures_df.iloc[i + 1].to_numpy()
