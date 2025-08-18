@@ -4,6 +4,7 @@ from torch import nn
 from torch.nn import MultiheadAttention
 from torch_geometric.nn import GCNConv, GATConv, LayerNorm, MessagePassing
 from typing import Optional, Sequence
+import torch.utils.checkpoint
 
 
 class HydroConv(MessagePassing):
@@ -179,6 +180,7 @@ class RecurrentGNNSurrogate(nn.Module):
         share_weights: bool = False,
         num_node_types: int = 1,
         num_edge_types: int = 1,
+        use_checkpoint: bool = False,
     ) -> None:
         super().__init__()
         self.encoder = EnhancedGNNEncoder(
@@ -195,6 +197,7 @@ class RecurrentGNNSurrogate(nn.Module):
             num_node_types=num_node_types,
             num_edge_types=num_edge_types,
         )
+        self.use_checkpoint = use_checkpoint
         self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
         self.decoder = nn.Linear(rnn_hidden_dim, output_dim)
 
@@ -223,13 +226,21 @@ class RecurrentGNNSurrogate(nn.Module):
         node_embeddings = []
         for t in range(T):
             x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
-            gnn_out = self.encoder(
-                x_t,
-                batch_edge_index,
-                edge_attr_rep,
-                node_type_rep,
-                edge_type_rep,
-            )
+
+            def encode(x):
+                return self.encoder(
+                    x,
+                    batch_edge_index,
+                    edge_attr_rep,
+                    node_type_rep,
+                    edge_type_rep,
+                )
+
+            if self.use_checkpoint and self.training:
+                x_t = x_t.requires_grad_()
+                gnn_out = torch.utils.checkpoint.checkpoint(encode, x_t, use_reentrant=False)
+            else:
+                gnn_out = encode(x_t)
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
             node_embeddings.append(gnn_out)
 
@@ -291,6 +302,7 @@ class MultiTaskGNNSurrogate(nn.Module):
         share_weights: bool = False,
         num_node_types: int = 1,
         num_edge_types: int = 1,
+        use_checkpoint: bool = False,
     ) -> None:
         super().__init__()
         self.encoder = EnhancedGNNEncoder(
@@ -307,6 +319,7 @@ class MultiTaskGNNSurrogate(nn.Module):
             num_node_types=num_node_types,
             num_edge_types=num_edge_types,
         )
+        self.use_checkpoint = use_checkpoint
         self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
         self.time_att = MultiheadAttention(rnn_hidden_dim, num_heads=4, batch_first=True)
         self.node_decoder = nn.Linear(rnn_hidden_dim, node_output_dim)
@@ -353,13 +366,21 @@ class MultiTaskGNNSurrogate(nn.Module):
         node_embeddings = []
         for t in range(T):
             x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
-            gnn_out = self.encoder(
-                x_t,
-                batch_edge_index,
-                edge_attr_rep,
-                node_type_rep,
-                edge_type_rep,
-            )
+
+            def encode(x):
+                return self.encoder(
+                    x,
+                    batch_edge_index,
+                    edge_attr_rep,
+                    node_type_rep,
+                    edge_type_rep,
+                )
+
+            if self.use_checkpoint and self.training:
+                x_t = x_t.requires_grad_()
+                gnn_out = torch.utils.checkpoint.checkpoint(encode, x_t, use_reentrant=False)
+            else:
+                gnn_out = encode(x_t)
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
             node_embeddings.append(gnn_out)
 
