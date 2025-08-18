@@ -52,3 +52,28 @@ def test_multitask_output_clamp_and_tank_level():
     out = model(X, edge_index, edge_attr)
     assert torch.all(out['node_outputs'] >= 0)
     assert torch.all(model.tank_levels >= 0)
+
+
+def test_output_clamp_with_per_node_norm():
+    edge_index = torch.tensor([[0], [1]], dtype=torch.long)
+    edge_attr = torch.ones(1, 3)
+    model = MultiTaskGNNSurrogate(
+        in_channels=2,
+        hidden_channels=4,
+        edge_dim=3,
+        node_output_dim=2,
+        edge_output_dim=1,
+        num_layers=1,
+        use_attention=False,
+        gat_heads=1,
+        dropout=0.0,
+        residual=False,
+        rnn_hidden_dim=4,
+    )
+    model.node_decoder.weight.data.zero_()
+    model.node_decoder.bias.data.fill_(-1.0)
+    model.y_mean = {"node_outputs": torch.zeros(2, 2)}
+    model.y_std = {"node_outputs": torch.ones(2, 2)}
+    X = torch.zeros(1, 1, 2, 2)
+    out = model(X, edge_index, edge_attr)
+    assert out["node_outputs"].shape == (1, 1, 2, 2)
