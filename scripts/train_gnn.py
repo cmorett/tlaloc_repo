@@ -1669,6 +1669,7 @@ def main(args: argparse.Namespace):
                 share_weights=args.share_weights,
                 num_node_types=num_node_types,
                 num_edge_types=num_edge_types,
+                use_checkpoint=args.checkpoint,
             ).to(device)
             tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
             model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
@@ -1704,6 +1705,7 @@ def main(args: argparse.Namespace):
                 share_weights=args.share_weights,
                 num_node_types=num_node_types,
                 num_edge_types=num_edge_types,
+                use_checkpoint=args.checkpoint,
             ).to(device)
             tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
             model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
@@ -2674,6 +2676,11 @@ if __name__ == "__main__":
         "--neighbor-sampling",
         action="store_true",
         help="Use random neighbor sampling instead of clustering",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        action="store_true",
+        help="Enable gradient checkpointing to reduce memory usage",
     )
     parser.add_argument(
         "--amp",

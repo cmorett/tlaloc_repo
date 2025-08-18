@@ -20,7 +20,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `mpc_control.py` – run gradient-based MPC using the trained surrogate.
   - `feature_utils.py` – shared feature construction and normalization helpers.
   - `ablation_study.py` – run a small grid of model variants and report validation pressure MAE.
-  - `train_gnn.py` – train a graph neural network surrogate on generated data.
+  - `train_gnn.py` – train a graph neural network surrogate on generated data. Pass `--checkpoint` to enable gradient checkpointing when GPU memory is limited.
   - `sweep_training.py` – run hyperparameter sweeps over loss weights and architecture.
   - `plot_sweep.py` – visualise pressure MAE across sweep configurations.
   - `reproducibility.py` – helper utilities for seeding and config logging.
@@ -107,12 +107,12 @@ Basic unit tests live in the `tests/` directory. Run them with `pytest`. The rec
    ```
 4. Train the surrogate:
     ```bash
-    python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy --edge-index-path data/edge_index.npy --inp-path CTown.inp
+    python scripts/train_gnn.py --x-path data/X_train.npy --y-path data/Y_train.npy --edge-index-path data/edge_index.npy --inp-path CTown.inp [--checkpoint]
     ```
 5. Run the experiment suite which includes a surrogate validation step:
-   ```bash
-   python scripts/experiments_validation.py --model models/gnn_surrogate.pth --inp CTown.inp
-   ```
+    ```bash
+    python scripts/experiments_validation.py --model models/gnn_surrogate.pth --inp CTown.inp
+    ```
 6. Optionally launch MPC control directly using `scripts/mpc_control.py`.
 
 When adding new features or bug fixes, please create unit tests using `pytest` inside a `tests/` directory and run `pytest` before committing.
