@@ -81,7 +81,8 @@ The training script saves feature and target means and standard deviations on
 the model.  ``mpc_control.py`` loads these tensors and checks their shapes so
 inference uses the exact same statistics.  This normalization contract prevents
 silent scaling mismatches; pass ``--skip-normalization`` to operate entirely on
-raw values.
+raw values. Pass ``--per-node-norm`` to compute statistics for each node index
+separately which removes large baseline offsets and often reduces pressure MAE.
 When sequence models are used a component-wise loss curve
 ``loss_components_<run>.png`` is stored alongside ``loss_curve_<run>.png`` and
 the per-component pressure, chlorine and flow losses are recorded each epoch in

@@ -1494,7 +1494,7 @@ def main(args: argparse.Namespace):
     if args.normalize:
         if seq_mode:
             x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
-                X_raw, Y_raw
+                X_raw, Y_raw, per_node=args.per_node_norm
             )
             apply_sequence_normalization(
                 data_ds,
@@ -1504,6 +1504,7 @@ def main(args: argparse.Namespace):
                 y_std,
                 edge_mean,
                 edge_std,
+                per_node=args.per_node_norm,
             )
             if isinstance(val_list, SequenceDataset):
                 apply_sequence_normalization(
@@ -1514,15 +1515,32 @@ def main(args: argparse.Namespace):
                     y_std,
                     edge_mean,
                     edge_std,
+                    per_node=args.per_node_norm,
                 )
         else:
-            x_mean, x_std, y_mean, y_std = compute_norm_stats(data_list)
+            x_mean, x_std, y_mean, y_std = compute_norm_stats(
+                data_list, per_node=args.per_node_norm
+            )
             apply_normalization(
-                data_list, x_mean, x_std, y_mean, y_std, edge_mean, edge_std
+                data_list,
+                x_mean,
+                x_std,
+                y_mean,
+                y_std,
+                edge_mean,
+                edge_std,
+                per_node=args.per_node_norm,
             )
             if val_list:
                 apply_normalization(
-                    val_list, x_mean, x_std, y_mean, y_std, edge_mean, edge_std
+                    val_list,
+                    x_mean,
+                    x_std,
+                    y_mean,
+                    y_std,
+                    edge_mean,
+                    edge_std,
+                    per_node=args.per_node_norm,
                 )
         print("Target normalization stats:")
         if isinstance(y_mean, dict):
@@ -2184,6 +2202,7 @@ def main(args: argparse.Namespace):
                     y_std,
                     edge_mean,
                     edge_std,
+                    per_node=args.per_node_norm,
                 )
             test_loader = TorchLoader(
                 test_ds,
@@ -2202,7 +2221,16 @@ def main(args: argparse.Namespace):
                 edge_type=edge_types,
             )
             if args.normalize:
-                apply_normalization(test_list, x_mean, x_std, y_mean, y_std, edge_mean, edge_std)
+                apply_normalization(
+                    test_list,
+                    x_mean,
+                    x_std,
+                    y_mean,
+                    y_std,
+                    edge_mean,
+                    edge_std,
+                    per_node=args.per_node_norm,
+                )
             test_loader = DataLoader(
                 test_list,
                 batch_size=args.batch_size,
@@ -2574,6 +2602,11 @@ if __name__ == "__main__":
         action="store_true",
         default=True,
         help="Apply normalization to features and targets",
+    )
+    parser.add_argument(
+        "--per-node-norm",
+        action="store_true",
+        help="Compute normalization statistics for each node index separately",
     )
     parser.add_argument(
         "--physics_loss",
