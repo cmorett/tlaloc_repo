@@ -2253,6 +2253,7 @@ def main(args: argparse.Namespace):
                             if edge_pred is not None and Y_edge is not None:
                                 y_mean_edge = model.y_mean['edge_outputs'].to(node_pred.device)
                                 y_std_edge = model.y_std['edge_outputs'].to(node_pred.device)
+                                edge_pred = edge_pred.squeeze(-1)
                                 edge_pred = edge_pred * y_std_edge + y_mean_edge
                                 Y_edge = Y_edge * y_std_edge + y_mean_edge
                         else:
@@ -2284,8 +2285,8 @@ def main(args: argparse.Namespace):
                             sample_true_c.extend(true_c[:take].cpu().numpy())
 
                     if edge_pred is not None and Y_edge is not None:
-                        pred_f = edge_pred.squeeze(-1).reshape(-1)
-                        true_f = Y_edge.squeeze(-1).reshape(-1)
+                        pred_f = edge_pred.reshape(-1)
+                        true_f = Y_edge.reshape(-1)
                         f_stats.update(pred_f.cpu().numpy(), true_f.cpu().numpy())
             else:
                 for batch in test_loader:
@@ -2310,8 +2311,10 @@ def main(args: argparse.Namespace):
                             if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
                                 y_mean_edge = model.y_mean['edge_outputs'].to(out.device)
                                 y_std_edge = model.y_std['edge_outputs'].to(out.device)
-                                edge_out = out["edge_outputs"] * y_std_edge + y_mean_edge
-                                edge_y = batch.edge_y * y_std_edge + y_mean_edge
+                                edge_out = out["edge_outputs"].squeeze(-1)
+                                edge_y = batch.edge_y.squeeze(-1)
+                                edge_out = edge_out * y_std_edge + y_mean_edge
+                                edge_y = edge_y * y_std_edge + y_mean_edge
                             else:
                                 edge_out = edge_y = None
                         else:
@@ -2329,6 +2332,10 @@ def main(args: argparse.Namespace):
                         batch_y = batch.y
                         edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
                         edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
+                        if edge_out is not None:
+                            edge_out = edge_out.squeeze(-1)
+                        if edge_y is not None:
+                            edge_y = edge_y.squeeze(-1)
 
                     mask_batch = node_mask.repeat(batch.num_graphs)
                     pred_p = node_out[:, 0][mask_batch]
@@ -2350,8 +2357,8 @@ def main(args: argparse.Namespace):
                             sample_true_c.extend(true_c[:take].cpu().numpy())
 
                     if edge_out is not None and edge_y is not None:
-                        pred_f = edge_out.squeeze(-1)
-                        true_f = edge_y.squeeze(-1)
+                        pred_f = edge_out.reshape(-1)
+                        true_f = edge_y.reshape(-1)
                         f_stats.update(pred_f.cpu().numpy(), true_f.cpu().numpy())
 
         save_accuracy_metrics(
