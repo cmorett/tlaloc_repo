@@ -240,9 +240,9 @@ def prepare_node_features(
         if in_dim is not None:
             feats = feats[:, :, :in_dim]
         if not skip_normalization and getattr(model, "x_mean", None) is not None:
-            feats = (feats - model.x_mean.view(1, 1, -1)) / (
-                model.x_std.view(1, 1, -1) + EPS
-            )
+            mean = model.x_mean.to(feats.device).view(1, 1, -1)
+            std = model.x_std.to(feats.device).view(1, 1, -1)
+            feats = (feats - mean) / (std + EPS)
         return feats.view(batch_size * num_nodes, -1)
 
     feats = template.clone()
@@ -255,7 +255,9 @@ def prepare_node_features(
     if in_dim is not None:
         feats = feats[:, :in_dim]
     if not skip_normalization and getattr(model, "x_mean", None) is not None:
-        feats = (feats - model.x_mean) / (model.x_std + EPS)
+        mean = model.x_mean.to(feats.device)
+        std = model.x_std.to(feats.device)
+        feats = (feats - mean) / (std + EPS)
     return feats
 
 
