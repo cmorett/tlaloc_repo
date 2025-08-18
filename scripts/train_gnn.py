@@ -8,6 +8,7 @@ import signal
 import warnings
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -20,6 +21,7 @@ import wntr
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 from typing import Optional, Sequence, List, Tuple, Dict
+from dataclasses import dataclass
 
 try:  # pylint: disable=ungrouped-imports
     from .reproducibility import configure_seeds, save_config
@@ -53,7 +55,7 @@ from models.gnn_surrogate import (
     MultiTaskGNNSurrogate,
 )
 
-from scripts.metrics import accuracy_metrics, export_table
+from scripts.metrics import export_table
 
 try:
     from .feature_utils import (
@@ -271,6 +273,38 @@ def compute_edge_attr_stats(edge_attr: np.ndarray) -> Tuple[torch.Tensor, torch.
     return attr_mean, attr_std
 
 
+@dataclass
+class RunningStats:
+    """Accumulate error statistics without storing full arrays."""
+
+    count: int = 0
+    abs_sum: float = 0.0
+    sq_sum: float = 0.0
+    abs_pct_sum: float = 0.0
+    max_err: float = 0.0
+
+    def update(self, pred, true) -> None:
+        p = np.asarray(pred, dtype=float)
+        t = np.asarray(true, dtype=float)
+        diff = p - t
+        abs_err = np.abs(diff)
+        self.count += abs_err.size
+        self.abs_sum += float(abs_err.sum())
+        self.sq_sum += float(np.square(diff).sum())
+        denom = np.maximum(np.abs(t), 1e-8)
+        self.abs_pct_sum += float((abs_err / denom).sum())
+        if abs_err.size:
+            self.max_err = max(self.max_err, float(abs_err.max()))
+
+    def metrics(self) -> List[float]:
+        if self.count == 0:
+            return [float("nan")] * 4
+        mae = self.abs_sum / self.count
+        rmse = np.sqrt(self.sq_sum / self.count)
+        mape = (self.abs_pct_sum / self.count) * 100.0
+        return [mae, rmse, mape, self.max_err]
+
+
 def save_scatter_plots(
     true_p,
     preds_p,
@@ -305,48 +339,30 @@ def save_scatter_plots(
 
 
 def save_accuracy_metrics(
-    true_p,
-    preds_p,
-    true_c,
-    preds_c,
+    pressure_stats: RunningStats,
     run_name: str,
     logs_dir: Optional[Path] = None,
-    mask: Optional[Sequence[bool]] = None,
-    true_f: Optional[Sequence[float]] = None,
-    preds_f: Optional[Sequence[float]] = None,
+    chlorine_stats: Optional[RunningStats] = None,
+    flow_stats: Optional[RunningStats] = None,
 ) -> None:
     """Compute and export accuracy metrics to a CSV file."""
     if logs_dir is None:
         logs_dir = REPO_ROOT / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    tp = _to_numpy(true_p)
-    pp = _to_numpy(preds_p)
-    tc = _to_numpy(true_c) if true_c is not None else None
-    pc = _to_numpy(preds_c) if preds_c is not None else None
 
-    if mask is not None:
-        m = np.asarray(mask, dtype=bool)
-        tp = tp[m]
-        pp = pp[m]
-        if tc is not None and pc is not None:
-            tc = tc[m]
-            pc = pc[m]
+    data = {"Pressure (m)": pressure_stats.metrics()}
+    if chlorine_stats is not None:
+        data["Chlorine (mg/L)"] = chlorine_stats.metrics()
+    if flow_stats is not None:
+        data["Flow (m^3/h)"] = flow_stats.metrics()
 
-    df = accuracy_metrics(
-        tp,
-        pp,
-        None if tc is None else np.expm1(tc) * 1000.0,
-        None if pc is None else np.expm1(pc) * 1000.0,
-    )
-    if true_f is not None and preds_f is not None:
-        tf = _to_numpy(true_f)
-        pf = _to_numpy(preds_f)
-        abs_f = np.abs(tf - pf)
-        mae_f = abs_f.mean()
-        rmse_f = np.sqrt(((tf - pf) ** 2).mean())
-        mape_f = (abs_f / np.maximum(np.abs(tf), 1e-8)).mean() * 100.0
-        max_err_f = abs_f.max()
-        df["Flow (m^3/h)"] = [mae_f, rmse_f, mape_f, max_err_f]
+    index = [
+        "Mean Absolute Error (MAE)",
+        "Root Mean Squared Error (RMSE)",
+        "Mean Absolute Percentage Error",
+        "Maximum Error",
+    ]
+    df = pd.DataFrame(data, index=index)
     export_table(df, str(logs_dir / f"accuracy_{run_name}.csv"))
 
 
@@ -2190,12 +2206,20 @@ def main(args: argparse.Namespace):
         )
         model.load_state_dict(state)
         model.eval()
-        preds_p = []
-        preds_c = []
-        preds_f = []
-        true_p = []
-        true_c = []
-        true_f = []
+
+        p_stats = RunningStats()
+        c_stats = RunningStats() if has_chlorine else None
+        f_stats = RunningStats()
+        sample_cap = int(max(args.eval_sample, 0))
+        sample_preds_p: List[float] = []
+        sample_true_p: List[float] = []
+        sample_preds_c: List[float] = []
+        sample_true_c: List[float] = []
+
+        exclude = set(wn.reservoir_name_list) | set(wn.tank_name_list)
+        node_mask_np = np.array([n not in exclude for n in wn.node_name_list])
+        node_mask = torch.tensor(node_mask_np, dtype=torch.bool, device=device)
+
         with torch.no_grad():
             if seq_mode:
                 ei = test_ds.edge_index.to(device)
@@ -2236,17 +2260,35 @@ def main(args: argparse.Namespace):
                             y_mean = model.y_mean.to(node_pred.device)
                             node_pred = node_pred * y_std + y_mean
                             Y_node = Y_node * y_std + y_mean
-                    preds_p.extend(node_pred[..., 0].cpu().numpy().ravel())
-                    true_p.extend(Y_node[..., 0].cpu().numpy().ravel())
+
+                    pred_p = node_pred[..., 0].reshape(-1, node_mask.numel())
+                    true_p = Y_node[..., 0].reshape(-1, node_mask.numel())
+                    pred_p = pred_p[:, node_mask].reshape(-1)
+                    true_p = true_p[:, node_mask].reshape(-1)
+                    p_stats.update(pred_p.cpu().numpy(), true_p.cpu().numpy())
+                    if sample_cap and len(sample_preds_p) < sample_cap:
+                        take = min(sample_cap - len(sample_preds_p), pred_p.numel())
+                        sample_preds_p.extend(pred_p[:take].cpu().numpy())
+                        sample_true_p.extend(true_p[:take].cpu().numpy())
+
                     if has_chlorine and node_pred.shape[-1] > 1:
-                        preds_c.extend(node_pred[..., 1].cpu().numpy().ravel())
-                        true_c.extend(Y_node[..., 1].cpu().numpy().ravel())
+                        pred_c = node_pred[..., 1].reshape(-1, node_mask.numel())
+                        true_c = Y_node[..., 1].reshape(-1, node_mask.numel())
+                        pred_c = pred_c[:, node_mask].reshape(-1)
+                        true_c = true_c[:, node_mask].reshape(-1)
+                        if c_stats is not None:
+                            c_stats.update(pred_c.cpu().numpy(), true_c.cpu().numpy())
+                        if sample_cap and len(sample_preds_c) < sample_cap:
+                            take = min(sample_cap - len(sample_preds_c), pred_c.numel())
+                            sample_preds_c.extend(pred_c[:take].cpu().numpy())
+                            sample_true_c.extend(true_c[:take].cpu().numpy())
+
                     if edge_pred is not None and Y_edge is not None:
-                        preds_f.extend(edge_pred.squeeze(-1).cpu().numpy().ravel())
-                        true_f.extend(Y_edge.squeeze(-1).cpu().numpy().ravel())
+                        pred_f = edge_pred.squeeze(-1).reshape(-1)
+                        true_f = Y_edge.squeeze(-1).reshape(-1)
+                        f_stats.update(pred_f.cpu().numpy(), true_f.cpu().numpy())
             else:
                 for batch in test_loader:
-
                     batch = batch.to(device, non_blocking=True)
                     with autocast(device_type=device.type, enabled=args.amp):
                         out = model(
@@ -2287,34 +2329,48 @@ def main(args: argparse.Namespace):
                         batch_y = batch.y
                         edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
                         edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
-                    preds_p.extend(node_out[:, 0].cpu().numpy())
-                    true_p.extend(batch_y[:, 0].cpu().numpy())
+
+                    mask_batch = node_mask.repeat(batch.num_graphs)
+                    pred_p = node_out[:, 0][mask_batch]
+                    true_p = batch_y[:, 0][mask_batch]
+                    p_stats.update(pred_p.cpu().numpy(), true_p.cpu().numpy())
+                    if sample_cap and len(sample_preds_p) < sample_cap:
+                        take = min(sample_cap - len(sample_preds_p), pred_p.numel())
+                        sample_preds_p.extend(pred_p[:take].cpu().numpy())
+                        sample_true_p.extend(true_p[:take].cpu().numpy())
+
                     if has_chlorine and node_out.shape[1] > 1:
-                        preds_c.extend(node_out[:, 1].cpu().numpy())
-                        true_c.extend(batch_y[:, 1].cpu().numpy())
+                        pred_c = node_out[:, 1][mask_batch]
+                        true_c = batch_y[:, 1][mask_batch]
+                        if c_stats is not None:
+                            c_stats.update(pred_c.cpu().numpy(), true_c.cpu().numpy())
+                        if sample_cap and len(sample_preds_c) < sample_cap:
+                            take = min(sample_cap - len(sample_preds_c), pred_c.numel())
+                            sample_preds_c.extend(pred_c[:take].cpu().numpy())
+                            sample_true_c.extend(true_c[:take].cpu().numpy())
+
                     if edge_out is not None and edge_y is not None:
-                        preds_f.extend(edge_out.squeeze(-1).cpu().numpy())
-                        true_f.extend(edge_y.squeeze(-1).cpu().numpy())
-        if preds_p:
-            preds_p = np.array(preds_p)
-            true_p = np.array(true_p)
-            if preds_f:
-                preds_f = np.array(preds_f)
-                true_f = np.array(true_f)
-            else:
-                preds_f = true_f = None
-            if has_chlorine and preds_c:
-                preds_c = np.array(preds_c)
-                true_c = np.array(true_c)
+                        pred_f = edge_out.squeeze(-1)
+                        true_f = edge_y.squeeze(-1)
+                        f_stats.update(pred_f.cpu().numpy(), true_f.cpu().numpy())
+
+        save_accuracy_metrics(
+            p_stats,
+            run_name,
+            chlorine_stats=c_stats,
+            flow_stats=f_stats if f_stats.count > 0 else None,
+        )
+
+        if sample_preds_p:
+            preds_p = np.asarray(sample_preds_p)
+            true_p = np.asarray(sample_true_p)
+            if sample_preds_c:
+                preds_c = np.asarray(sample_preds_c)
+                true_c = np.asarray(sample_true_c)
                 err_c = preds_c - true_c
             else:
                 preds_c = true_c = err_c = None
             err_p = preds_p - true_p
-
-            exclude = set(wn.reservoir_name_list) | set(wn.tank_name_list)
-            node_mask = np.array([n not in exclude for n in wn.node_name_list])
-            repeat = preds_p.size // node_mask.size
-            full_mask = np.tile(node_mask, repeat)
 
             save_scatter_plots(
                 true_p,
@@ -2322,28 +2378,19 @@ def main(args: argparse.Namespace):
                 true_c,
                 preds_c,
                 run_name,
-                mask=full_mask,
             )
             if seq_mode:
                 plot_sequence_prediction(model, test_ds, run_name)
-            save_accuracy_metrics(
-                true_p,
-                preds_p,
-                true_c,
-                preds_c,
-                run_name,
-                mask=full_mask,
-                true_f=true_f,
-                preds_f=preds_f,
-            )
-            plot_error_histograms(err_p, err_c, run_name, mask=full_mask)
+            plot_error_histograms(err_p, err_c, run_name)
             labels = ["demand", "pressure"]
             if has_chlorine:
                 labels.append("chlorine")
             labels.append("elevation")
             labels += [f"pump_{i}" for i in range(len(wn.pump_name_list))]
             X_flat = X_raw.reshape(-1, X_raw.shape[-1])
-            correlation_heatmap(X_flat, labels, run_name)
+            sample_size = min(sample_cap if sample_cap else X_flat.shape[0], X_flat.shape[0])
+            if sample_size > 0:
+                correlation_heatmap(X_flat[:sample_size], labels, run_name)
 
     cfg_extra = {
         "norm_stats_md5": norm_md5,
@@ -2422,6 +2469,12 @@ if __name__ == "__main__":
         type=int,
         default=5,
         help="Number of DataLoader workers",
+    )
+    parser.add_argument(
+        "--eval-sample",
+        type=int,
+        default=1000,
+        help="Number of predictions to retain for evaluation plots (0 disables)",
     )
     parser.add_argument(
         "--hidden-dim",

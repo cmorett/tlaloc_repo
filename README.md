@@ -67,12 +67,16 @@ these plots since their pressures are fixed. ``error_histograms_<run>.png``
 contains histograms and box plots of the prediction errors and the CSV
 ``logs/accuracy_<run>.csv`` records MAE, RMSE, MAPE and maximum error for
 pressure and chlorine. Reservoir and tank nodes are excluded from these metrics
-so outliers from fixed heads do not skew the results. Finally ``correlation_heatmap_<run>.png``
-visualises pairwise correlations between the unnormalised training features.
-When normalization is enabled (the default) the test data is scaled using the
-training statistics. During evaluation both predictions **and** the
-corresponding ground truth labels are transformed back to physical units before
-plotting.
+so outliers from fixed heads do not skew the results. Metrics are accumulated
+using running statistics so the full prediction arrays are never stored in
+memory. To limit the number of predictions retained for plotting, pass
+``--eval-sample N`` (default ``1000``) which keeps only the first ``N``
+predictions for the scatter and error plots. Set ``N=0`` to skip these
+figures entirely. Finally ``correlation_heatmap_<run>.png`` visualises pairwise
+correlations between the unnormalised training features. When normalization is
+enabled (the default) the test data is scaled using the training statistics.
+During evaluation both predictions **and** the corresponding ground truth
+labels are transformed back to physical units before plotting.
 The training script saves feature and target means and standard deviations on
 the model.  ``mpc_control.py`` loads these tensors and checks their shapes so
 inference uses the exact same statistics.  This normalization contract prevents
@@ -138,7 +142,7 @@ python scripts/train_gnn.py \
     --edge-index-path data/edge_index.npy --edge-attr-path data/edge_attr.npy \
     --inp-path CTown.inp \
     --epochs 100 --batch-size 32 --hidden-dim 128 --num-layers 4 \
-    --lstm-hidden 64 --workers 8 \
+    --lstm-hidden 64 --workers 8 --eval-sample 1000 \
     --dropout 0.1 --residual --early-stop-patience 10 \
     --weight-decay 1e-5 --w-press 5.0 --w-flow 3.0 --w-cl 0.0
 ```
