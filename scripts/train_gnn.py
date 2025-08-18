@@ -55,6 +55,33 @@ from models.gnn_surrogate import (
 
 from scripts.metrics import accuracy_metrics, export_table
 
+try:
+    from .feature_utils import (
+        compute_norm_stats,
+        apply_normalization,
+        SequenceDataset,
+        compute_sequence_norm_stats,
+        apply_sequence_normalization,
+        build_edge_attr,
+        build_pump_coeffs,
+        build_edge_type,
+        build_edge_pairs,
+        build_node_type,
+    )
+except ImportError:  # pragma: no cover
+    from feature_utils import (
+        compute_norm_stats,
+        apply_normalization,
+        SequenceDataset,
+        compute_sequence_norm_stats,
+        apply_sequence_normalization,
+        build_edge_attr,
+        build_pump_coeffs,
+        build_edge_type,
+        build_edge_pairs,
+        build_node_type,
+    )
+
 PUMP_LOSS_WARN_THRESHOLD = 1.0
 
 
@@ -157,30 +184,6 @@ def load_dataset(
             data_list.append(data)
 
     return data_list
-
-
-def compute_norm_stats(data_list):
-    """Compute mean and std per feature/target dimension from ``data_list``."""
-    all_x = torch.cat([d.x.float() for d in data_list], dim=0)
-    x_mean = all_x.mean(dim=0)
-    x_std = all_x.std(dim=0) + 1e-8
-
-    if any(getattr(d, "edge_y", None) is not None for d in data_list):
-        all_y_node = torch.cat([d.y.float() for d in data_list], dim=0)
-        all_y_edge = torch.cat([d.edge_y.float() for d in data_list], dim=0)
-        y_mean = {
-            "node_outputs": all_y_node.mean(dim=0),
-            "edge_outputs": all_y_edge.mean(dim=0),
-        }
-        y_std = {
-            "node_outputs": all_y_node.std(dim=0) + 1e-8,
-            "edge_outputs": all_y_edge.std(dim=0) + 1e-8,
-        }
-    else:
-        all_y = torch.cat([d.y.float() for d in data_list], dim=0)
-        y_mean = all_y.mean(dim=0)
-        y_std = all_y.std(dim=0) + 1e-8
-    return x_mean, x_std, y_mean, y_std
 
 
 def _to_numpy(seq: Sequence[float]) -> np.ndarray:
@@ -565,222 +568,6 @@ def plot_sequence_prediction(
     plt.close(fig)
 
 
-def apply_normalization(
-    data_list,
-    x_mean,
-    x_std,
-    y_mean,
-    y_std,
-    edge_attr_mean=None,
-    edge_attr_std=None,
-):
-    for d in data_list:
-        d.x = (d.x - x_mean) / x_std
-        if isinstance(y_mean, dict):
-            d.y = (d.y - y_mean["node_outputs"]) / y_std["node_outputs"]
-            if getattr(d, "edge_y", None) is not None:
-                d.edge_y = (d.edge_y - y_mean["edge_outputs"]) / y_std["edge_outputs"]
-        else:
-            d.y = (d.y - y_mean) / y_std
-        if edge_attr_mean is not None and getattr(d, "edge_attr", None) is not None:
-            d.edge_attr = (d.edge_attr - edge_attr_mean) / edge_attr_std
-
-
-class SequenceDataset(Dataset):
-    """Simple ``Dataset`` for sequence data supporting multi-task labels."""
-
-    def __init__(self, X: np.ndarray, Y: np.ndarray, edge_index: np.ndarray, edge_attr: Optional[np.ndarray], node_type: Optional[np.ndarray] = None, edge_type: Optional[np.ndarray] = None):
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.edge_index = torch.tensor(edge_index, dtype=torch.long)
-        self.edge_attr = None
-        if edge_attr is not None:
-            self.edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
-        self.node_type = None
-        if node_type is not None:
-            self.node_type = torch.tensor(node_type, dtype=torch.long)
-        self.edge_type = None
-        if edge_type is not None:
-            self.edge_type = torch.tensor(edge_type, dtype=torch.long)
-
-        first = Y[0]
-        if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
-            self.multi = True
-            self.Y = {
-                "node_outputs": torch.stack(
-                    [torch.tensor(y["node_outputs"], dtype=torch.float32) for y in Y]
-                ),
-                "edge_outputs": torch.stack(
-                    [torch.tensor(y["edge_outputs"], dtype=torch.float32) for y in Y]
-                ),
-            }
-        else:
-            self.multi = False
-            self.Y = torch.tensor(Y, dtype=torch.float32)
-
-    def __len__(self) -> int:  # type: ignore[override]
-        return self.X.shape[0]
-
-    def __getitem__(self, idx: int):  # type: ignore[override]
-        if self.multi:
-            return self.X[idx], {k: v[idx] for k, v in self.Y.items()}
-        return self.X[idx], self.Y[idx]
-
-
-def compute_sequence_norm_stats(X: np.ndarray, Y: np.ndarray):
-    """Return mean and std for sequence arrays including multi-task targets."""
-
-    x_flat = X.reshape(-1, X.shape[-1])
-    x_mean = torch.tensor(x_flat.mean(axis=0), dtype=torch.float32)
-    x_std = torch.tensor(x_flat.std(axis=0) + 1e-8, dtype=torch.float32)
-
-    first = Y[0]
-    if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
-        node = np.concatenate(
-            [y["node_outputs"].reshape(-1, y["node_outputs"].shape[-1]) for y in Y],
-            axis=0,
-        )
-        edge = np.stack(
-            [y["edge_outputs"].reshape(-1, y["edge_outputs"].shape[-1]) for y in Y],
-            axis=0,
-        )
-        edge_flat = edge.reshape(-1, edge.shape[-1])
-        y_mean = {
-            "node_outputs": torch.tensor(node.mean(axis=0), dtype=torch.float32),
-            "edge_outputs": torch.tensor(edge_flat.mean(axis=0), dtype=torch.float32),
-        }
-        y_std = {
-            "node_outputs": torch.tensor(node.std(axis=0) + 1e-8, dtype=torch.float32),
-            "edge_outputs": torch.tensor(edge_flat.std(axis=0) + 1e-8, dtype=torch.float32),
-        }
-    else:
-        y_flat = Y.reshape(-1, Y.shape[-1])
-        y_mean = torch.tensor(y_flat.mean(axis=0), dtype=torch.float32)
-        y_std = torch.tensor(y_flat.std(axis=0) + 1e-8, dtype=torch.float32)
-
-    return x_mean, x_std, y_mean, y_std
-
-
-def apply_sequence_normalization(
-    dataset: SequenceDataset,
-    x_mean: torch.Tensor,
-    x_std: torch.Tensor,
-    y_mean,
-    y_std,
-    edge_attr_mean: Optional[torch.Tensor] = None,
-    edge_attr_std: Optional[torch.Tensor] = None,
-) -> None:
-    dataset.X = (dataset.X - x_mean) / x_std
-    if dataset.multi:
-        for k in dataset.Y:
-            if k in y_mean:
-                dataset.Y[k] = (dataset.Y[k] - y_mean[k]) / y_std[k]
-    else:
-        dataset.Y = (dataset.Y - y_mean) / y_std
-    if edge_attr_mean is not None and dataset.edge_attr is not None:
-        dataset.edge_attr = (dataset.edge_attr - edge_attr_mean) / edge_attr_std
-
-
-def build_edge_attr(
-    wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
-) -> np.ndarray:
-    """Return edge attribute matrix [E,3] for given edge index."""
-    node_map = {n: i for i, n in enumerate(wn.node_name_list)}
-    attr_dict: Dict[Tuple[int, int], List[float]] = {}
-    for link_name in wn.link_name_list:
-        link = wn.get_link(link_name)
-        i = node_map[link.start_node.name]
-        j = node_map[link.end_node.name]
-        length = getattr(link, "length", 0.0) or 0.0
-        diam = getattr(link, "diameter", 0.0) or 0.0
-        rough = getattr(link, "roughness", 0.0) or 0.0
-        attr = [float(length), float(diam), float(rough)]
-        attr_dict[(i, j)] = attr
-        attr_dict[(j, i)] = attr
-    return np.array([attr_dict[(int(s), int(t))] for s, t in edge_index.T], dtype=np.float32)
-
-
-def build_pump_coeffs(
-    wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
-) -> np.ndarray:
-    """Return pump curve coefficients ``[A, B, C]`` for each edge."""
-
-    node_map = {n: i for i, n in enumerate(wn.node_name_list)}
-    coeff_dict: Dict[Tuple[int, int], List[float]] = {}
-    for pump_name in wn.pump_name_list:
-        pump = wn.get_link(pump_name)
-        i = node_map[pump.start_node.name]
-        j = node_map[pump.end_node.name]
-        a, b, c = pump.get_head_curve_coefficients()
-        coeff = [float(a), float(b), float(c)]
-        coeff_dict[(i, j)] = coeff
-        coeff_dict[(j, i)] = coeff
-    zero = [0.0, 0.0, 0.0]
-    return np.array([coeff_dict.get((int(s), int(t)), zero) for s, t in edge_index.T], dtype=np.float32)
-
-
-def build_edge_type(
-    wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
-) -> np.ndarray:
-    """Return integer edge type array matching ``edge_index``."""
-
-    node_map = {n: i for i, n in enumerate(wn.node_name_list)}
-    type_dict: Dict[Tuple[int, int], int] = {}
-    for link_name in wn.link_name_list:
-        link = wn.get_link(link_name)
-        i = node_map[link.start_node.name]
-        j = node_map[link.end_node.name]
-        if link_name in wn.pipe_name_list:
-            t = 0  # pipe connection
-        elif link_name in wn.pump_name_list:
-            t = 1  # pump connection
-        elif link_name in wn.valve_name_list:
-            t = 2  # valve connection
-        else:
-            t = 0
-        type_dict[(i, j)] = t
-        type_dict[(j, i)] = t
-
-    return np.array([type_dict[(int(s), int(t))] for s, t in edge_index.T], dtype=np.int64)
-
-
-def build_edge_pairs(
-    edge_index: np.ndarray, edge_type: Optional[np.ndarray] = None
-) -> List[Tuple[int, int]]:
-    """Return list of ``(i, j)`` tuples pairing forward and reverse edges.
-
-    When ``edge_type`` is provided, only edges with type ``0`` (pipes) are
-    paired.  This avoids including pumps or valves in the symmetry penalty.
-    """
-
-    pair_map: Dict[Tuple[int, int], int] = {}
-    pairs: List[Tuple[int, int]] = []
-    for eid in range(edge_index.shape[1]):
-        u = int(edge_index[0, eid])
-        v = int(edge_index[1, eid])
-        if (v, u) in pair_map:
-            j = pair_map[(v, u)]
-            if edge_type is None or (edge_type[eid] == 0 and edge_type[j] == 0):
-                pairs.append((j, eid))
-        else:
-            pair_map[(u, v)] = eid
-    return pairs
-
-
-def build_node_type(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
-    """Return integer node type array for the network nodes."""
-
-    types = []
-    for n in wn.node_name_list:
-        if n in wn.junction_name_list:
-            types.append(0)
-        elif n in wn.tank_name_list:
-            types.append(1)
-        elif n in wn.reservoir_name_list:
-            types.append(2)
-        else:
-            # Pumps and valves are modeled as edges; keep unique index
-            types.append(0)
-    return np.array(types, dtype=np.int64)
 
 
 def build_loss_mask(wn: wntr.network.WaterNetworkModel) -> torch.Tensor:

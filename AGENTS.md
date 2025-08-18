@@ -18,6 +18,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `experiments_validation.py` – validate the surrogate, compare baselines and aggregate results.
   - `metrics.py` – report surrogate accuracy, MPC control and runtime metrics.
   - `mpc_control.py` – run gradient-based MPC using the trained surrogate.
+  - `feature_utils.py` – shared feature construction and normalization helpers.
   - `ablation_study.py` – run a small grid of model variants and report validation pressure MAE.
   - `train_gnn.py` – train a graph neural network surrogate on generated data.
   - `sweep_training.py` – run hyperparameter sweeps over loss weights and architecture.
