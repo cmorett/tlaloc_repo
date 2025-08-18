@@ -6,27 +6,44 @@ import wntr
 EPS = 1e-8
 
 
-def compute_norm_stats(data_list):
-    """Compute mean and std per feature/target dimension from ``data_list``."""
-    all_x = torch.cat([d.x.float() for d in data_list], dim=0)
-    x_mean = all_x.mean(dim=0)
-    x_std = all_x.std(dim=0) + 1e-8
+def compute_norm_stats(data_list, per_node: bool = False):
+    """Compute mean and std per feature/target dimension from ``data_list``.
+
+    When ``per_node`` is ``True`` statistics are computed for each node index
+    separately, otherwise they are aggregated across all nodes.
+    """
+    if per_node:
+        all_x = torch.stack([d.x.float() for d in data_list], dim=0)
+        x_mean = all_x.mean(dim=0)
+        x_std = all_x.std(dim=0) + EPS
+    else:
+        all_x = torch.cat([d.x.float() for d in data_list], dim=0)
+        x_mean = all_x.mean(dim=0)
+        x_std = all_x.std(dim=0) + EPS
 
     if any(getattr(d, "edge_y", None) is not None for d in data_list):
-        all_y_node = torch.cat([d.y.float() for d in data_list], dim=0)
+        if per_node:
+            all_y_node = torch.stack([d.y.float() for d in data_list], dim=0)
+        else:
+            all_y_node = torch.cat([d.y.float() for d in data_list], dim=0)
         all_y_edge = torch.cat([d.edge_y.float() for d in data_list], dim=0)
         y_mean = {
             "node_outputs": all_y_node.mean(dim=0),
             "edge_outputs": all_y_edge.mean(dim=0),
         }
         y_std = {
-            "node_outputs": all_y_node.std(dim=0) + 1e-8,
-            "edge_outputs": all_y_edge.std(dim=0) + 1e-8,
+            "node_outputs": all_y_node.std(dim=0) + EPS,
+            "edge_outputs": all_y_edge.std(dim=0) + EPS,
         }
     else:
-        all_y = torch.cat([d.y.float() for d in data_list], dim=0)
-        y_mean = all_y.mean(dim=0)
-        y_std = all_y.std(dim=0) + 1e-8
+        if per_node:
+            all_y = torch.stack([d.y.float() for d in data_list], dim=0)
+            y_mean = all_y.mean(dim=0)
+            y_std = all_y.std(dim=0) + EPS
+        else:
+            all_y = torch.cat([d.y.float() for d in data_list], dim=0)
+            y_mean = all_y.mean(dim=0)
+            y_std = all_y.std(dim=0) + EPS
     return x_mean, x_std, y_mean, y_std
 
 
@@ -38,7 +55,9 @@ def apply_normalization(
     y_std,
     edge_attr_mean=None,
     edge_attr_std=None,
+    per_node: bool = False,
 ):
+    del per_node  # unused but kept for API symmetry
     for d in data_list:
         d.x = (d.x - x_mean) / x_std
         if isinstance(y_mean, dict):
@@ -99,36 +118,47 @@ class SequenceDataset(torch.utils.data.Dataset):
         return self.X[idx], self.Y[idx]
 
 
-def compute_sequence_norm_stats(X: np.ndarray, Y: np.ndarray):
+def compute_sequence_norm_stats(
+    X: np.ndarray, Y: np.ndarray, per_node: bool = False
+):
     """Return mean and std for sequence arrays including multi-task targets."""
 
-    x_flat = X.reshape(-1, X.shape[-1])
-    x_mean = torch.tensor(x_flat.mean(axis=0), dtype=torch.float32)
-    x_std = torch.tensor(x_flat.std(axis=0) + 1e-8, dtype=torch.float32)
+    if per_node:
+        flat = X.reshape(-1, X.shape[-2], X.shape[-1])
+        x_mean = torch.tensor(flat.mean(axis=0), dtype=torch.float32)
+        x_std = torch.tensor(flat.std(axis=0) + EPS, dtype=torch.float32)
+    else:
+        x_flat = X.reshape(-1, X.shape[-1])
+        x_mean = torch.tensor(x_flat.mean(axis=0), dtype=torch.float32)
+        x_std = torch.tensor(x_flat.std(axis=0) + EPS, dtype=torch.float32)
 
     first = Y[0]
     if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
-        node = np.concatenate(
-            [y["node_outputs"].reshape(-1, y["node_outputs"].shape[-1]) for y in Y],
-            axis=0,
-        )
-        edge = np.stack(
-            [y["edge_outputs"].reshape(-1, y["edge_outputs"].shape[-1]) for y in Y],
-            axis=0,
-        )
+        node = np.stack([y["node_outputs"] for y in Y])
+        if per_node:
+            node_flat = node.reshape(-1, node.shape[-2], node.shape[-1])
+            node_mean = torch.tensor(node_flat.mean(axis=0), dtype=torch.float32)
+            node_std = torch.tensor(node_flat.std(axis=0) + EPS, dtype=torch.float32)
+        else:
+            node_flat = node.reshape(-1, node.shape[-1])
+            node_mean = torch.tensor(node_flat.mean(axis=0), dtype=torch.float32)
+            node_std = torch.tensor(node_flat.std(axis=0) + EPS, dtype=torch.float32)
+
+        edge = np.stack([y["edge_outputs"] for y in Y])
         edge_flat = edge.reshape(-1, edge.shape[-1])
-        y_mean = {
-            "node_outputs": torch.tensor(node.mean(axis=0), dtype=torch.float32),
-            "edge_outputs": torch.tensor(edge_flat.mean(axis=0), dtype=torch.float32),
-        }
-        y_std = {
-            "node_outputs": torch.tensor(node.std(axis=0) + 1e-8, dtype=torch.float32),
-            "edge_outputs": torch.tensor(edge_flat.std(axis=0) + 1e-8, dtype=torch.float32),
-        }
+        edge_mean = torch.tensor(edge_flat.mean(axis=0), dtype=torch.float32)
+        edge_std = torch.tensor(edge_flat.std(axis=0) + EPS, dtype=torch.float32)
+        y_mean = {"node_outputs": node_mean, "edge_outputs": edge_mean}
+        y_std = {"node_outputs": node_std, "edge_outputs": edge_std}
     else:
-        y_flat = Y.reshape(-1, Y.shape[-1])
-        y_mean = torch.tensor(y_flat.mean(axis=0), dtype=torch.float32)
-        y_std = torch.tensor(y_flat.std(axis=0) + 1e-8, dtype=torch.float32)
+        if per_node:
+            y_flat = Y.reshape(-1, Y.shape[-2], Y.shape[-1])
+            y_mean = torch.tensor(y_flat.mean(axis=0), dtype=torch.float32)
+            y_std = torch.tensor(y_flat.std(axis=0) + EPS, dtype=torch.float32)
+        else:
+            y_flat = Y.reshape(-1, Y.shape[-1])
+            y_mean = torch.tensor(y_flat.mean(axis=0), dtype=torch.float32)
+            y_std = torch.tensor(y_flat.std(axis=0) + EPS, dtype=torch.float32)
 
     return x_mean, x_std, y_mean, y_std
 
@@ -141,7 +171,9 @@ def apply_sequence_normalization(
     y_std,
     edge_attr_mean: Optional[torch.Tensor] = None,
     edge_attr_std: Optional[torch.Tensor] = None,
+    per_node: bool = False,
 ) -> None:
+    del per_node  # parameter kept for API symmetry
     dataset.X = (dataset.X - x_mean) / x_std
     if dataset.multi:
         for k in dataset.Y:
