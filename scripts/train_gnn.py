@@ -87,6 +87,27 @@ except ImportError:  # pragma: no cover
 PUMP_LOSS_WARN_THRESHOLD = 1.0
 
 
+def summarize_target_norm_stats(y_mean, y_std, has_chlorine: bool):
+    """Return scalar normalization stats for logging.
+
+    ``y_mean`` and ``y_std`` may contain per-node statistics. This helper
+    aggregates them across nodes before extracting the pressure and chlorine
+    means and standard deviations."""
+    if isinstance(y_mean, dict):
+        node_mean = y_mean["node_outputs"]
+        node_std = y_std["node_outputs"]
+    else:
+        node_mean = y_mean
+        node_std = y_std
+    if node_mean.dim() > 1:
+        node_mean = node_mean.mean(dim=0)
+        node_std = node_std.mean(dim=0)
+    pressure = (node_mean[0].item(), node_std[0].item())
+    chlorine = None
+    if has_chlorine and node_mean.numel() > 1:
+        chlorine = (node_mean[1].item(), node_std[1].item())
+    return pressure, chlorine
+
 
 def load_dataset(
     x_path: str,
@@ -1543,22 +1564,12 @@ def main(args: argparse.Namespace):
                     per_node=args.per_node_norm,
                 )
         print("Target normalization stats:")
-        if isinstance(y_mean, dict):
-            print(
-                "Pressure mean/std:",
-                y_mean["node_outputs"][0].item(),
-                y_std["node_outputs"][0].item(),
-            )
-            if has_chlorine:
-                print(
-                    "Chlorine mean/std:",
-                    y_mean["node_outputs"][1].item(),
-                    y_std["node_outputs"][1].item(),
-                )
-        else:
-            print("Pressure mean/std:", y_mean[0].item(), y_std[0].item())
-            if has_chlorine and len(y_mean) > 1:
-                print("Chlorine mean/std:", y_mean[1].item(), y_std[1].item())
+        pressure_stats, chlorine_stats = summarize_target_norm_stats(
+            y_mean, y_std, has_chlorine
+        )
+        print("Pressure mean/std:", *pressure_stats)
+        if chlorine_stats is not None:
+            print("Chlorine mean/std:", *chlorine_stats)
 
         import hashlib
 
