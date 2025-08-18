@@ -39,6 +39,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from models.loss_utils import compute_mass_balance_loss
+try:
+    from .feature_utils import build_static_node_features, prepare_node_features
+except ImportError:  # pragma: no cover
+    from feature_utils import build_static_node_features, prepare_node_features
 
 # Compute absolute path to the repository's data directory so that results are
 # always written inside the project regardless of the current working
@@ -139,6 +143,7 @@ from mpc_control import (
 )
 
 
+
 def _prepare_features(
     wn: wntr.network.WaterNetworkModel,
     pressures: Dict[str, float],
@@ -146,64 +151,40 @@ def _prepare_features(
     pump_controls: np.ndarray,
     model: torch.nn.Module,
     demands: Optional[Dict[str, float]] = None,
+    skip_normalization: bool = False,
 ) -> torch.Tensor:
-    """Build node features including pump controls.
+    """Assemble and optionally normalize node features."""
 
-    Parameters
-    ----------
-    wn : WaterNetworkModel
-        EPANET network instance.
-    pressures, chlorine : dict
-        Node pressure and chlorine dictionaries at the current time step.
-
-    Returns
-    -------
-    torch.Tensor
-        Tensor of shape ``[num_nodes, 4 + num_pumps]`` with
-        [dynamic demand, pressure, chlorine, elevation, pump1, ...].
-    """
-
-    num_nodes = len(wn.node_name_list)
     num_pumps = len(pump_controls)
-    feats = torch.empty(
-        (num_nodes, 4 + num_pumps),
+    if not hasattr(_prepare_features, "template"):
+        _prepare_features.template = build_static_node_features(wn, num_pumps)
+    template = _prepare_features.template
+
+    pressures_t = torch.tensor(
+        [
+            wn.get_node(n).base_head if n in wn.reservoir_name_list else pressures.get(n, 0.0)
+            for n in wn.node_name_list
+        ],
         dtype=torch.float32,
-        pin_memory=torch.cuda.is_available(),
+    )
+    chlorine_t = torch.tensor(
+        [chlorine.get(n, 0.0) for n in wn.node_name_list], dtype=torch.float32
     )
     pump_t = torch.tensor(pump_controls, dtype=torch.float32)
-    for idx, name in enumerate(wn.node_name_list):
-        node = wn.get_node(name)
-        if demands is not None and name in demands:
-            demand = demands.get(name, 0.0)
-        elif name in wn.junction_name_list:
-            demand = node.demand_timeseries_list[0].base_value
-        else:
-            demand = 0.0
-
-        if name in wn.junction_name_list or name in wn.tank_name_list:
-            elev = node.elevation
-        elif name in wn.reservoir_name_list:
-            # ``Reservoir`` objects store their hydraulic head in ``base_head``
-            # and expose ``head`` as ``None`` which previously caused a
-            # ``TypeError`` when converting features to a tensor.
-            elev = node.base_head
-        else:
-            elev = node.head
-
-        if elev is None:
-            elev = 0.0
-
-        feats[idx, 0] = float(demand)
-        if name in wn.reservoir_name_list:
-            p_val = float(node.base_head)
-        else:
-            p_val = pressures.get(name, 0.0)
-        feats[idx, 1] = p_val
-        feats[idx, 2] = np.log1p(chlorine.get(name, 0.0) / 1000.0)
-        feats[idx, 3] = float(elev)
-        feats[idx, 4:] = pump_t
-    return feats
-
+    demands_t = None
+    if demands is not None:
+        demands_t = torch.tensor(
+            [demands.get(n, 0.0) for n in wn.node_name_list], dtype=torch.float32
+        )
+    return prepare_node_features(
+        template,
+        pressures_t,
+        chlorine_t,
+        pump_t,
+        model,
+        demands_t,
+        skip_normalization=skip_normalization,
+    )
 
 def validate_surrogate(
     model: torch.nn.Module,
@@ -309,24 +290,22 @@ def validate_surrogate(
                 controls = pump_array[i]
                 feats = _prepare_features(wn, p, c, controls, model, dem)
                 if debug and first and i == 0:
-                    feats_np = feats.cpu().numpy()
+                    pre = _prepare_features(wn, p, c, controls, model, dem, skip_normalization=True)
+                    feats_np = pre.cpu().numpy()
                     debug_info["node_pre_norm_stats"] = {
                         "min": feats_np.min(axis=0).tolist(),
                         "max": feats_np.max(axis=0).tolist(),
                         "mean": feats_np.mean(axis=0).tolist(),
                         "std": feats_np.std(axis=0).tolist(),
                     }
+                    x_np = feats.cpu().numpy()
+                    debug_info["node_post_norm_stats"] = {
+                        "min": x_np.min(axis=0).tolist(),
+                        "max": x_np.max(axis=0).tolist(),
+                        "mean": x_np.mean(axis=0).tolist(),
+                        "std": x_np.std(axis=0).tolist(),
+                    }
                 x = feats.to(device, non_blocking=True)
-                if hasattr(model, "x_mean") and model.x_mean is not None:
-                    x = (x - model.x_mean) / model.x_std
-                    if debug and first and i == 0:
-                        x_np = x.cpu().numpy()
-                        debug_info["node_post_norm_stats"] = {
-                            "min": x_np.min(axis=0).tolist(),
-                            "max": x_np.max(axis=0).tolist(),
-                            "mean": x_np.mean(axis=0).tolist(),
-                            "std": x_np.std(axis=0).tolist(),
-                        }
                 if hasattr(model, "rnn"):
                     seq_in = x.unsqueeze(0).unsqueeze(0)
                     pred = model(
@@ -551,8 +530,6 @@ def rollout_surrogate(
                 controls = pump_array[t]
                 feats = _prepare_features(wn, current_p, current_c, controls, model, dem)
                 x = feats.to(device, non_blocking=True)
-                if hasattr(model, "x_mean") and model.x_mean is not None:
-                    x = (x - model.x_mean) / model.x_std
                 if hasattr(model, "rnn"):
                     seq_in = x.unsqueeze(0).unsqueeze(0)
                     pred = model(

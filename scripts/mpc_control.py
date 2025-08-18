@@ -35,16 +35,24 @@ try:
         HydroConv,
         RecurrentGNNSurrogate,
         MultiTaskGNNSurrogate,
+    )  # type: ignore
+    from .feature_utils import (
         build_edge_attr,
         build_node_type,
-    )  # type: ignore
+        build_static_node_features,
+        prepare_node_features,
+    )
 except ImportError:  # pragma: no cover - executed when run as a script
     from train_gnn import (
         HydroConv,
         RecurrentGNNSurrogate,
         MultiTaskGNNSurrogate,
+    )
+    from feature_utils import (
         build_edge_attr,
         build_node_type,
+        build_static_node_features,
+        prepare_node_features,
     )
 import wntr
 from wntr.metrics.economic import pump_energy
@@ -204,23 +212,7 @@ def load_network(
 
     static_feats = None
     if return_features:
-        num_nodes = len(wn.node_name_list)
-        num_pumps = len(wn.pump_name_list)
-        static_feats = torch.zeros(num_nodes, 4 + num_pumps, dtype=torch.float32)
-        for name, idx in node_to_index.items():
-            node = wn.get_node(name)
-            if name in wn.junction_name_list:
-                demand = node.demand_timeseries_list[0].base_value
-            else:
-                demand = 0.0
-            if name in wn.junction_name_list or name in wn.tank_name_list:
-                elev = node.elevation
-            elif name in wn.reservoir_name_list:
-                elev = node.base_head
-            else:
-                elev = node.head
-            static_feats[idx, 0] = float(demand)
-            static_feats[idx, 3] = float(elev or 0.0)
+        static_feats = build_static_node_features(wn, len(wn.pump_name_list))
 
     if return_edge_attr:
         edge_attr = build_edge_attr(wn, edge_index.numpy()).astype(np.float32)
@@ -852,56 +844,6 @@ def compute_demand_vectors(
     return out
 
 
-def prepare_node_features(
-    template: torch.Tensor,
-    pressures: torch.Tensor,
-    chlorine: torch.Tensor,
-    pump_speeds: torch.Tensor,
-    model: GNNSurrogate,
-    demands: Optional[torch.Tensor] = None,
-    skip_normalization: bool = False,
-) -> torch.Tensor:
-    """Assemble node features using precomputed static attributes.
-
-    Parameters
-    ----------
-    demands : torch.Tensor, optional
-        Per-node demand values for the current time step. When ``None`` the
-        base demand stored in ``template`` is used.
-    """
-    num_nodes = template.size(0)
-    num_pumps = pump_speeds.size(-1)
-    pump_speeds = pump_speeds.to(dtype=torch.float32, device=template.device)
-
-    if pressures.dim() == 2:
-        batch_size = pressures.size(0)
-        feats = template.expand(batch_size, num_nodes, template.size(1)).clone()
-        if demands is not None:
-            feats[:, :, 0] = demands
-        feats[:, :, 1] = pressures
-        feats[:, :, 2] = torch.log1p(chlorine / 1000.0)
-        feats[:, :, 4 : 4 + num_pumps] = pump_speeds.view(batch_size, 1, -1).expand(batch_size, num_nodes, num_pumps)
-        in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
-        if in_dim is not None:
-            feats = feats[:, :, :in_dim]
-        if not skip_normalization and getattr(model, "x_mean", None) is not None:
-            feats = (feats - model.x_mean.view(1, 1, -1)) / (
-                model.x_std.view(1, 1, -1) + EPS
-            )
-        return feats.view(batch_size * num_nodes, -1)
-
-    feats = template.clone()
-    if demands is not None:
-        feats[:, 0] = demands
-    feats[:, 1] = pressures
-    feats[:, 2] = torch.log1p(chlorine / 1000.0)
-    feats[:, 4 : 4 + num_pumps] = pump_speeds.view(1, -1).expand(num_nodes, num_pumps)
-    in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
-    if in_dim is not None:
-        feats = feats[:, :in_dim]
-    if not skip_normalization and getattr(model, "x_mean", None) is not None:
-        feats = (feats - model.x_mean) / (model.x_std + EPS)
-    return feats
 
 
 def compute_mpc_cost(
