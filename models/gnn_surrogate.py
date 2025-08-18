@@ -430,18 +430,20 @@ class MultiTaskGNNSurrogate(nn.Module):
         min_p = min_c = 0.0
         if getattr(self, "y_mean", None) is not None:
             if isinstance(self.y_mean, dict):
-                p_mean = self.y_mean["node_outputs"][0].to(node_pred.device)
-                p_std = self.y_std["node_outputs"][0].to(node_pred.device)
-                if self.y_mean["node_outputs"].numel() > 1:
-                    c_mean = self.y_mean["node_outputs"][1].to(node_pred.device)
-                    c_std = self.y_std["node_outputs"][1].to(node_pred.device)
+                node_mean = self.y_mean["node_outputs"]
+                node_std = self.y_std["node_outputs"]
+                p_mean = node_mean[..., 0].to(node_pred.device)
+                p_std = node_std[..., 0].to(node_pred.device)
+                if node_mean.shape[-1] > 1:
+                    c_mean = node_mean[..., 1].to(node_pred.device)
+                    c_std = node_std[..., 1].to(node_pred.device)
                 else:
                     c_mean = torch.tensor(0.0, device=node_pred.device)
                     c_std = torch.tensor(1.0, device=node_pred.device)
             else:
                 p_mean = self.y_mean[0].to(node_pred.device)
                 p_std = self.y_std[0].to(node_pred.device)
-                if self.y_mean.numel() > 1:
+                if self.y_mean.shape[0] > 1:
                     c_mean = self.y_mean[1].to(node_pred.device)
                     c_std = self.y_std[1].to(node_pred.device)
                 else:
