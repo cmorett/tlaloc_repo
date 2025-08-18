@@ -920,6 +920,15 @@ def train_sequence(
     press_total = cl_total = flow_total = 0.0
     mass_total = head_total = sym_total = pump_total = 0.0
     mass_imb_total = head_viol_total = 0.0
+    edge_index = edge_index.to(device)
+    edge_attr = edge_attr.to(device)
+    edge_attr_phys = edge_attr_phys.to(device)
+    if node_type is not None:
+        node_type = node_type.to(device)
+    if edge_type is not None:
+        edge_type = edge_type.to(device)
+    if pump_coeffs is not None:
+        pump_coeffs = pump_coeffs.to(device)
     node_count = int(edge_index.max()) + 1
     data_iter = iter(tqdm(loader, disable=not progress))
     while True:
@@ -943,14 +952,8 @@ def train_sequence(
             not isinstance(Y_seq, dict) and torch.isnan(Y_seq).any()
         ):
             raise ValueError("NaN detected in training batch")
-        if node_type is not None:
-            nt = node_type.to(device)
-        else:
-            nt = None
-        if edge_type is not None:
-            et = edge_type.to(device)
-        else:
-            et = None
+        nt = node_type
+        et = edge_type
         if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
             init_press = X_seq[:, 0, model.tank_indices, 1]
             init_levels = init_press * model.tank_areas
@@ -959,8 +962,8 @@ def train_sequence(
         with autocast(device_type=device.type, enabled=amp):
             preds = model(
                 X_seq,
-                edge_index.to(device),
-                edge_attr.to(device),
+                edge_index,
+                edge_attr,
                 nt,
                 et,
             )
@@ -1009,7 +1012,7 @@ def train_sequence(
                     demand_mb = demand_mb * dem_std + dem_mean
                 mass_loss, mass_imb = compute_mass_balance_loss(
                     flows_mb,
-                    edge_index.to(device),
+                    edge_index,
                     node_count,
                     demand=demand_mb,
                     node_type=nt,
@@ -1047,8 +1050,8 @@ def train_sequence(
                 head_loss, head_violation = pressure_headloss_consistency_loss(
                     press,
                     flow,
-                    edge_index.to(device),
-                    edge_attr_phys.to(device),
+                    edge_index,
+                    edge_attr_phys,
                     edge_type=et,
                     return_violation=True,
                 )
@@ -1066,8 +1069,8 @@ def train_sequence(
                         flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
                 pump_loss_val = pump_curve_loss(
                     flow_pc,
-                    pump_coeffs.to(device),
-                    edge_index.to(device),
+                    pump_coeffs,
+                    edge_index,
                     et,
                 )
             else:
@@ -1166,6 +1169,15 @@ def evaluate_sequence(
     press_total = cl_total = flow_total = 0.0
     mass_total = head_total = sym_total = pump_total = 0.0
     mass_imb_total = head_viol_total = 0.0
+    edge_index = edge_index.to(device)
+    edge_attr = edge_attr.to(device)
+    edge_attr_phys = edge_attr_phys.to(device)
+    if node_type is not None:
+        node_type = node_type.to(device)
+    if edge_type is not None:
+        edge_type = edge_type.to(device)
+    if pump_coeffs is not None:
+        pump_coeffs = pump_coeffs.to(device)
     node_count = int(edge_index.max()) + 1
     data_iter = iter(tqdm(loader, disable=not progress))
     with torch.no_grad():
@@ -1179,14 +1191,8 @@ def evaluate_sequence(
                     break
                 raise
             X_seq = X_seq.to(device)
-            if node_type is not None:
-                nt = node_type.to(device)
-            else:
-                nt = None
-            if edge_type is not None:
-                et = edge_type.to(device)
-            else:
-                et = None
+            nt = node_type
+            et = edge_type
             if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
                 init_press = X_seq[:, 0, model.tank_indices, 1]
                 init_levels = init_press * model.tank_areas
@@ -1194,8 +1200,8 @@ def evaluate_sequence(
             with autocast(device_type=device.type, enabled=amp):
                 preds = model(
                     X_seq,
-                    edge_index.to(device),
-                    edge_attr.to(device),
+                    edge_index,
+                    edge_attr,
                     nt,
                     et,
                 )
@@ -1237,7 +1243,7 @@ def evaluate_sequence(
                             demand_mb = demand_mb * dem_std + dem_mean
                         mass_loss, mass_imb = compute_mass_balance_loss(
                             flows_mb,
-                            edge_index.to(device),
+                            edge_index,
                             node_count,
                             demand=demand_mb,
                             node_type=nt,
@@ -1275,8 +1281,8 @@ def evaluate_sequence(
                         head_loss, head_violation = pressure_headloss_consistency_loss(
                             press,
                             flow,
-                            edge_index.to(device),
-                            edge_attr_phys.to(device),
+                            edge_index,
+                            edge_attr_phys,
                             edge_type=et,
                             return_violation=True,
                         )
@@ -1294,8 +1300,8 @@ def evaluate_sequence(
                                 flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
                         pump_loss_val = pump_curve_loss(
                             flow_pc,
-                            pump_coeffs.to(device),
-                            edge_index.to(device),
+                            pump_coeffs,
+                            edge_index,
                             et,
                         )
                     else:
