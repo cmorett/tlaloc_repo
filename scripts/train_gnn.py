@@ -1064,12 +1064,15 @@ def train_sequence(
                 flow = edge_preds.squeeze(-1)
                 if hasattr(model, 'y_mean') and model.y_mean is not None:
                     if isinstance(model.y_mean, dict):
-                        p_mean = model.y_mean['node_outputs'][0].to(device)
-                        p_std = model.y_std['node_outputs'][0].to(device)
+                        p_mean = model.y_mean['node_outputs'].to(device)
+                        p_std = model.y_std['node_outputs'].to(device)
+                        if p_mean.ndim == 2:
+                            p_mean = p_mean[..., 0]
+                            p_std = p_std[..., 0]
+                        press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                         q_mean = model.y_mean['edge_outputs'].to(device)
                         q_std = model.y_std['edge_outputs'].to(device)
-                        press = press * p_std + p_mean
-                        flow = flow * q_std + q_mean
+                        flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                     else:
                         press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
                 head_loss, head_violation = pressure_headloss_consistency_loss(
@@ -1299,12 +1302,15 @@ def evaluate_sequence(
                         flow = edge_preds.squeeze(-1)
                         if hasattr(model, 'y_mean') and model.y_mean is not None:
                             if isinstance(model.y_mean, dict):
-                                p_mean = model.y_mean['node_outputs'][0].to(device)
-                                p_std = model.y_std['node_outputs'][0].to(device)
+                                p_mean = model.y_mean['node_outputs'].to(device)
+                                p_std = model.y_std['node_outputs'].to(device)
+                                if p_mean.ndim == 2:
+                                    p_mean = p_mean[..., 0]
+                                    p_std = p_std[..., 0]
+                                press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                                 q_mean = model.y_mean['edge_outputs'].to(device)
                                 q_std = model.y_std['edge_outputs'].to(device)
-                                press = press * p_std + p_mean
-                                flow = flow * q_std + q_mean
+                                flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                             else:
                                 press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
                         head_loss, head_violation = pressure_headloss_consistency_loss(
