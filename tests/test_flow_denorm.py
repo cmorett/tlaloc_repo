@@ -62,3 +62,14 @@ def test_mass_balance_denorm_per_edge():
         pressure_loss=False,
     )
     assert abs(losses[3]) < 1e-6
+
+
+def test_edge_denorm_shapes_match():
+    edge_pred = torch.zeros(1, 1, 2, 1)
+    y_std_edge = torch.ones(2)
+    y_mean_edge = torch.zeros(2)
+    edge_pred = edge_pred.squeeze(-1)
+    edge_pred = edge_pred * y_std_edge + y_mean_edge
+    true_edge = torch.zeros(1, 1, 2)
+    true_edge = true_edge * y_std_edge + y_mean_edge
+    assert edge_pred.shape == true_edge.shape
