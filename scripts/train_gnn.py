@@ -1028,8 +1028,12 @@ def train_sequence(
                     dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
                 demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
                 if hasattr(model, "x_mean") and model.x_mean is not None:
-                    dem_mean = model.x_mean[0].to(device)
-                    dem_std = model.x_std[0].to(device)
+                    if model.x_mean.ndim == 2:
+                        dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
+                        dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
+                    else:
+                        dem_mean = model.x_mean[0].to(device)
+                        dem_std = model.x_std[0].to(device)
                     demand_mb = demand_mb * dem_std + dem_mean
                 mass_loss, mass_imb = compute_mass_balance_loss(
                     flows_mb,
@@ -1259,8 +1263,12 @@ def evaluate_sequence(
                             dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
                         demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
                         if hasattr(model, "x_mean") and model.x_mean is not None:
-                            dem_mean = model.x_mean[0].to(device)
-                            dem_std = model.x_std[0].to(device)
+                            if model.x_mean.ndim == 2:
+                                dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
+                                dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
+                            else:
+                                dem_mean = model.x_mean[0].to(device)
+                                dem_std = model.x_std[0].to(device)
                             demand_mb = demand_mb * dem_std + dem_mean
                         mass_loss, mass_imb = compute_mass_balance_loss(
                             flows_mb,
