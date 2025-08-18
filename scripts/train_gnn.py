@@ -1745,6 +1745,8 @@ def main(args: argparse.Namespace):
         "edge_scaler": "MinMax",
         "log_roughness": True,
     }
+    if norm_md5 is not None:
+        model_meta["norm_stats_md5"] = norm_md5
 
     # expose normalization stats on the model for later un-normalisation
     if args.normalize:
