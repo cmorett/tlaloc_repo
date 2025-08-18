@@ -212,6 +212,8 @@ curve terms during the first pass over the training data. These values are used
 to normalise the respective losses before applying the user-specified weights.
 The automatically detected scales can be overridden via ``--mass-scale``,
 ``--head-scale`` and ``--pump-scale`` if manual tuning or logging is desired.
+Scales below ``1e-3`` are automatically clamped to prevent excessively large
+physics penalties.
 Training logs also report the average mass imbalance per batch and the
 percentage of edges with inconsistent headloss signs.
 
