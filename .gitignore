@@ -7,3 +7,4 @@ models/*_norm.npz
 .venv/
 plots/
 logs/
+runs/
