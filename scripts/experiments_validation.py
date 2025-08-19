@@ -559,7 +559,7 @@ def rollout_surrogate(
                     if isinstance(model.y_mean, dict):
                         y_mean_node = model.y_mean["node_outputs"].to(node_pred.device)
                         y_std_node = model.y_std["node_outputs"].to(node_pred.device)
-                        num_targets = y_std_node.numel()
+                        num_targets = y_std_node.shape[-1]
                         if node_pred.shape[1] < num_targets:
                             raise ValueError(
                                 "node_pred has fewer columns than model.y_std"
@@ -569,7 +569,7 @@ def rollout_surrogate(
                     else:
                         y_mean = model.y_mean.to(node_pred.device)
                         y_std = model.y_std.to(node_pred.device)
-                        num_targets = y_std.numel()
+                        num_targets = y_std.shape[-1]
                         if node_pred.shape[1] < num_targets:
                             raise ValueError(
                                 f"node_pred has {node_pred.shape[1]} columns but y_std expects {num_targets}"
