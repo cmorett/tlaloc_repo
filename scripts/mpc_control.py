@@ -667,12 +667,14 @@ def load_surrogate_model(
         y_mean_np = norm_stats.get("y_mean")
         y_std_np = norm_stats.get("y_std")
         if isinstance(y_mean_np, dict):
-            model.y_mean = torch.tensor(
+            node_mean = torch.tensor(
                 y_mean_np.get("node_outputs"), dtype=torch.float32, device=device
             )
-            model.y_std = torch.tensor(
+            node_std = torch.tensor(
                 y_std_np.get("node_outputs"), dtype=torch.float32, device=device
             )
+            model.y_mean = {"node_outputs": node_mean}
+            model.y_std = {"node_outputs": node_std}
             y_mean_edge_np = y_mean_np.get("edge_outputs")
             y_std_edge_np = y_std_np.get("edge_outputs")
             if y_mean_edge_np is not None:
@@ -711,8 +713,10 @@ def load_surrogate_model(
             model.y_std = torch.tensor(arr["y_std"], dtype=torch.float32, device=device)
             model.y_mean_edge = model.y_std_edge = None
         elif "y_mean_node" in arr:
-            model.y_mean = torch.tensor(arr["y_mean_node"], dtype=torch.float32, device=device)
-            model.y_std = torch.tensor(arr["y_std_node"], dtype=torch.float32, device=device)
+            node_mean = torch.tensor(arr["y_mean_node"], dtype=torch.float32, device=device)
+            node_std = torch.tensor(arr["y_std_node"], dtype=torch.float32, device=device)
+            model.y_mean = {"node_outputs": node_mean}
+            model.y_std = {"node_outputs": node_std}
             if "y_mean_edge" in arr:
                 model.y_mean_edge = torch.tensor(
                     arr["y_mean_edge"], dtype=torch.float32, device=device
@@ -746,8 +750,16 @@ def load_surrogate_model(
     if getattr(model, "x_std", None) is not None:
         stats_tensors.append(model.x_std.detach().cpu())
     if getattr(model, "y_mean", None) is not None:
-        stats_tensors.append(model.y_mean.detach().cpu())
-        stats_tensors.append(model.y_std.detach().cpu())
+        if isinstance(model.y_mean, dict):
+            stats_tensors.extend(
+                [v.detach().cpu() for v in model.y_mean.values()]
+            )
+            stats_tensors.extend(
+                [v.detach().cpu() for v in model.y_std.values()]
+            )
+        else:
+            stats_tensors.append(model.y_mean.detach().cpu())
+            stats_tensors.append(model.y_std.detach().cpu())
     if getattr(model, "y_mean_edge", None) is not None:
         stats_tensors.append(model.y_mean_edge.detach().cpu())
         stats_tensors.append(model.y_std_edge.detach().cpu())
@@ -760,11 +772,27 @@ def load_surrogate_model(
         md5 = hashlib.md5()
         for t in stats_tensors:
             md5.update(t.to(torch.float32).numpy().tobytes())
+        y_mean_attr = getattr(model, "y_mean", None)
+        y_std_attr = getattr(model, "y_std", None)
+        y_mean_node_shape = None
+        y_std_node_shape = None
+        if isinstance(y_mean_attr, dict):
+            y_mean_node_shape = tuple(y_mean_attr["node_outputs"].shape)
+            y_std_node_shape = (
+                tuple(y_std_attr["node_outputs"].shape)
+                if isinstance(y_std_attr, dict)
+                else None
+            )
+        elif y_mean_attr is not None:
+            y_mean_node_shape = tuple(y_mean_attr.shape)
+            y_std_node_shape = (
+                tuple(y_std_attr.shape) if y_std_attr is not None else None
+            )
         shapes = {
             "x_mean": tuple(model.x_mean.shape) if getattr(model, "x_mean", None) is not None else None,
             "x_std": tuple(model.x_std.shape) if getattr(model, "x_std", None) is not None else None,
-            "y_mean_node": tuple(model.y_mean.shape) if getattr(model, "y_mean", None) is not None else None,
-            "y_std_node": tuple(model.y_std.shape) if getattr(model, "y_std", None) is not None else None,
+            "y_mean_node": y_mean_node_shape,
+            "y_std_node": y_std_node_shape,
             "y_mean_edge": tuple(model.y_mean_edge.shape) if getattr(model, "y_mean_edge", None) is not None else None,
             "y_std_edge": tuple(model.y_std_edge.shape) if getattr(model, "y_std_edge", None) is not None else None,
             "edge_mean": tuple(model.edge_mean.shape) if getattr(model, "edge_mean", None) is not None else None,
