@@ -69,6 +69,7 @@ PLOTS_DIR = REPO_ROOT / "plots"
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 EPS = 1e-8
+MAX_PUMP_SPEED = 1.8
 
 
 def plot_mpc_time_series(
@@ -936,7 +937,7 @@ def compute_mpc_cost(
     for t in range(horizon):
         d = demands[t] if demands is not None else None
         raw_speed = pump_speeds[t]
-        clamped = torch.clamp(raw_speed, 0.0, 1.0)
+        clamped = torch.clamp(raw_speed, 0.0, MAX_PUMP_SPEED)
         speed = raw_speed + (clamped - raw_speed).detach()
         x = prepare_node_features(
             feature_template, cur_p, cur_c, speed, model, d, skip_normalization
@@ -1058,7 +1059,7 @@ def compute_mpc_cost(
             # small penalty on rapid pump switching to produce smoother
             # control sequences
             prev_raw = pump_speeds[t - 1]
-            prev_clamped = torch.clamp(prev_raw, 0.0, 1.0)
+            prev_clamped = torch.clamp(prev_raw, 0.0, MAX_PUMP_SPEED)
             prev_speed = prev_raw + (prev_clamped - prev_raw).detach()
             smoothness_penalty = smoothness_penalty + torch.sum((speed - prev_speed) ** 2)
 
@@ -1105,7 +1106,7 @@ def run_mpc_step(
     The optimization is performed in two phases: a short warm start with
     Adam followed by refinement using L-BFGS. ``iterations`` controls the total
     number of optimization steps, split approximately 20/80 between the two
-    phases. The speed variables are clamped to ``[0, 1]`` after each update to
+    phases. The speed variables are clamped to ``[0, MAX_PUMP_SPEED]`` after each update to
     enforce valid pump settings. Gradients on the control variables are clipped
     to ``[-gmax, gmax]`` to improve numerical stability.
 
@@ -1128,7 +1129,7 @@ def run_mpc_step(
     if u_warm is not None and u_warm.shape[0] >= horizon:
         init = torch.cat([u_warm[1:horizon], u_warm[horizon - 1 : horizon]], dim=0)
     else:
-        init = torch.ones(horizon, num_pumps, device=device)
+        init = torch.full((horizon, num_pumps), MAX_PUMP_SPEED, device=device)
     pump_speeds = init.clone().detach().requires_grad_(True)
 
     # ``torch.nn.LSTM`` in evaluation mode does not support the backward
@@ -1179,7 +1180,7 @@ def run_mpc_step(
             pump_speeds.grad.clamp_(-gmax, gmax)
         adam_opt.step()
         with torch.no_grad():
-            pump_speeds.copy_(pump_speeds.clamp(0.0, 1.0))
+            pump_speeds.copy_(pump_speeds.clamp(0.0, MAX_PUMP_SPEED))
         scheduler.step(cost.item())
         cost_history.append(float(cost.item()))
 
@@ -1249,7 +1250,7 @@ def run_mpc_step(
         barrier,
     )
     with torch.no_grad():
-        pump_speeds.copy_(pump_speeds.clamp(0.0, 1.0))
+        pump_speeds.copy_(pump_speeds.clamp(0.0, MAX_PUMP_SPEED))
 
     if hasattr(model, "rnn") and not prev_training:
         model.eval()
@@ -1557,7 +1558,7 @@ def simulate_closed_loop(
         first_speeds = speed_opt[0]
         for i, pump in enumerate(pump_names):
             link = wn.get_link(pump)
-            spd = float(max(0.0, min(1.0, first_speeds[i].item())))
+            spd = float(max(0.0, min(MAX_PUMP_SPEED, first_speeds[i].item())))
             link.base_speed = spd
             link.initial_status = (
                 wntr.network.base.LinkStatus.Closed
