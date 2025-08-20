@@ -272,8 +272,16 @@ def prepare_node_features(
         if in_dim is not None:
             feats = feats[:, :, :in_dim]
         if not skip_normalization and getattr(model, "x_mean", None) is not None:
-            mean = model.x_mean.to(feats.device).view(1, 1, -1)
-            std = model.x_std.to(feats.device).view(1, 1, -1)
+            mean = model.x_mean.to(feats.device)
+            std = model.x_std.to(feats.device)
+            if mean.dim() == 2:
+                mean = mean.view(1, num_nodes, -1)
+                std = std.view(1, num_nodes, -1)
+            else:
+                mean = mean.view(1, 1, -1)
+                std = std.view(1, 1, -1)
+            mean = mean[..., : feats.size(-1)]
+            std = std[..., : feats.size(-1)]
             feats = (feats - mean) / (std + EPS)
         return feats.view(batch_size * num_nodes, -1)
 
@@ -289,6 +297,12 @@ def prepare_node_features(
     if not skip_normalization and getattr(model, "x_mean", None) is not None:
         mean = model.x_mean.to(feats.device)
         std = model.x_std.to(feats.device)
+        if mean.dim() == 2:
+            mean = mean[:, : feats.size(-1)]
+            std = std[:, : feats.size(-1)]
+        else:
+            mean = mean[: feats.size(-1)]
+            std = std[: feats.size(-1)]
         feats = (feats - mean) / (std + EPS)
     return feats
 
