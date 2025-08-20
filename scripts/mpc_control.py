@@ -959,21 +959,34 @@ def compute_mpc_cost(
                 flows = None
 
         if getattr(model, "y_mean", None) is not None:
-            y_mean = model.y_mean
-            y_std = model.y_std
-            if pred.dim() == 1:
-                pred = pred.unsqueeze(-1)
-            if pred.dim() == 2 and pred.shape[1] != y_mean.shape[0] and pred.shape[0] == y_mean.shape[0]:
-                pred = pred.t()
-            target_dim = min(pred.shape[1], y_mean.shape[0])
-            pred = torch.cat(
-                [
-                    pred[:, :target_dim] * (y_std[:target_dim].view(1, -1) + EPS)
-                    + y_mean[:target_dim].view(1, -1),
-                    pred[:, target_dim:],
-                ],
-                dim=1,
-            )
+            y_mean_attr = model.y_mean
+            y_std_attr = model.y_std
+            if isinstance(y_mean_attr, dict):
+                y_mean = y_mean_attr.get("node_outputs")
+                y_std = y_std_attr.get("node_outputs") if isinstance(y_std_attr, dict) else None
+            else:
+                y_mean = y_mean_attr
+                y_std = y_std_attr
+
+            if y_mean is not None and y_std is not None:
+                if pred.dim() == 1:
+                    pred = pred.unsqueeze(-1)
+                if (
+                    pred.dim() == 2
+                    and pred.shape[1] != y_mean.shape[0]
+                    and pred.shape[0] == y_mean.shape[0]
+                ):
+                    pred = pred.t()
+                target_dim = min(pred.shape[1], y_mean.shape[0])
+                pred = torch.cat(
+                    [
+                        pred[:, :target_dim]
+                        * (y_std[:target_dim].view(1, -1) + EPS)
+                        + y_mean[:target_dim].view(1, -1),
+                        pred[:, target_dim:],
+                    ],
+                    dim=1,
+                )
         assert not torch.isnan(pred).any(), "NaN prediction"
         pred_p = pred[:, 0]
         if pred.shape[1] > 1:
