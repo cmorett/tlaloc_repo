@@ -41,3 +41,32 @@ def test_mpc_normalization_round_trip_and_consistency():
         out_manual = model(x_manual, edge_index)
         out_manual = out_manual * (model.y_std + EPS) + model.y_mean
     assert torch.allclose(out, out_manual, atol=1e-6)
+
+
+def test_prepare_node_features_per_node_batch_norm():
+    torch.manual_seed(0)
+    batch_size = 3
+    num_nodes = 2
+    num_pumps = 1
+    template = torch.zeros(num_nodes, 4 + num_pumps)
+    pressures = torch.randn(batch_size, num_nodes)
+    chlorine = torch.rand(batch_size, num_nodes)
+    pump_speed = torch.rand(batch_size, num_pumps)
+
+    conv = GCNConv(5, 2)
+    model = GNNSurrogate([conv]).eval()
+    model.x_mean = torch.randn(num_nodes, 5)
+    model.x_std = torch.rand(num_nodes, 5) + 0.1
+
+    feats = template.expand(batch_size, num_nodes, template.size(1)).clone()
+    feats[:, :, 1] = pressures
+    feats[:, :, 2] = torch.log1p(chlorine / 1000.0)
+    feats[:, :, 4:4 + num_pumps] = pump_speed.view(batch_size, 1, -1).expand(
+        batch_size, num_nodes, num_pumps
+    )
+
+    x_norm = prepare_node_features(template, pressures, chlorine, pump_speed, model)
+    x_manual = (feats - model.x_mean.view(1, num_nodes, -1)) / (
+        model.x_std.view(1, num_nodes, -1) + EPS
+    )
+    assert torch.allclose(x_norm.view(batch_size, num_nodes, -1), x_manual, atol=1e-6)
