@@ -1349,10 +1349,26 @@ def propagate_with_surrogate(
                 pred = model(x, b_edge_index, b_edge_attr, b_node_type, b_edge_type)
                 if isinstance(pred, dict):
                     pred = pred.get("node_outputs")
-            if getattr(model, "y_mean", None) is not None:
-                pred = pred * (model.y_std + EPS) + model.y_mean
-            assert not torch.isnan(pred).any(), "NaN prediction"
             pred = pred.view(batch_size, feature_template.size(0), -1)
+            if getattr(model, "y_mean", None) is not None:
+                y_mean_attr = model.y_mean
+                y_std_attr = model.y_std
+                if isinstance(y_mean_attr, dict):
+                    y_mean = y_mean_attr.get("node_outputs")
+                    y_std = (
+                        y_std_attr.get("node_outputs")
+                        if isinstance(y_std_attr, dict)
+                        else None
+                    )
+                else:
+                    y_mean = y_mean_attr
+                    y_std = y_std_attr
+                if y_mean is not None and y_std is not None:
+                    if y_mean.dim() == 2 and y_mean.shape == pred.shape[1:]:
+                        pred = pred * (y_std.unsqueeze(0) + EPS) + y_mean.unsqueeze(0)
+                    else:
+                        pred = pred * (y_std + EPS) + y_mean
+            assert not torch.isnan(pred).any(), "NaN prediction"
             cur_p = pred[:, :, 0]
             cur_c = torch.expm1(pred[:, :, 1]) * 1000.0
 
