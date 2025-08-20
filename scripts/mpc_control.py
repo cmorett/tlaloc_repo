@@ -908,10 +908,11 @@ def compute_mpc_cost(
     surrogate inputs consistent with training.  The energy term is scaled by
     ``energy_scale`` which defaults to converting Joules to megawatt-hours
     (``1e-9``).  ``w_p``, ``w_c`` and ``w_e`` weight the respective cost
-    components.  ``barrier`` selects how constraint violations are penalised:
-    ``"softplus"`` (default) applies a smooth softplus barrier, ``"exp"`` uses
-    an exponential barrier and ``"cubic"`` falls back to the previous cubic
-    hinge.
+    components. Pressure violations are always penalised with a squared hinge
+    which softly enforces ``Pmin``. ``barrier`` selects how chlorine
+    violations are penalised: ``"softplus"`` (default) applies a smooth
+    softplus barrier, ``"exp"`` uses an exponential barrier and
+    ``"cubic"`` falls back to the previous cubic hinge.
     """
     cur_p = pressures.to(device)
     cur_c = chlorine.to(device)
@@ -1009,21 +1010,18 @@ def compute_mpc_cost(
         # ------------------------------------------------------------------
         w_s = 0.01
 
-        Pmin_safe = Pmin + 3.0
         Cmin_safe = Cmin + 0.05
 
-        psf = torch.clamp(Pmin_safe - pred_p, min=0.0)
-        csf = torch.clamp(Cmin_safe - pred_c, min=0.0)
+        psf = torch.relu(Pmin - pred_p)
+        pressure_penalty = torch.sum(psf ** 2)
 
-        if barrier == "softplus":
-            pressure_penalty = torch.sum(F.softplus(psf) ** 2)
-            chlorine_penalty = torch.sum(F.softplus(csf) ** 2)
-        elif barrier == "exp":
-            pressure_penalty = torch.sum(torch.expm1(psf))
+        csf = torch.clamp(Cmin_safe - pred_c, min=0.0)
+        if barrier == "exp":
             chlorine_penalty = torch.sum(torch.expm1(csf))
-        else:
-            pressure_penalty = torch.sum(psf ** 3)
+        elif barrier == "cubic":
             chlorine_penalty = torch.sum(csf ** 3)
+        else:
+            chlorine_penalty = torch.sum(F.softplus(csf) ** 2)
 
         if flows is not None and pump_info is not None:
             head = pred_p + feature_template[:, 3]
@@ -1749,7 +1747,7 @@ def main():
         "--barrier",
         choices=["softplus", "exp", "cubic"],
         default="softplus",
-        help="Penalty type for constraint violations",
+        help="Penalty type for chlorine violations (pressure uses squared hinge)",
     )
     parser.add_argument(
         "--gmax",
