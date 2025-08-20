@@ -277,6 +277,9 @@ def prepare_node_features(
             if mean.dim() == 2:
                 mean = mean.view(1, num_nodes, -1)
                 std = std.view(1, num_nodes, -1)
+            elif mean.numel() == num_nodes * template.size(1):
+                mean = mean.view(1, num_nodes, -1)
+                std = std.view(1, num_nodes, -1)
             else:
                 mean = mean.view(1, 1, -1)
                 std = std.view(1, 1, -1)
@@ -300,6 +303,9 @@ def prepare_node_features(
         if mean.dim() == 2:
             mean = mean[:, : feats.size(-1)]
             std = std[:, : feats.size(-1)]
+        elif mean.numel() == num_nodes * template.size(1):
+            mean = mean.view(num_nodes, -1)[:, : feats.size(-1)]
+            std = std.view(num_nodes, -1)[:, : feats.size(-1)]
         else:
             mean = mean[: feats.size(-1)]
             std = std[: feats.size(-1)]

@@ -70,3 +70,37 @@ def test_prepare_node_features_per_node_batch_norm():
         model.x_std.view(1, num_nodes, -1) + EPS
     )
     assert torch.allclose(x_norm.view(batch_size, num_nodes, -1), x_manual, atol=1e-6)
+
+
+def test_prepare_node_features_flattened_stats():
+    torch.manual_seed(0)
+    batch_size = 1
+    num_nodes = 2
+    num_pumps = 1
+    template = torch.zeros(num_nodes, 4 + num_pumps)
+    pressures = torch.randn(batch_size, num_nodes)
+    chlorine = torch.rand(batch_size, num_nodes)
+    pump_speed = torch.rand(batch_size, num_pumps)
+
+    conv = GCNConv(5, 2)
+    model = GNNSurrogate([conv]).eval()
+
+    mean2d = torch.randn(num_nodes, 5)
+    std2d = torch.rand(num_nodes, 5) + 0.1
+    model.x_mean = mean2d.flatten()
+    model.x_std = std2d.flatten()
+
+    feats = template.expand(batch_size, num_nodes, template.size(1)).clone()
+    feats[:, :, 1] = pressures
+    feats[:, :, 2] = torch.log1p(chlorine / 1000.0)
+    feats[:, :, 4:4 + num_pumps] = pump_speed.view(batch_size, 1, -1).expand(
+        batch_size, num_nodes, num_pumps
+    )
+    expected = (feats - mean2d.view(1, num_nodes, -1)) / (
+        std2d.view(1, num_nodes, -1) + EPS
+    )
+
+    x_norm = prepare_node_features(template, pressures, chlorine, pump_speed, model)
+    assert torch.allclose(
+        x_norm.view(batch_size, num_nodes, -1), expected, atol=1e-6
+    )
