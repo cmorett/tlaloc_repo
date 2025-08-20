@@ -963,30 +963,40 @@ def compute_mpc_cost(
             y_std_attr = model.y_std
             if isinstance(y_mean_attr, dict):
                 y_mean = y_mean_attr.get("node_outputs")
-                y_std = y_std_attr.get("node_outputs") if isinstance(y_std_attr, dict) else None
+                y_std = (
+                    y_std_attr.get("node_outputs")
+                    if isinstance(y_std_attr, dict)
+                    else None
+                )
             else:
                 y_mean = y_mean_attr
                 y_std = y_std_attr
 
             if y_mean is not None and y_std is not None:
-                if pred.dim() == 1:
-                    pred = pred.unsqueeze(-1)
-                if (
-                    pred.dim() == 2
-                    and pred.shape[1] != y_mean.shape[0]
-                    and pred.shape[0] == y_mean.shape[0]
-                ):
-                    pred = pred.t()
-                target_dim = min(pred.shape[1], y_mean.shape[0])
-                pred = torch.cat(
-                    [
-                        pred[:, :target_dim]
-                        * (y_std[:target_dim].view(1, -1) + EPS)
-                        + y_mean[:target_dim].view(1, -1),
-                        pred[:, target_dim:],
-                    ],
-                    dim=1,
-                )
+                # Handle per-node normalisation statistics where y_mean has
+                # shape (num_nodes, num_outputs). In this case we can
+                # denormalise directly via broadcasting.
+                if y_mean.dim() == 2 and y_mean.shape == pred.shape:
+                    pred = pred * (y_std + EPS) + y_mean
+                else:
+                    if pred.dim() == 1:
+                        pred = pred.unsqueeze(-1)
+                    if (
+                        pred.dim() == 2
+                        and pred.shape[1] != y_mean.shape[0]
+                        and pred.shape[0] == y_mean.shape[0]
+                    ):
+                        pred = pred.t()
+                    target_dim = min(pred.shape[1], y_mean.shape[0])
+                    pred = torch.cat(
+                        [
+                            pred[:, :target_dim]
+                            * (y_std[:target_dim].view(1, -1) + EPS)
+                            + y_mean[:target_dim].view(1, -1),
+                            pred[:, target_dim:],
+                        ],
+                        dim=1,
+                    )
         assert not torch.isnan(pred).any(), "NaN prediction"
         pred_p = pred[:, 0]
         if pred.shape[1] > 1:
