@@ -491,10 +491,12 @@ def split_results(
             Dict[str, np.ndarray],
             Dict[str, List[float]],
         ]
-    ]
+    ],
+    seed: Optional[int] = None,
 ) -> Tuple[List, List, List]:
     num_total = len(results)
-    indices = np.random.permutation(num_total)
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(num_total)
     n_train = int(0.7 * num_total)
     n_val = int(0.15 * num_total)
     train_idx = indices[:n_train]
@@ -926,7 +928,7 @@ def main() -> None:
     plot_dataset_distributions(demand_mults, pump_speeds, run_ts)
     plot_pressure_histogram(all_pressures, base_pressures, run_ts)
     extreme_count = sum(m["min_pressure"] < 10.0 for m in manifest_records)
-    train_res, val_res, test_res = split_results(results)
+    train_res, val_res, test_res = split_results(results, seed=args.seed)
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
     if args.sequence_length > 1:
