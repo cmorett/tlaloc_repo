@@ -134,6 +134,73 @@ def plot_convergence_curve(
     return fig if return_fig else None
 
 
+def plot_network_state_epyt(
+    pressures: Dict[str, float],
+    pump_controls: Dict[str, float],
+    run_name: str,
+    timestep: int,
+    plots_dir: Optional[Path] = None,
+    inp_file: Optional[Path] = None,
+) -> Path:
+    """Visualise network pressures and pump actions using EPyT.
+
+    Parameters
+    ----------
+    pressures : Dict[str, float]
+        Mapping from node name to pressure value.
+    pump_controls : Dict[str, float]
+        Mapping from pump link name to control input (speed).
+    run_name : str
+        Identifier for the MPC run used in the output filename.
+    timestep : int
+        Hour index used in the output filename.
+    plots_dir : Optional[Path]
+        Directory where the figure will be stored. Defaults to ``plots/``.
+    inp_file : Optional[Path]
+        Explicit path to the EPANET ``.inp`` file.  Defaults to ``CTown.inp``
+        in the repository root.
+    """
+    from epyt import epanet as _epanet  # local import to avoid heavy dependency at module import
+
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    if inp_file is None:
+        inp_file = REPO_ROOT / "CTown.inp"
+
+    net = _epanet(str(inp_file))
+    coords = net.getNodeCoordinates()
+    node_names = net.getNodeNameID()
+    xs = [coords["x"][i + 1] for i in range(len(node_names))]
+    ys = [coords["y"][i + 1] for i in range(len(node_names))]
+    vals = [pressures.get(n, 0.0) for n in node_names]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sc = ax.scatter(xs, ys, c=vals, cmap="coolwarm", s=25)
+    plt.colorbar(sc, ax=ax, label="Pressure (m)")
+
+    link_names = net.getLinkNameID()
+    for lname in link_names:
+        start_idx, end_idx = net.getLinkNodesIndex(lname)
+        x1, y1 = coords["x"][start_idx], coords["y"][start_idx]
+        x2, y2 = coords["x"][end_idx], coords["y"][end_idx]
+        width = 1.0
+        color = "lightgray"
+        if lname in pump_controls:
+            width = 0.5 + pump_controls[lname]
+            color = "tab:green"
+        ax.plot([x1, x2], [y1, y2], linewidth=width, color=color)
+
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.tight_layout()
+    out_path = plots_dir / f"mpc_network_state_{run_name}_t{timestep}.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    net.closeNetwork()
+    return out_path
+
+
 class GNNSurrogate(torch.nn.Module):
     """Flexible GCN used by the MPC controller."""
 
@@ -1678,6 +1745,15 @@ def simulate_closed_loop(
                 "bias_max": bias_max,
             }
         )
+        if run_name:
+            pump_dict = {
+                pump_names[i]: float(first_speeds[i])
+                for i in range(len(pump_names))
+            }
+            try:
+                plot_network_state_epyt(pressures, pump_dict, run_name, hour)
+            except Exception as exc:
+                warnings.warn(f"plot_network_state_epyt failed: {exc}")
         print(
             f"Hour {hour}: minP={min_p:.2f}, minC={min_c:.3f}, energy={energy:.2f}, runtime={end-start:.2f}s, bias=[{bias_min:.3f},{bias_max:.3f}]"
         )

@@ -418,6 +418,9 @@ interval exceeds one hour to highlight potential drift. Results are written to
 `data/mpc_history.csv`.  A summary listing constraint violations and total
 energy consumption (in Joules) is printed at the end of the run and saved to
 ``logs/mpc_summary.json``.
+Each simulated hour also produces a network snapshot coloured by pressure with
+pump links scaled by their control inputs, saved under
+``plots/mpc_network_state_<run>_t<hour>.png``.
 The ``--feedback-interval`` flag controls how often EPANET provides ground
 truth. ``1`` (default) refreshes the state each hour, ``0`` disables feedback
 entirely for a fully surrogate rollout, and larger values propagate the
