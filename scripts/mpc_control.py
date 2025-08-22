@@ -1743,6 +1743,9 @@ def simulate_closed_loop(
                 "controls": first_speeds.cpu().numpy().tolist(),
                 "bias_min": bias_min,
                 "bias_max": bias_max,
+                # Store full network state for optional animations
+                "pressures": dict(pressures),
+                "chlorine": dict(chlorine),
             }
         )
         if run_name:

@@ -25,6 +25,7 @@ import wntr
 from wntr.metrics.economic import pump_energy
 import epyt
 from tqdm import tqdm
+import imageio.v2 as imageio
 
 try:
     from .reproducibility import configure_seeds, save_config
@@ -136,11 +137,92 @@ def pressure_error_heatmap(
         plt.close(fig)
     return fig if return_fig else None
 
-from mpc_control import (
-    load_network,
-    load_surrogate_model,
-    simulate_closed_loop,
-)
+
+def animate_mpc_network(
+    mpc_df: pd.DataFrame,
+    pump_names: Sequence[str],
+    run_name: str,
+    inp_path: Optional[str] = None,
+    plots_dir: Optional[Path] = None,
+) -> Tuple[Path, Path]:
+    """Create GIF and HTML animations of MPC network states.
+
+    Each frame shows network pressures and chlorine concentrations with pump
+    speeds overlaid on links.  Frames are combined into an animated GIF and a
+    small HTML viewer referencing the GIF.
+    """
+    from epyt import epanet as _epanet  # local import to keep startup fast
+
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    if inp_path is None:
+        inp_path = REPO_ROOT / "CTown.inp"
+
+    net = _epanet(str(inp_path))
+    coords = net.getNodeCoordinates()
+    node_names = net.getNodeNameID()
+    xs = [coords["x"][i + 1] for i in range(len(node_names))]
+    ys = [coords["y"][i + 1] for i in range(len(node_names))]
+    link_names = net.getLinkNameID()
+
+    frames = []
+    for _, row in mpc_df.iterrows():
+        pressures = row.get("pressures", {})
+        chlorine = row.get("chlorine", {})
+        speeds = row.get("controls", [])
+        pump_controls = {pump_names[i]: speeds[i] for i in range(len(pump_names))}
+
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        for ax, values, cmap, label in [
+            (axes[0], pressures, "coolwarm", "Pressure (m)"),
+            (axes[1], chlorine, "viridis", "Chlorine (mg/L)"),
+        ]:
+            vals = [values.get(n, 0.0) for n in node_names]
+            sc = ax.scatter(xs, ys, c=vals, cmap=cmap, s=25)
+            plt.colorbar(sc, ax=ax, label=label)
+            for lname in link_names:
+                s_idx, e_idx = net.getLinkNodesIndex(lname)
+                x1, y1 = coords["x"][s_idx], coords["y"][s_idx]
+                x2, y2 = coords["x"][e_idx], coords["y"][e_idx]
+                width = 1.0
+                color = "lightgray"
+                if lname in pump_controls:
+                    width = 0.5 + pump_controls[lname]
+                    color = "tab:green"
+                ax.plot([x1, x2], [y1, y2], linewidth=width, color=color)
+            ax.set_aspect("equal")
+            ax.axis("off")
+            ax.set_title(label)
+        fig.suptitle(f"Hour {int(row['time'])}")
+        frame_path = plots_dir / f"mpc_frame_{run_name}_t{int(row['time'])}.png"
+        fig.tight_layout()
+        fig.savefig(frame_path, dpi=150)
+        plt.close(fig)
+        frames.append(imageio.imread(frame_path))
+
+    net.closeNetwork()
+
+    gif_path = plots_dir / f"mpc_animation_{run_name}.gif"
+    html_path = plots_dir / f"mpc_animation_{run_name}.html"
+    if frames:
+        imageio.mimsave(gif_path, frames, duration=0.8)
+        with open(html_path, "w") as f:
+            f.write(f"<img src='{gif_path.name}' />")
+    return gif_path, html_path
+
+try:
+    from .mpc_control import (
+        load_network,
+        load_surrogate_model,
+        simulate_closed_loop,
+    )
+except ImportError:  # pragma: no cover
+    from mpc_control import (
+        load_network,
+        load_surrogate_model,
+        simulate_closed_loop,
+    )
 
 
 
@@ -1032,6 +1114,12 @@ def main() -> None:
         w_c=args.w_c,
         w_e=args.w_e,
     )
+
+    # Export an animated view of network pressures, chlorine and pump speeds
+    try:
+        animate_mpc_network(mpc_df, pump_names, run_name, inp_path=args.inp)
+    except Exception as exc:
+        print(f"[WARN] animate_mpc_network failed: {exc}")
 
     heur_df = run_heuristic_baseline(
         wntr.network.WaterNetworkModel(args.inp), pump_names
