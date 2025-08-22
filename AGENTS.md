@@ -66,6 +66,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `test_validate_surrogate.py`
   - `test_rollout_eval.py`
   - `test_visualizations.py`
+  - `test_mpc_animation.py`
   - `test_workers.py`
 - `data/` – ignored by git; used for generated datasets and temporary simulation outputs.
 - `plots/` – ignored by git; stores figures generated during training, validation and MPC runs.

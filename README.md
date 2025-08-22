@@ -342,6 +342,18 @@ python scripts/experiments_validation.py \
     --run-name baseline
 ```
 
+The validation run also exports an animated view of network pressures,
+chlorine and pump speeds:
+
+```bash
+python scripts/experiments_validation.py \
+    --model models/gnn_surrogate.pth --inp CTown.inp \
+    --run-name demo
+```
+
+This saves `plots/mpc_animation_demo.gif` and an HTML viewer alongside other
+figures.
+
 To benchmark architectural variants, run ``scripts/ablation_study.py`` which trains four configurations (baseline, residual, deep and attention) and reports validation pressure MAE along with training time.
 
 ```bash
