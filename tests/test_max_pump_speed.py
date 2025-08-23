@@ -15,13 +15,13 @@ def _setup():
     edge_attr = torch.zeros((1, 3))
     node_types = torch.zeros(2, dtype=torch.long)
     edge_types = torch.zeros(1, dtype=torch.long)
-    feature_template = torch.zeros((2, 5))
+    feature_template = torch.zeros((2, 4))
     pressures = torch.zeros(2)
     chlorine = torch.zeros(2)
 
     class DummyModel(torch.nn.Module):
         def forward(self, x, edge_index, edge_attr, node_types, edge_types):
-            node_outputs = torch.zeros((x.size(0), 2))
+            node_outputs = torch.zeros((x.size(0), 1))
             edge_outputs = torch.zeros((1, 1))
             return {"node_outputs": node_outputs, "edge_outputs": edge_outputs}
 

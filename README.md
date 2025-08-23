@@ -43,7 +43,7 @@ current Git commit to `logs/config.yaml` for provenance.
 The repository provides a simple training script `scripts/train_gnn.py` which
 expects feature and label data saved in the `data/` directory as NumPy arrays.
 Each node feature vector has the layout
-``[base_demand, pressure, chlorine, elevation, pump_1, ..., pump_N]`` where each
+``[base_demand, pressure, elevation, pump_1, ..., pump_N]`` where each
 ``pump_i`` denotes the fractional pump speed in ``[0, 1]`` rather than a binary
 on/off flag. Reservoir nodes use their constant hydraulic head in the
 ``pressure`` slot so the model is given the correct supply level. The helper
@@ -60,23 +60,22 @@ supported:
 All plots generated during training, validation and MPC experiments are
 saved under the top-level ``plots/`` directory.  The scripts automatically
 create this folder if it does not yet exist. After each training run
-``train_gnn.py`` saves two scatter plots comparing model predictions to
-EPANET results: ``pred_vs_actual_pressure_<run>.png`` and
-``pred_vs_actual_chlorine_<run>.png``. Reservoirs and tanks are excluded from
+``train_gnn.py`` saves a scatter plot comparing predicted and actual pressure
+(``pred_vs_actual_pressure_<run>.png``). Reservoirs and tanks are excluded from
 these plots since their pressures are fixed. ``error_histograms_<run>.png``
 contains histograms and box plots of the prediction errors and the CSV
 ``logs/accuracy_<run>.csv`` records MAE, RMSE, MAPE and maximum error for
-pressure and chlorine. Reservoir and tank nodes are excluded from these metrics
-so outliers from fixed heads do not skew the results. Metrics are accumulated
-using running statistics so the full prediction arrays are never stored in
-memory. To limit the number of predictions retained for plotting, pass
-``--eval-sample N`` (default ``1000``) which keeps only the first ``N``
-predictions for the scatter and error plots. Set ``N=0`` to skip these
-figures entirely. Finally ``correlation_heatmap_<run>.png`` visualises pairwise
-correlations between the unnormalised training features. When normalization is
-enabled (the default) the test data is scaled using the training statistics.
-During evaluation both predictions **and** the corresponding ground truth
-labels are transformed back to physical units before plotting.
+pressure. Reservoir and tank nodes are excluded from these metrics so outliers
+from fixed heads do not skew the results. Metrics are accumulated using running
+statistics so the full prediction arrays are never stored in memory. To limit the
+number of predictions retained for plotting, pass ``--eval-sample N`` (default
+``1000``) which keeps only the first ``N`` predictions for the scatter and error
+plots. Set ``N=0`` to skip these figures entirely. Finally
+``correlation_heatmap_<run>.png`` visualises pairwise correlations between the
+unnormalised training features. When normalization is enabled (the default) the
+test data is scaled using the training statistics. During evaluation both
+predictions **and** the corresponding ground truth labels are transformed back to
+physical units before plotting.
 The training script saves feature and target means and standard deviations on
 the model.  ``mpc_control.py`` loads these tensors and checks their shapes so
 inference uses the exact same statistics.  This normalization contract prevents
@@ -85,10 +84,10 @@ raw values. Pass ``--per-node-norm`` to compute statistics for each node index
 separately which removes large baseline offsets and often reduces pressure MAE.
 When sequence models are used a component-wise loss curve
 ``loss_components_<run>.png`` is stored alongside ``loss_curve_<run>.png`` and
-the per-component pressure, chlorine and flow losses are recorded each epoch in
+the per-component pressure and flow losses are recorded each epoch in
 ``training_<run>.log`` as well as TensorBoard summaries.
 For sequence datasets a time-series example ``time_series_example_<run>.png``
-plots predicted and actual pressure and chlorine for one node across all steps.
+plots predicted and actual pressure for one node across all steps.
 
 The script automatically detects which format is provided and loads the data
 accordingly. When using the matrix format, supply the path to the shared
@@ -145,11 +144,9 @@ python scripts/train_gnn.py \
     --epochs 100 --batch-size 32 --hidden-dim 128 --num-layers 4 \
     --lstm-hidden 64 --workers 8 --eval-sample 1000 \
     --dropout 0.1 --residual --early-stop-patience 10 \
-    --weight-decay 1e-5 --w-press 5.0 --w-flow 3.0 --w-cl 0.0 \
+    --weight-decay 1e-5 --w-press 5.0 --w-flow 3.0 \
     --checkpoint
 ```
-Chlorine supervision is disabled by default. Pass a positive weight such as
-``--w-cl 1.0`` to train on chlorine again.
 
 GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8}) and ``--hidden-dim`` ({128,256}).
 Use ``--residual`` to enable skip connections and ``--use-attention`` for graph attention on node updates.
@@ -178,8 +175,8 @@ Pass ``--no-progress`` to disable the training progress bars or
 Pressure–headloss consistency is now enforced by default with a weight of ``1.0``.
 Pass ``--no-pressure-loss`` if this coupling should be disabled.  To remove the
 mass balance penalty (now weighted ``2.0`` by default) use ``--no-physics-loss``.
-The surrogate clamps predicted pressures and chlorine concentrations to
-non-negative values and applies L2 regularization controlled by
+The surrogate clamps predicted pressures to non-negative values and applies L2
+regularization controlled by
 ``--weight-decay`` (default ``1e-5``) to avoid degenerate solutions.
 Even when the physics-based loss is disabled with ``--no-physics-loss``
 the script prints the current epoch number so progress remains visible in
@@ -207,10 +204,9 @@ pressures are no longer part of the direct MSE loss.  Disable the physics terms
 with ``--no-physics-loss`` if necessary. ``--pressure_loss`` is enabled by
 default to enforce pressure–headloss consistency via the Hazen--Williams
 equation.  The mass penalty uses a default weight of ``2.0`` while
-the headloss term uses ``1.0``. Node pressure, chlorine and flow terms use
-weights ``--w-press`` (default ``5.0``), ``--w-cl`` (``0.0``) and ``--w-flow``
-(``3.0``). Chlorine is thus ignored unless a positive weight is provided. The
-relative importance can still be tuned via these flags together with
+the headloss term uses ``1.0``. Node pressure and flow terms use
+weights ``--w-press`` (default ``5.0``) and ``--w-flow`` (``3.0``).
+The relative importance can still be tuned via these flags together with
 ``--w_mass`` and ``--w_head``.  To keep the physics penalties on a comparable
 scale the script estimates baseline magnitudes for the mass, headloss and pump
 curve terms during the first pass over the training data. These values are used
@@ -258,11 +254,6 @@ The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.np
 ``--num-workers`` to override the number of parallel workers if needed.
 Pass ``--show-progress`` to display a live progress bar during simulation
 when ``tqdm`` is installed.
-Use ``--no-include-chlorine`` to omit chlorine concentration from the
-generated node features and targets. The resulting node features become
-``[d_t, p_t, elev, pump_speeds...]`` and the targets only contain next-step
-pressure. The training script automatically detects this layout and adjusts
-its output dimension accordingly.
 If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.
@@ -313,9 +304,8 @@ now synchronize with EPANET every hour by default (``--feedback-interval 1``).
 The validation script executes a 24‑hour simulation with EPANET feedback
 applied every hour which keeps predictions from the surrogate model from
 diverging over long horizons.  It now also reports mean absolute error (MAE)
- and the maximum absolute error for pressure and chlorine.  Predictions and
- ground truth are denormalized and chlorine values are exponentiated so the
- resulting errors are reported in physical units.  Pressures below 5 m are
+and the maximum absolute error for pressure.  Predictions and ground truth are
+denormalized so the resulting errors are reported in physical units.  Pressures below 5 m are
  clipped to this lower bound during validation so metrics match the training
 distribution.  All metrics are written to
 ``logs/surrogate_metrics.json`` for reproducibility.
@@ -342,8 +332,7 @@ python scripts/experiments_validation.py \
     --run-name baseline
 ```
 
-The validation run also exports an animated view of network pressures,
-chlorine and pump speeds:
+The validation run also exports an animated view of network pressures and pump speeds:
 
 ```bash
 python scripts/experiments_validation.py \
@@ -391,7 +380,7 @@ Pass ``--profile`` to print the runtime of each MPC optimisation step. The
 controller now builds node features on the GPU to minimise Python overhead.
 The surrogate model is compiled with TorchScript during loading for faster
 inference.  Use ``--no-jit`` to disable this.  ``propagate_with_surrogate`` can
-also accept lists of pressure/chlorine dictionaries to evaluate multiple
+also accept lists of pressure dictionaries to evaluate multiple
 scenarios in parallel.
 
 Use ``--skip-normalization`` to disable input normalization and feed raw
@@ -404,12 +393,12 @@ from future surrogate predictions. Bias estimates reset whenever ground
 truth feedback is applied, and the magnitude range of the current bias is
 logged each hour.
 
-``mpc_control.py`` exposes weights on pressure, chlorine and energy terms as
-``--w_p``, ``--w_c`` and ``--w_e`` respectively.  Raw hourly pump energy can reach
+``mpc_control.py`` exposes weights on pressure and energy terms as
+``--w_p`` and ``--w_e`` respectively.  Raw hourly pump energy can reach
 ``1e8``–``1e9`` Joules, so the default configuration rescales it to
 megawatt-hours via ``--energy-scale 1e-9`` before applying the cost.  This keeps
 energy magnitudes comparable to pressure penalties and lets ``w_e`` remain near
-unity while ``w_p``/``w_c`` default to 100 so constraint violations dominate.
+unity while ``w_p`` defaults to 100 so constraint violations dominate.
 ``--barrier`` selects how violations are penalised: ``softplus``
 applies a smooth barrier (default), ``exp`` uses an exponential barrier and
 ``cubic`` reverts to the previous hinge. Gradients on the control variables are
@@ -443,7 +432,7 @@ distribution.
 
 **Important:** the surrogate must be trained on datasets that include pump
 control inputs (the additional features appended by `scripts/data_generation.py`).
-If a model trained with only four features (demand, pressure, chlorine and
+If a model trained with only three features (demand, pressure and
 elevation) is loaded, `mpc_control.py` will exit early because pump actions would
 have no effect on the predictions.
 `simulate_closed_loop` now performs the same check and raises a `ValueError`

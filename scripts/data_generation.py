@@ -134,9 +134,8 @@ def _build_randomized_network(
     wn = wntr.network.WaterNetworkModel(inp_file)
     wn.options.time.duration = 24 * 3600
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    wn.options.quality.parameter = "CHEMICAL"
+    wn.options.quality.parameter = "NONE"
 
     # Randomize initial tank levels uniformly across the provided range
     for tname in wn.tank_name_list:
@@ -347,7 +346,7 @@ def _run_single_scenario(
     if energy[wn.pump_name_list].isna().any().any():
         raise ValueError("pump energy contains NaN")
 
-    for df in [flows, heads, sim_results.node["pressure"], sim_results.node["quality"]]:
+    for df in [flows, heads, sim_results.node["pressure"]]:
         if df.isna().any().any() or np.isinf(df.values).any():
             raise ValueError("invalid values detected in simulation results")
 
@@ -519,14 +518,8 @@ def build_sequence_dataset(
     ],
     wn_template: wntr.network.WaterNetworkModel,
     seq_len: int,
-    *,
-    include_chlorine: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Construct a dataset of sequences from simulation results.
-
-    When ``include_chlorine`` is ``False`` the node feature vectors exclude
-    chlorine concentrations and the targets only contain next-step pressure.
-    """
+    """Construct a dataset of sequences from simulation results."""
 
     X_list: List[np.ndarray] = []
     Y_list: List[dict] = []
@@ -541,16 +534,6 @@ def build_sequence_dataset(
         # range otherwise.  Enforce a 5 m lower bound to match downstream
         # validation logic.
         pressures = sim_results.node["pressure"].clip(lower=MIN_PRESSURE)
-        if include_chlorine:
-            quality_df = sim_results.node["quality"].clip(lower=0.0, upper=4.0)
-            param = str(wn_template.options.quality.parameter).upper()
-            if "CHEMICAL" in param or "CHLORINE" in param:
-                # convert mg/L to g/L used by CHEMICAL or CHLORINE models before
-                # taking the logarithm so the surrogate sees reasonable scales
-                quality_df = quality_df / 1000.0
-            quality = np.log1p(quality_df)
-        else:
-            quality = None
         demands = sim_results.node.get("demand")
         if demands is not None:
             max_d = float(demands.max().max())
@@ -568,7 +551,6 @@ def build_sequence_dataset(
         # Precompute arrays and mappings for faster indexing
         node_idx = {n: pressures.columns.get_loc(n) for n in node_names}
         p_arr = pressures.to_numpy(dtype=np.float64)
-        q_arr = quality.to_numpy(dtype=np.float64) if quality is not None else None
         d_arr = demands.to_numpy(dtype=np.float64) if demands is not None else None
         pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
 
@@ -588,10 +570,6 @@ def build_sequence_dataset(
                     p_t = float(wn_template.get_node(node).base_head)
                 else:
                     p_t = float(p_arr[t, idx])
-                if include_chlorine:
-                    c_t = float(q_arr[t, idx])
-                else:
-                    c_t = None
                 if d_arr is not None and node in wn_template.junction_name_list:
                     d_t = float(d_arr[t, idx])
                 else:
@@ -608,10 +586,7 @@ def build_sequence_dataset(
                         elev = getattr(n, "base_head", 0.0)
                 if elev is None:
                     elev = 0.0
-                feat = [d_t, p_t]
-                if include_chlorine:
-                    feat.append(c_t)
-                feat.append(elev)
+                feat = [d_t, p_t, elev]
                 feat.extend(pump_vector.tolist())
                 feat_nodes.append(feat)
             X_seq.append(np.array(feat_nodes, dtype=np.float64))
@@ -623,11 +598,7 @@ def build_sequence_dataset(
                     p_next = float(wn_template.get_node(node).base_head)
                 else:
                     p_next = float(p_arr[t + 1, idx])
-                if include_chlorine:
-                    c_next = float(q_arr[t + 1, idx])
-                    out_nodes.append([max(p_next, MIN_PRESSURE), max(c_next, 0.0)])
-                else:
-                    out_nodes.append([max(p_next, MIN_PRESSURE)])
+                out_nodes.append([max(p_next, MIN_PRESSURE)])
             node_out_seq.append(np.array(out_nodes, dtype=np.float64))
 
             edge_out_seq.append(flows_arr[t + 1].astype(np.float64))
@@ -658,8 +629,6 @@ def build_dataset(
         ]
     ],
     wn_template: wntr.network.WaterNetworkModel,
-    *,
-    include_chlorine: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
     X_list: List[np.ndarray] = []
     Y_list: List[dict] = []
@@ -671,16 +640,6 @@ def build_dataset(
         # Enforce a 5 m lower bound while keeping the upper range unrestricted
         # to capture extreme pressure values.
         pressures = sim_results.node["pressure"].clip(lower=MIN_PRESSURE)
-        if include_chlorine:
-            quality_df = sim_results.node["quality"].clip(lower=0.0, upper=4.0)
-            param = str(wn_template.options.quality.parameter).upper()
-            if "CHEMICAL" in param or "CHLORINE" in param:
-                # CHEMICAL or CHLORINE quality models return mg/L, scale to g/L
-                # before applying the log transform
-                quality_df = quality_df / 1000.0
-            quality = np.log1p(quality_df)
-        else:
-            quality = None
         demands = sim_results.node.get("demand")
         times = pressures.index
         flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
@@ -692,7 +651,6 @@ def build_dataset(
         # Precompute arrays and index mappings for faster lookup
         node_idx = {n: pressures.columns.get_loc(n) for n in node_names}
         p_arr = pressures.to_numpy(dtype=np.float64)
-        q_arr = quality.to_numpy(dtype=np.float64) if quality is not None else None
         d_arr = demands.to_numpy(dtype=np.float64) if demands is not None else None
         pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
 
@@ -707,8 +665,6 @@ def build_dataset(
                     p_t = float(wn_template.get_node(node).base_head)
                 else:
                     p_t = max(p_arr[i, idx], MIN_PRESSURE)
-                if include_chlorine:
-                    c_t = max(q_arr[i, idx], 0.0)
                 if d_arr is not None and node in wn_template.junction_name_list:
                     d_t = d_arr[i, idx]
                 else:
@@ -727,10 +683,7 @@ def build_dataset(
                 if elev is None:
                     elev = 0.0
 
-                feat = [d_t, p_t]
-                if include_chlorine:
-                    feat.append(c_t)
-                feat.append(elev)
+                feat = [d_t, p_t, elev]
                 feat.extend(pump_vector.tolist())
                 feat_nodes.append(feat)
             X_list.append(np.array(feat_nodes, dtype=np.float64))
@@ -742,11 +695,7 @@ def build_dataset(
                     p_next = float(wn_template.get_node(node).base_head)
                 else:
                     p_next = max(p_arr[i + 1, idx], MIN_PRESSURE)
-                if include_chlorine:
-                    c_next = max(q_arr[i + 1, idx], 0.0)
-                    out_nodes.append([p_next, c_next])
-                else:
-                    out_nodes.append([p_next])
+                out_nodes.append([p_next])
             Y_list.append({
                 "node_outputs": np.array(out_nodes, dtype=np.float32),
                 "edge_outputs": flows_arr[i + 1].astype(np.float32),
@@ -873,12 +822,6 @@ def main() -> None:
         action="store_true",
         help="Display a progress bar during scenario simulation",
     )
-    parser.add_argument(
-        "--include-chlorine",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Include chlorine concentration features and targets",
-    )
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -933,18 +876,18 @@ def main() -> None:
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
     if args.sequence_length > 1:
         X_train, Y_train, train_labels = build_sequence_dataset(
-            train_res, wn_template, args.sequence_length, include_chlorine=args.include_chlorine
+            train_res, wn_template, args.sequence_length
         )
         X_val, Y_val, val_labels = build_sequence_dataset(
-            val_res, wn_template, args.sequence_length, include_chlorine=args.include_chlorine
+            val_res, wn_template, args.sequence_length
         )
         X_test, Y_test, test_labels = build_sequence_dataset(
-            test_res, wn_template, args.sequence_length, include_chlorine=args.include_chlorine
+            test_res, wn_template, args.sequence_length
         )
     else:
-        X_train, Y_train = build_dataset(train_res, wn_template, include_chlorine=args.include_chlorine)
-        X_val, Y_val = build_dataset(val_res, wn_template, include_chlorine=args.include_chlorine)
-        X_test, Y_test = build_dataset(test_res, wn_template, include_chlorine=args.include_chlorine)
+        X_train, Y_train = build_dataset(train_res, wn_template)
+        X_val, Y_val = build_dataset(val_res, wn_template)
+        X_test, Y_test = build_dataset(test_res, wn_template)
 
     edge_index, edge_attr, edge_type, pump_coeffs = build_edge_index(wn_template)
 
@@ -969,8 +912,7 @@ def main() -> None:
     manifest = {
         "num_extreme": int(extreme_count),
         "total_scenarios": len(manifest_records),
-        "include_chlorine": bool(args.include_chlorine),
-        "node_target_dim": 2 if args.include_chlorine else 1,
+        "node_target_dim": 1,
         "scenarios": manifest_records,
     }
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:

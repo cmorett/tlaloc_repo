@@ -1007,7 +1007,7 @@ def compute_mpc_cost(
         clamped = torch.clamp(raw_speed, 0.0, MAX_PUMP_SPEED)
         speed = raw_speed + (clamped - raw_speed).detach()
         x = prepare_node_features(
-            feature_template, cur_p, cur_c, speed, model, d, skip_normalization
+            feature_template, cur_p, speed, model, d, skip_normalization
         )
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
@@ -1092,7 +1092,7 @@ def compute_mpc_cost(
             chlorine_penalty = torch.sum(F.softplus(csf) ** 2)
 
         if flows is not None and pump_info is not None:
-            head = pred_p + feature_template[:, 3]
+            head = pred_p + feature_template[:, 2]
             energy_term_j = torch.tensor(0.0, device=device)
             eff = wn.options.energy.global_efficiency / 100.0
             for idx, s_idx, e_idx in pump_info:
@@ -1184,7 +1184,7 @@ def run_mpc_step(
     u_warm : torch.Tensor, optional
         Previous speed sequence to warm start the optimization.
     """
-    num_pumps = feature_template.size(1) - 4
+    num_pumps = feature_template.size(1) - 3
     cost_history: List[float] = []
     start_time = time.time() if profile else None
     pressures = pressures.to(device)
@@ -1404,7 +1404,7 @@ def propagate_with_surrogate(
                 speed_in = speed
             d = demands[t] if demands is not None else None
             x = prepare_node_features(
-                feature_template, cur_p, cur_c, speed_in, model, d, skip_normalization
+                feature_template, cur_p, speed_in, model, d, skip_normalization
             )
             if hasattr(model, "rnn"):
                 seq_in = x.view(batch_size, 1, feature_template.size(0), x.size(-1))

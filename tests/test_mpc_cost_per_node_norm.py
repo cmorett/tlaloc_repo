@@ -13,16 +13,16 @@ from scripts.mpc_control import compute_mpc_cost
 class DummyModel(torch.nn.Module):
     def __init__(self, num_nodes: int):
         super().__init__()
-        # Five node features (pressure, chlorine, etc.)
-        self.x_mean = torch.zeros(5)
-        self.x_std = torch.ones(5)
-        # Per-node normalisation stats for two outputs
-        self.y_mean = torch.zeros(num_nodes, 2)
-        self.y_std = torch.ones(num_nodes, 2)
+        # Four node features (demand, pressure, elevation, pump)
+        self.x_mean = torch.zeros(4)
+        self.x_std = torch.ones(4)
+        # Per-node normalisation stats for one output
+        self.y_mean = torch.zeros(num_nodes, 1)
+        self.y_std = torch.ones(num_nodes, 1)
 
     def forward(self, x, edge_index, edge_attr=None, node_types=None, edge_types=None):
         # Return zeros in normalised space
-        return torch.zeros(x.size(0), 2, device=x.device)
+        return torch.zeros(x.size(0), 1, device=x.device)
 
 
 def test_compute_mpc_cost_handles_per_node_norm():
@@ -37,7 +37,7 @@ def test_compute_mpc_cost_handles_per_node_norm():
     edge_attr = torch.zeros((0, 0))
     node_types = torch.zeros(num_nodes, dtype=torch.long)
     edge_types = torch.zeros(0, dtype=torch.long)
-    template = torch.zeros(num_nodes, 4 + num_pumps)
+    template = torch.zeros(num_nodes, 3 + num_pumps)
     pressures = torch.full((num_nodes,), 50.0)
     chlorine = torch.zeros(num_nodes)
 

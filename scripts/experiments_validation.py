@@ -229,7 +229,6 @@ except ImportError:  # pragma: no cover
 def _prepare_features(
     wn: wntr.network.WaterNetworkModel,
     pressures: Dict[str, float],
-    chlorine: Dict[str, float],
     pump_controls: np.ndarray,
     model: torch.nn.Module,
     demands: Optional[Dict[str, float]] = None,
@@ -249,9 +248,6 @@ def _prepare_features(
         ],
         dtype=torch.float32,
     )
-    chlorine_t = torch.tensor(
-        [chlorine.get(n, 0.0) for n in wn.node_name_list], dtype=torch.float32
-    )
     pump_t = torch.tensor(pump_controls, dtype=torch.float32)
     demands_t = None
     if demands is not None:
@@ -261,7 +257,6 @@ def _prepare_features(
     return prepare_node_features(
         template,
         pressures_t,
-        chlorine_t,
         pump_t,
         model,
         demands_t,
@@ -370,9 +365,11 @@ def validate_surrogate(
                 c = chlorine_df.iloc[i].to_dict()
                 dem = demand_df.iloc[i].to_dict() if demand_df is not None else None
                 controls = pump_array[i]
-                feats = _prepare_features(wn, p, c, controls, model, dem)
+                feats = _prepare_features(wn, p, controls, model, dem)
                 if debug and first and i == 0:
-                    pre = _prepare_features(wn, p, c, controls, model, dem, skip_normalization=True)
+                    pre = _prepare_features(
+                        wn, p, controls, model, dem, skip_normalization=True
+                    )
                     feats_np = pre.cpu().numpy()
                     debug_info["node_pre_norm_stats"] = {
                         "min": feats_np.min(axis=0).tolist(),
@@ -610,7 +607,7 @@ def rollout_surrogate(
             for t in range(max_steps):
                 dem = demand_df.iloc[t].to_dict() if demand_df is not None else None
                 controls = pump_array[t]
-                feats = _prepare_features(wn, current_p, current_c, controls, model, dem)
+                feats = _prepare_features(wn, current_p, controls, model, dem)
                 x = feats.to(device, non_blocking=True)
                 if hasattr(model, "rnn"):
                     seq_in = x.unsqueeze(0).unsqueeze(0)
