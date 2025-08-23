@@ -43,7 +43,7 @@ current Git commit to `logs/config.yaml` for provenance.
 The repository provides a simple training script `scripts/train_gnn.py` which
 expects feature and label data saved in the `data/` directory as NumPy arrays.
 Each node feature vector has the layout
-``[base_demand, pressure, elevation, pump_1, ..., pump_N]`` where each
+``[base_demand, pressure, elevation, pump_1, …]`` where each
 ``pump_i`` denotes the fractional pump speed in ``[0, 1]`` rather than a binary
 on/off flag. Reservoir nodes use their constant hydraulic head in the
 ``pressure`` slot so the model is given the correct supply level. The helper
@@ -266,9 +266,7 @@ outage occurs a random pipe may also be closed to mimic maintenance. Initial
 tank levels are drawn uniformly from the fraction range specified by
 ``--tank-level-range`` (default ``0 1`` covers the entire feasible range).
 Scenario labels are stored alongside the sequence arrays when
-``--sequence-length`` is greater than one. Chlorine decay is enabled in the
-example network via a global bulk reaction coefficient of ``-0.05`` 1/h which
-EPANET applies during water quality simulations. Pipe roughness coefficients are
+``--sequence-length`` is greater than one. Pipe roughness coefficients are
 left unchanged; only demand multipliers and pump schedules vary between
 scenarios. Pump speeds follow a continuous randomization strategy: each pump
 starts from ``[0.3, 0.9]`` and is perturbed by small, temporally correlated

@@ -1219,7 +1219,7 @@ R1 SETPOINT 1.0
  Pattern            	1
  Demand Multiplier  	1
  Emitter Exponent   	0.5000
- Quality                Chlorine mg/L
+ Quality                None                 ; quality unused
  Diffusivity        	1.000000
  Tolerance          	0.01000000
 
