@@ -103,21 +103,13 @@ def test_validate_surrogate_respects_node_mask():
         torch.tensor(edge_types, dtype=torch.long),
     )
     p_df = res.node["pressure"].clip(lower=5.0)
-    c_df = res.node["quality"]
     vals_p = [p_df.iloc[i + 1, 0] for i in range(len(p_df.index) - 1)]
-    vals_c = [c_df.iloc[i + 1, 0] for i in range(len(c_df.index) - 1)]
     expected_rmse_p = np.sqrt(np.mean(np.square(vals_p)))
     expected_mae_p = np.mean(np.abs(vals_p))
     expected_max_p = np.max(np.abs(vals_p))
-    expected_rmse_c = np.sqrt(np.mean(np.square(vals_c)))
-    expected_mae_c = np.mean(np.abs(vals_c))
-    expected_max_c = np.max(np.abs(vals_c))
     assert abs(metrics["pressure_rmse"] - expected_rmse_p) < 1e-6
     assert abs(metrics["pressure_mae"] - expected_mae_p) < 1e-6
     assert abs(metrics["pressure_max_error"] - expected_max_p) < 1e-6
-    assert abs(metrics["chlorine_rmse"] - expected_rmse_c) < 1e-6
-    assert abs(metrics["chlorine_mae"] - expected_mae_c) < 1e-6
-    assert abs(metrics["chlorine_max_error"] - expected_max_c) < 1e-6
 
 def test_validate_surrogate_dict_stats():
     """Validation should unnormalize predictions using dict stats."""
@@ -144,7 +136,6 @@ def test_validate_surrogate_dict_stats():
         torch.tensor(edge_types, dtype=torch.long),
     )
     p_df = res.node["pressure"].clip(lower=5.0)
-    _ = res.node["quality"]
     true_p = p_df.iloc[1, 0]
     expected_diff_p = 1.0 - true_p
     assert arr.shape[0] >= 1

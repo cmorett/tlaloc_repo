@@ -33,7 +33,6 @@ def run_config(cmd, run_name):
     acc_path = LOG_DIR / f"accuracy_{run_name}.csv"
     acc_df = pd.read_csv(acc_path, index_col=0)
     press_mae = float(acc_df.loc["Mean Absolute Error (MAE)", "Pressure (m)"])
-    cl_mae = float(acc_df.loc["Mean Absolute Error (MAE)", "Chlorine (mg/L)"])
     # mass imbalance stored in training log
     log_path = DATA_DIR / f"training_{run_name}.log"
     mass_imb = None
@@ -44,7 +43,7 @@ def run_config(cmd, run_name):
             parts = lines[-1].strip().split(",")
             if len(parts) >= 12:
                 mass_imb = float(parts[11])
-    return press_mae, cl_mae, mass_imb
+    return press_mae, mass_imb
 
 
 def parse_args():
@@ -123,13 +122,12 @@ def main():
         ]
         if cfg["residual"]:
             cmd.append("--residual")
-        press_mae, cl_mae, mass_imb = run_config(cmd, run_name)
+        press_mae, mass_imb = run_config(cmd, run_name)
         results.append(
             {
                 "run_name": run_name,
                 **cfg,
                 "pressure_mae": press_mae,
-                "chlorine_mae": cl_mae,
                 "mass_imbalance": mass_imb,
             }
         )
@@ -140,15 +138,9 @@ def main():
     df.to_csv(out_path, index=False)
 
     baseline = df.iloc[0]
-    valid = df[df["chlorine_mae"] < 0.02]
-    if not valid.empty:
-        best = valid.loc[valid["pressure_mae"].idxmin()]
-        improvement = (baseline["pressure_mae"] - best["pressure_mae"]) / baseline["pressure_mae"]
-        print(
-            f"Best config {best['run_name']} improves pressure MAE by {improvement*100:.1f}%"
-        )
-    else:
-        print("No configuration met the chlorine MAE constraint.")
+    best = df.loc[df["pressure_mae"].idxmin()]
+    improvement = (baseline["pressure_mae"] - best["pressure_mae"]) / baseline["pressure_mae"]
+    print(f"Best config {best['run_name']} improves pressure MAE by {improvement*100:.1f}%")
 
 
 if __name__ == "__main__":

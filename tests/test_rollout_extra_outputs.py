@@ -1,4 +1,5 @@
 import os
+import os
 import torch
 import wntr
 import sys
@@ -51,7 +52,7 @@ def test_rollout_surrogate_ignores_excess_outputs():
     seq = np.stack(seq)
 
     model = ExtraOutputModel(seq).to(device)
-    rmse_p, rmse_c = rollout_surrogate(
+    rmse_p = rollout_surrogate(
         model,
         edge_index,
         None,
@@ -63,4 +64,3 @@ def test_rollout_surrogate_ignores_excess_outputs():
         torch.tensor(edge_types, dtype=torch.long),
     )
     assert np.allclose(rmse_p, 0.0, atol=1e-6)
-    assert np.allclose(rmse_c, 0.0, atol=1e-6)

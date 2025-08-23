@@ -453,19 +453,19 @@ Example usage:
 ```python
 from metrics import (
     accuracy_metrics,
-    control_metrics,
+    constraint_metrics,
     computational_metrics,
     export_table,
 )
 
 # arrays of ground truth and predictions
-acc_df = accuracy_metrics(true_p, pred_p, true_c, pred_c)
-control_df = control_metrics(min_p, min_c, energy, p_min=20.0, c_min=0.2)
+acc_df = accuracy_metrics(true_p, pred_p)
+constraint_df = constraint_metrics(min_p, energy, p_min=20.0)
 comp_df = computational_metrics(inference_times, optimisation_times)
 
 # export to CSV
 export_table(acc_df, "logs/accuracy.csv")
-export_table(control_df, "logs/control.csv")
+export_table(constraint_df, "logs/constraints.csv")
 export_table(comp_df, "logs/computational.csv")
 ```
 
