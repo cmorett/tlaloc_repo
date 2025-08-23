@@ -22,9 +22,8 @@ class DummyModel(torch.nn.Module):
     def forward(self, x, edge_index, edge_attr=None, node_types=None, edge_types=None):
         n = x.size(0)
         base = torch.full((n, 1), 30.0, device=x.device)
-        chlorine = torch.zeros((n, 1), device=x.device)
         extra = torch.full((n, 1), 123.0, device=x.device)
-        return torch.cat([base, chlorine, extra], dim=1)
+        return torch.cat([base, extra], dim=1)
 
 
 def test_compute_mpc_cost_handles_extra_outputs():
@@ -39,7 +38,6 @@ def test_compute_mpc_cost_handles_extra_outputs():
     edge_types = torch.zeros(0, dtype=torch.long)
     template = torch.zeros(1, 4)
     pressures = torch.tensor([10.0])
-    chlorine = torch.tensor([0.0])
 
     cost, _ = compute_mpc_cost(
         pump_speeds,
@@ -51,11 +49,9 @@ def test_compute_mpc_cost_handles_extra_outputs():
         edge_types,
         template,
         pressures,
-        chlorine,
         horizon=1,
         device=device,
         Pmin=5.0,
-        Cmin=0.0,
         skip_normalization=True,
     )
     assert torch.isfinite(cost)

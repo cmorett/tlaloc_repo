@@ -1020,10 +1020,8 @@ def main() -> None:
         pump_names,
         device,
         args.Pmin,
-        0.0,
         args.feedback_interval,
         w_p=args.w_p,
-        w_c=0.0,
         w_e=args.w_e,
     )
 

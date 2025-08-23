@@ -39,7 +39,6 @@ def test_compute_mpc_cost_handles_per_node_norm():
     edge_types = torch.zeros(0, dtype=torch.long)
     template = torch.zeros(num_nodes, 3 + num_pumps)
     pressures = torch.full((num_nodes,), 50.0)
-    chlorine = torch.zeros(num_nodes)
 
     cost, _ = compute_mpc_cost(
         pump_speeds,
@@ -51,11 +50,9 @@ def test_compute_mpc_cost_handles_per_node_norm():
         edge_types,
         template,
         pressures,
-        chlorine,
         horizon=1,
         device=device,
         Pmin=20.0,
-        Cmin=0.2,
     )
 
     assert torch.isfinite(cost)
