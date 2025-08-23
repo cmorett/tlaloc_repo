@@ -224,9 +224,9 @@ def build_node_type(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
 def build_static_node_features(
     wn: wntr.network.WaterNetworkModel, num_pumps: int
 ) -> torch.Tensor:
-    """Return per-node static features [demand, 0, 0, elevation]."""
+    """Return per-node static features [demand, 0, elevation]."""
     num_nodes = len(wn.node_name_list)
-    feats = torch.zeros(num_nodes, 4 + num_pumps, dtype=torch.float32)
+    feats = torch.zeros(num_nodes, 3 + num_pumps, dtype=torch.float32)
     for idx, name in enumerate(wn.node_name_list):
         node = wn.get_node(name)
         if name in wn.junction_name_list:
@@ -240,14 +240,13 @@ def build_static_node_features(
         else:
             elev = node.head
         feats[idx, 0] = float(demand)
-        feats[idx, 3] = float(elev or 0.0)
+        feats[idx, 2] = float(elev or 0.0)
     return feats
 
 
 def prepare_node_features(
     template: torch.Tensor,
     pressures: torch.Tensor,
-    chlorine: torch.Tensor,
     pump_speeds: torch.Tensor,
     model: torch.nn.Module,
     demands: Optional[torch.Tensor] = None,
@@ -264,8 +263,7 @@ def prepare_node_features(
         if demands is not None:
             feats[:, :, 0] = demands
         feats[:, :, 1] = pressures
-        feats[:, :, 2] = torch.log1p(chlorine / 1000.0)
-        feats[:, :, 4 : 4 + num_pumps] = pump_speeds.view(batch_size, 1, -1).expand(
+        feats[:, :, 3 : 3 + num_pumps] = pump_speeds.view(batch_size, 1, -1).expand(
             batch_size, num_nodes, num_pumps
         )
         in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
@@ -292,8 +290,7 @@ def prepare_node_features(
     if demands is not None:
         feats[:, 0] = demands
     feats[:, 1] = pressures
-    feats[:, 2] = torch.log1p(chlorine / 1000.0)
-    feats[:, 4 : 4 + num_pumps] = pump_speeds.view(1, -1).expand(num_nodes, num_pumps)
+    feats[:, 3 : 3 + num_pumps] = pump_speeds.view(1, -1).expand(num_nodes, num_pumps)
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
     if in_dim is not None:
         feats = feats[:, :in_dim]
