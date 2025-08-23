@@ -17,7 +17,6 @@ def _setup():
     edge_types = torch.zeros(1, dtype=torch.long)
     feature_template = torch.zeros((2, 4))
     pressures = torch.zeros(2)
-    chlorine = torch.zeros(2)
 
     class DummyModel(torch.nn.Module):
         def forward(self, x, edge_index, edge_attr, node_types, edge_types):
@@ -34,7 +33,6 @@ def _setup():
         edge_types,
         feature_template,
         pressures,
-        chlorine,
     )
 
 
@@ -48,7 +46,6 @@ def test_run_mpc_step_respects_max_speed():
         edge_types,
         template,
         pressures,
-        chlorine,
     ) = _setup()
     device = torch.device("cpu")
     u_warm = torch.full((1, 1), MAX_PUMP_SPEED + 0.5)
@@ -61,12 +58,10 @@ def test_run_mpc_step_respects_max_speed():
         edge_types,
         template,
         pressures,
-        chlorine,
         horizon=1,
         iterations=1,
         device=device,
         Pmin=1.0,
-        Cmin=0.1,
         u_warm=u_warm,
     )
 

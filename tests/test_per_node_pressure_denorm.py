@@ -9,7 +9,7 @@ from scripts.train_gnn import evaluate_sequence
 class DummyModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        # two nodes with per-node pressure/chlorine stats
+        # two nodes with per-node pressure stats
         self.y_mean = {
             "node_outputs": torch.tensor([[1.0, 0.0], [2.0, 0.0]], dtype=torch.float32),
             "edge_outputs": torch.zeros(2, dtype=torch.float32),

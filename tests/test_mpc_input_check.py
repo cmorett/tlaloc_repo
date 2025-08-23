@@ -49,7 +49,6 @@ def test_simulate_closed_loop_requires_pump_inputs():
             pump_names=pump_names,
             device=device,
             Pmin=20.0,
-            Cmin=0.2,
             feedback_interval=0,
         )
 
@@ -92,6 +91,5 @@ def test_simulate_closed_loop_checks_edge_dim():
             pump_names=pump_names,
             device=device,
             Pmin=20.0,
-            Cmin=0.2,
             feedback_interval=0,
         )
