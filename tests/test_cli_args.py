@@ -33,7 +33,7 @@ def test_cli_no_pressure_loss(tmp_path):
     F = 4 + len(wn.pump_name_list)
     N = len(wn.node_name_list)
     X = np.ones((1, N, F), dtype=np.float32)
-    Y = np.zeros((1, N, 2), dtype=np.float32)
+    Y = np.zeros((1, N, 1), dtype=np.float32)
     np.save(tmp_path / "X.npy", X)
     np.save(tmp_path / "Y.npy", Y)
 
@@ -92,7 +92,7 @@ def test_cli_loss_weights(tmp_path):
     F = 4 + len(wn.pump_name_list)
     N = len(wn.node_name_list)
     X = np.ones((1, N, F), dtype=np.float32)
-    Y = np.zeros((1, N, 2), dtype=np.float32)
+    Y = np.zeros((1, N, 1), dtype=np.float32)
     np.save(tmp_path / "X.npy", X)
     np.save(tmp_path / "Y.npy", Y)
 
@@ -117,8 +117,6 @@ def test_cli_loss_weights(tmp_path):
         str(tmp_path / "model.pth"),
         "--w-press",
         "2.5",
-        "--w-cl",
-        "0.5",
         "--w-flow",
         "1.5",
     ]
@@ -128,5 +126,4 @@ def test_cli_loss_weights(tmp_path):
     assert log_file.exists()
     log_text = log_file.read_text()
     assert "'w_press': 2.5" in log_text
-    assert "'w_cl': 0.5" in log_text
     assert "'w_flow': 1.5" in log_text
