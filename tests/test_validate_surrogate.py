@@ -15,7 +15,7 @@ from scripts.mpc_control import load_network
 from scripts.experiments_validation import validate_surrogate
 
 class DummyModel(torch.nn.Module):
-    def __init__(self, out_dim=2):
+    def __init__(self, out_dim=1):
         super().__init__()
         self.out_dim = out_dim
         self.x_mean = None
@@ -31,7 +31,6 @@ def test_validate_surrogate_accepts_tuple():
     wn, node_to_index, pump_names, edge_index, node_types, edge_types = load_network('CTown.inp')
     wn.options.time.duration = 2 * 3600
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
     sim = wntr.sim.EpanetSimulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp"))
@@ -56,7 +55,6 @@ def test_validate_surrogate_clips_low_pressure():
     wn, node_to_index, pump_names, edge_index, node_types, edge_types = load_network('CTown.inp')
     wn.options.time.duration = 2 * 3600
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
     sim = wntr.sim.EpanetSimulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp_clip"))
@@ -85,7 +83,6 @@ def test_validate_surrogate_respects_node_mask():
     wn, node_to_index, pump_names, edge_index, node_types, edge_types = load_network('CTown.inp')
     wn.options.time.duration = 2 * 3600
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
     sim = wntr.sim.EpanetSimulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp_mask"))
@@ -117,13 +114,12 @@ def test_validate_surrogate_dict_stats():
     wn, node_to_index, pump_names, edge_index, node_types, edge_types = load_network('CTown.inp')
     wn.options.time.duration = 2 * 3600
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
     sim = wntr.sim.EpanetSimulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp_dict"))
     model = DummyModel().to(device)
-    model.y_mean = {"node_outputs": torch.tensor([1.0, 0.1])}
-    model.y_std = {"node_outputs": torch.tensor([2.0, 0.2])}
+    model.y_mean = {"node_outputs": torch.tensor([1.0])}
+    model.y_std = {"node_outputs": torch.tensor([2.0])}
     metrics, arr, times = validate_surrogate(
         model,
         edge_index,
@@ -155,13 +151,12 @@ def test_validate_surrogate_handles_extra_output_dim():
     ) = load_network('CTown.inp')
     wn.options.time.duration = 2 * 3600
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
     sim = wntr.sim.EpanetSimulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp_extra"))
     model = DummyModel(out_dim=4).to(device)
-    model.y_mean = torch.zeros(2)
-    model.y_std = torch.ones(2)
+    model.y_mean = torch.zeros(1)
+    model.y_std = torch.ones(1)
     metrics, arr, times = validate_surrogate(
         model,
         edge_index,
@@ -190,7 +185,6 @@ def test_validate_surrogate_edge_dim_check():
     ) = load_network('CTown.inp', return_edge_attr=True)
     wn.options.time.duration = 2 * 3600
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
     sim = wntr.sim.EpanetSimulator(wn)
     res = sim.run_sim(str(TEMP_DIR / 'temp_edge'))
@@ -228,7 +222,6 @@ def test_validate_surrogate_normalizes_edge_attr():
     ) = load_network('CTown.inp', return_edge_attr=True)
     wn.options.time.duration = 2 * 3600
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
     sim = wntr.sim.EpanetSimulator(wn)
     res = sim.run_sim(str(TEMP_DIR / 'temp_edge_norm'))
