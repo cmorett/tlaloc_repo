@@ -27,7 +27,7 @@ def test_demand_multiplier_range():
 
     for jname, scaled in scale_dict.items():
         base_mult = base_patterns[jname][: len(scaled)]
-        ratio = scaled / base_mult
+        ratio = scaled * base_mult.mean() / base_mult
         assert np.all(ratio >= 0.8)
         assert np.all(ratio <= 1.2)
 

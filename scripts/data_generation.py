@@ -105,6 +105,7 @@ def _build_randomized_network(
     local_surge: bool = False,
     pipe_closure: bool = False,
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
+    demand_scale_range: Tuple[float, float] = (0.8, 1.2),
     stress_test: bool = False,
 ) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Create a network with randomized demand patterns and pump controls.
@@ -144,9 +145,11 @@ def _build_randomized_network(
             base_mult = np.ones(hours, dtype=float)
         else:
             base_mult = np.array(ts.pattern.multipliers, dtype=float)
-        multipliers = base_mult.copy()
-        scale_factors = np.random.uniform(0.8, 1.2, size=len(multipliers))
-        multipliers = multipliers * scale_factors
+        base_mult /= max(base_mult.mean(), 1e-6)  # avoid divide-by-zero
+        scale_factors = np.random.uniform(
+            demand_scale_range[0], demand_scale_range[1], size=len(base_mult)
+        )
+        multipliers = base_mult * scale_factors
         multipliers = np.clip(multipliers, a_min=0.0, a_max=None)
         pat_name = f"{jname}_pat_{idx}"
         pat = wntr.network.elements.Pattern(pat_name, multipliers)
@@ -268,6 +271,7 @@ def _run_single_scenario(
     pump_outage_rate: float = 0.0,
     local_surge_rate: float = 0.0,
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
+    demand_scale_range: Tuple[float, float] = (0.8, 1.2),
     extreme_event_prob: Optional[float] = None,
 ) -> Optional[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
@@ -301,6 +305,7 @@ def _run_single_scenario(
             local_surge=surge,
             pipe_closure=pump_out or stress,
             tank_level_range=tank_level_range,
+            demand_scale_range=demand_scale_range,
             stress_test=stress,
         )
 
@@ -369,6 +374,7 @@ def run_scenarios(
     pump_outage_rate: float = 0.0,
     local_surge_rate: float = 0.0,
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
+    demand_scale_range: Tuple[float, float] = (0.8, 1.2),
     num_workers: Optional[int] = None,
     show_progress: bool = False,
 ) -> List[
@@ -393,6 +399,7 @@ def run_scenarios(
             pump_outage_rate=pump_outage_rate,
             local_surge_rate=local_surge_rate,
             tank_level_range=tank_level_range,
+            demand_scale_range=demand_scale_range,
         )
         if show_progress and tqdm is not None:
             raw_results = [
@@ -789,6 +796,14 @@ def main() -> None:
         help="Fractional range for initial tank levels (0=minimum, 1=maximum)",
     )
     parser.add_argument(
+        "--demand-scale-range",
+        type=float,
+        nargs=2,
+        metavar=("MIN", "MAX"),
+        default=(0.8, 1.2),
+        help="Uniform range for randomized demand scaling multipliers",
+    )
+    parser.add_argument(
         "--output-dir",
         default=DATA_DIR,
         help="Directory to store generated datasets",
@@ -827,6 +842,7 @@ def main() -> None:
         pump_outage_rate=args.pump_outage_rate,
         local_surge_rate=args.local_surge_rate,
         tank_level_range=tuple(args.tank_level_range),
+        demand_scale_range=tuple(args.demand_scale_range),
         num_workers=args.num_workers,
         show_progress=args.show_progress,
     )
