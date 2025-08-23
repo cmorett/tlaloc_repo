@@ -122,7 +122,8 @@ def _build_randomized_network(
     wn.options.time.duration = 24 * 3600
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.report_timestep = 3600
-    wn.options.quality.parameter = "NONE"
+    # Water quality is not modeled; leave defaults untouched
+    # wn.options.quality.parameter = "NONE"
 
     # Randomize initial tank levels uniformly across the provided range
     for tname in wn.tank_name_list:
