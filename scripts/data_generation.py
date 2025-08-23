@@ -94,19 +94,6 @@ def simulate_extreme_event(
             pump_controls[pump_id][h] = 0.0
         link = wn.get_link(pump_id)
         link.initial_status = LinkStatus.Closed
-    elif event_type == "quality_variation":
-        for source in wn.source_name_list:
-            # Some INP files might register a "source" that isn't actually
-            # present in the node registry (WNTR returns the file name with an
-            # added index like ``INP1``).  Only modify nodes that truly exist.
-            if source in wn.node_name_list:
-                n = wn.get_node(source)
-                if hasattr(n, "initial_quality"):
-                    factor = random.uniform(0.5, 1.5)
-                    n.initial_quality *= factor
-                    src = wn.get_source(source, None)
-                    if src is not None:
-                        src.strength *= factor
 
 
 
