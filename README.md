@@ -245,7 +245,8 @@ looks like:
 ```bash
 python scripts/data_generation.py \
     --num-scenarios 2000 --output-dir data/ --seed 42 \
-    --extreme-rate 0.03 --pump-outage-rate 0.1 --local-surge-rate 0.1
+    --extreme-rate 0.03 --pump-outage-rate 0.1 --local-surge-rate 0.1 \
+    --demand-scale-range 0.8 1.2
 ```
 Append `--deterministic` to enforce deterministic CUDA kernels.
 The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.npy`` and
@@ -257,6 +258,10 @@ when ``tqdm`` is installed.
 If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.
+
+Use ``--demand-scale-range MIN MAX`` to adjust the spread of hourly demand
+multipliers. The default ``0.8 1.2`` keeps demands centered around their
+original values while introducing modest variability.
 
 ``--pump-outage-rate`` randomly shuts off one pump for 2–4 hours while
 ``--local-surge-rate`` applies ±80% demand changes to a small subnetwork for a
