@@ -25,7 +25,7 @@ class ZeroModel(torch.nn.Module):
         self.y_std = torch.ones(1)
 
     def forward(self, x, edge_index, edge_attr=None, node_types=None, edge_types=None):
-        return torch.zeros(self.num_nodes, 2, device=x.device)
+        return torch.zeros(self.num_nodes, 1, device=x.device)
 
 
 class PerfectModel(torch.nn.Module):
@@ -49,19 +49,16 @@ def test_rollout_rmse_decreases_with_perfect_model():
     wn, node_to_index, pump_names, edge_index, node_types, edge_types = load_network('CTown.inp')
     wn.options.time.duration = 6 * 3600
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
     sim = wntr.sim.EpanetSimulator(wn)
     res = sim.run_sim(str(TEMP_DIR / 'rollout'))
 
     p_df = res.node['pressure'].clip(lower=5.0)
-    c_df = res.node['quality']
     steps = 6
     seq = []
     for i in range(steps):
         p = p_df.iloc[i + 1].to_numpy()
-        c = np.log1p(c_df.iloc[i + 1].to_numpy() / 1000.0)
-        seq.append(np.column_stack([p, c]))
+        seq.append(p[:, None])
     seq = np.stack(seq)
 
     model_bad = ZeroModel(len(wn.node_name_list)).to(device)
