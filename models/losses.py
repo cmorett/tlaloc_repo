@@ -22,16 +22,14 @@ def weighted_mtl_loss(
     *,
     loss_fn: str = "mae",
     w_press: float = 5.0,
-    w_cl: float = 0.0,
     w_flow: float = 3.0,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return total and component losses for pressure, chlorine and flow.
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return total and component losses for pressure and flow.
 
     Parameters
     ----------
-    pred_nodes: ``[..., num_nodes, 2]``
-        Predicted node outputs where channel ``0`` is pressure and ``1`` is
-        chlorine.
+    pred_nodes: ``[..., num_nodes, 1]``
+        Predicted node outputs where channel ``0`` is pressure.
     target_nodes: same shape as ``pred_nodes``
         Ground truth node outputs.
     edge_preds: ``[..., num_edges, 1]``
@@ -40,19 +38,14 @@ def weighted_mtl_loss(
         Ground truth edge flows.
     loss_fn: {"mae", "mse", "huber"}
         Base loss applied per component.
-    w_press, w_cl, w_flow: float
-        Weights for pressure, chlorine and flow losses respectively. The
-        defaults emphasise pressure and flow (``5.0`` and ``3.0``) while
-        chlorine is disabled (``0.0``).
+    w_press, w_flow: float
+        Weights for pressure and flow losses. The defaults emphasise pressure
+        and flow (``5.0`` and ``3.0``).
     """
     press_loss = _apply_loss(pred_nodes[..., 0], target_nodes[..., 0], loss_fn)
-    if pred_nodes.size(-1) > 1:
-        cl_loss = _apply_loss(pred_nodes[..., 1], target_nodes[..., 1], loss_fn)
-    else:
-        cl_loss = pred_nodes.new_tensor(0.0)
     flow_loss = _apply_loss(edge_preds, edge_target, loss_fn)
-    total = w_press * press_loss + w_cl * cl_loss + w_flow * flow_loss
-    return total, press_loss, cl_loss, flow_loss
+    total = w_press * press_loss + w_flow * flow_loss
+    return total, press_loss, flow_loss
 
 
 def compute_mass_balance_loss(
