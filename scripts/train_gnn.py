@@ -395,23 +395,13 @@ def plot_sequence_prediction(
     T = pred_np.shape[0]
     time = np.arange(T)
 
-    fig, axes = plt.subplots(2, 1, figsize=(8, 5))
-    axes[0].plot(time, true_np[:, node_idx, 0], label="Actual")
-    axes[0].plot(time, pred_np[:, node_idx, 0], "--", label="Predicted")
-    axes[0].set_xlabel("Timestep")
-    axes[0].set_ylabel("Pressure (m)")
-    axes[0].set_title(f"Node {node_idx} Pressure")
-    axes[0].legend()
-
-    if pred_np.shape[-1] >= 2:
-        axes[1].plot(time, np.expm1(true_np[:, node_idx, 1]) * 1000.0, label="Actual")
-        axes[1].plot(time, np.expm1(pred_np[:, node_idx, 1]) * 1000.0, "--", label="Predicted")
-        axes[1].set_xlabel("Timestep")
-        axes[1].set_ylabel("Chlorine (mg/L)")
-        axes[1].set_title(f"Node {node_idx} Chlorine")
-        axes[1].legend()
-    else:
-        axes[1].remove()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(time, true_np[:, node_idx, 0], label="Actual")
+    ax.plot(time, pred_np[:, node_idx, 0], "--", label="Predicted")
+    ax.set_xlabel("Timestep")
+    ax.set_ylabel("Pressure (m)")
+    ax.set_title(f"Node {node_idx} Pressure")
+    ax.legend()
 
     fig.tight_layout()
     fig.savefig(plots_dir / f"time_series_example_{run_name}.png")
