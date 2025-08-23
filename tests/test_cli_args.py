@@ -30,7 +30,7 @@ def test_cli_no_pressure_loss(tmp_path):
     np.save(tmp_path / "edge_index.npy", edge_index)
     np.save(tmp_path / "edge_attr.npy", edge_attr)
 
-    F = 4 + len(wn.pump_name_list)
+    F = 3 + len(wn.pump_name_list)
     N = len(wn.node_name_list)
     X = np.ones((1, N, F), dtype=np.float32)
     Y = np.zeros((1, N, 1), dtype=np.float32)
@@ -89,7 +89,7 @@ def test_cli_loss_weights(tmp_path):
     np.save(tmp_path / "edge_index.npy", edge_index)
     np.save(tmp_path / "edge_attr.npy", edge_attr)
 
-    F = 4 + len(wn.pump_name_list)
+    F = 3 + len(wn.pump_name_list)
     N = len(wn.node_name_list)
     X = np.ones((1, N, F), dtype=np.float32)
     Y = np.zeros((1, N, 1), dtype=np.float32)

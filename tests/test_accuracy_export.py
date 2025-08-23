@@ -10,17 +10,13 @@ from scripts.train_gnn import RunningStats, save_accuracy_metrics
 def test_save_accuracy_metrics(tmp_path):
     true_p = np.array([10.0, 12.0])
     pred_p = np.array([9.5, 12.5])
-    true_c = np.log1p(np.array([0.5, 0.4]) / 1000.0)
-    pred_c = np.log1p(np.array([0.45, 0.6]) / 1000.0)
 
     p_stats = RunningStats()
     p_stats.update(pred_p, true_p)
-    c_stats = RunningStats()
-    c_stats.update(pred_c, true_c)
 
-    save_accuracy_metrics(p_stats, "unit", logs_dir=tmp_path, chlorine_stats=c_stats)
+    save_accuracy_metrics(p_stats, "unit", logs_dir=tmp_path)
     f = tmp_path / "accuracy_unit.csv"
     assert f.exists()
     df = pd.read_csv(f, index_col=0)
     assert "Pressure (m)" in df.columns
-    assert "Chlorine (mg/L)" in df.columns
+    assert df.shape[1] == 1
