@@ -477,6 +477,22 @@ energy–pressure trade-off charts and convergence curves.  All images are
 written to the `plots/` directory so they can be included in reports or
 presentations easily.
 
+For demand forecasts the helper `scripts/forecast_uncertainty.py` computes
+hourly forecast errors and 95% confidence intervals.  It overlays the mean
+forecast and actual demand with shaded error bands and saves the figure to
+`figures/forecast_uncertainty.png` by default:
+
+```python
+from scripts.forecast_uncertainty import plot_forecast_uncertainty
+import pandas as pd
+
+# 48 hourly samples covering two days
+timestamps = pd.date_range("2021-01-01", periods=len(actual), freq="H")
+plot_forecast_uncertainty(actual, forecast, timestamps)
+```
+
+The plot helps visualize how forecast accuracy varies throughout the day.
+
 ## Hyperparameter sweep
 
 Use `scripts/sweep_training.py` to evaluate different loss weights and model

@@ -23,6 +23,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `train_gnn.py` – train a graph neural network surrogate on generated data. Pass `--checkpoint` to enable gradient checkpointing when GPU memory is limited.
   - `sweep_training.py` – run hyperparameter sweeps over loss weights and architecture.
   - `plot_sweep.py` – visualise pressure MAE across sweep configurations.
+  - `forecast_uncertainty.py` – compute hourly forecast errors and plot forecast vs actual demand with confidence intervals.
   - `reproducibility.py` – helper utilities for seeding and config logging.
 - `notebooks/` – quickstart notebooks visualising common analyses.
   - `00_validate_surrogate_rollout.ipynb` – compare 1-step and multi-step surrogate errors.
