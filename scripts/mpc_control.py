@@ -242,7 +242,6 @@ def load_network(
         simulation.
     """
     wn = wntr.network.WaterNetworkModel(inp_file)
-    wn.options.quality.parameter = "NONE"
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.report_timestep = 3600
 
