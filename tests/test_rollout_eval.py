@@ -66,7 +66,7 @@ def test_rollout_rmse_decreases_with_perfect_model():
 
     model_bad = ZeroModel(len(wn.node_name_list)).to(device)
     model_good = PerfectModel(seq).to(device)
-    rmse_bad_p, rmse_bad_c = rollout_surrogate(
+    rmse_bad_p = rollout_surrogate(
         model_bad,
         edge_index,
         None,
@@ -77,7 +77,7 @@ def test_rollout_rmse_decreases_with_perfect_model():
         torch.tensor(node_types, dtype=torch.long),
         torch.tensor(edge_types, dtype=torch.long),
     )
-    rmse_good_p, rmse_good_c = rollout_surrogate(
+    rmse_good_p = rollout_surrogate(
         model_good,
         edge_index,
         None,
@@ -89,8 +89,5 @@ def test_rollout_rmse_decreases_with_perfect_model():
         torch.tensor(edge_types, dtype=torch.long),
     )
     assert np.all(rmse_good_p <= rmse_bad_p + 1e-8)
-    assert np.all(rmse_good_c <= rmse_bad_c + 1e-8)
     assert not np.any(np.isnan(rmse_bad_p))
-    assert not np.any(np.isnan(rmse_bad_c))
     assert not np.any(np.isnan(rmse_good_p))
-    assert not np.any(np.isnan(rmse_good_c))

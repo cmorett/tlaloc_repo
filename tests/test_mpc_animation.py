@@ -14,12 +14,10 @@ def test_animate_mpc_network(tmp_path: Path):
     pump_names = wn.pump_name_list
     node_names = wn.node_name_list
     pressures = {n: 50.0 for n in node_names}
-    chlorine = {n: 0.3 for n in node_names}
     df = pd.DataFrame([
         {
             'time': 0,
             'pressures': pressures,
-            'chlorine': chlorine,
             'controls': [0.5] * len(pump_names),
         }
     ])
