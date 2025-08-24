@@ -96,7 +96,7 @@ Edge attributes describing pipe length, diameter and roughness are stored in
 ``edge_attr.npy`` by ``scripts/data_generation.py``. ``train_gnn.py`` loads this
 file by default via ``--edge-attr-path``. Pump curve coefficients are saved as
 ``pump_coeffs.npy`` and included in a dedicated pump curve loss during training
-(``--pump-loss``) with weight ``--w_pump``.
+(``--pump-loss`` or ``--pump_loss``) with weight ``--w_pump``.
 Optional physics losses in ``models/loss_utils.py`` further regularise
 training. ``compute_mass_balance_loss`` penalises node flow imbalance,
 ``pressure_headloss_consistency_loss`` enforces Hazen–Williams head losses and

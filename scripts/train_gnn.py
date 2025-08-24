@@ -2361,11 +2361,14 @@ if __name__ == "__main__":
     parser.set_defaults(pressure_loss=True)
     parser.add_argument(
         "--pump-loss",
+        "--pump_loss",
+        dest="pump_loss",
         action="store_true",
         help="Add pump curve consistency penalty",
     )
     parser.add_argument(
         "--no-pump-loss",
+        "--no-pump_loss",
         dest="pump_loss",
         action="store_false",
         help="Disable pump curve consistency penalty",
