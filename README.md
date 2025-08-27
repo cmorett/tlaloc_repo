@@ -255,6 +255,15 @@ The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.np
 ``--num-workers`` to override the number of parallel workers if needed.
 Pass ``--show-progress`` to display a live progress bar during simulation
 when ``tqdm`` is installed.
+Use ``--fixed-pump-speed`` to hold pumps at a constant relative speed and
+skip pump randomization. For example, running
+
+```bash
+python scripts/data_generation.py --fixed-pump-speed 1.0 \
+    --extreme-rate 0 --pump-outage-rate 0 --local-surge-rate 0
+```
+
+generates a clean batch to inspect mean pressures.
 If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.

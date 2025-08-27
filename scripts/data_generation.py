@@ -107,6 +107,7 @@ def _build_randomized_network(
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
     demand_scale_range: Tuple[float, float] = (0.8, 1.2),
     stress_test: bool = False,
+    fixed_pump_speed: Optional[float] = None,
 ) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Create a network with randomized demand patterns and pump controls.
 
@@ -116,7 +117,9 @@ def _build_randomized_network(
     Gaussian noise (a truncated random walk).  A short dwell time around
     zero prevents unrealistic rapid cycling and at least one pump remains
     active every hour.  Additional modifications such as local demand
-    surges, pump outages and pipe closures can be injected via flags.
+    surges, pump outages and pipe closures can be injected via flags. When
+    ``fixed_pump_speed`` is provided the random-walk logic is skipped and all
+    pumps run at the given constant speed.
     """
 
     wn = wntr.network.WaterNetworkModel(inp_file)
@@ -174,55 +177,61 @@ def _build_randomized_network(
             scale_dict[n] = arr
             pattern_dict[n].multipliers = arr
 
-    pump_controls: Dict[str, List[float]] = {pn: [] for pn in wn.pump_name_list}
+    pump_controls: Dict[str, List[float]]
+    if fixed_pump_speed is not None:
+        pump_controls = {
+            pn: [float(fixed_pump_speed)] * hours for pn in wn.pump_name_list
+        }
+    else:
+        pump_controls = {pn: [] for pn in wn.pump_name_list}
 
-    # Pump speeds now follow a continuous, temporally correlated process. Each
-    # pump starts from a random speed in ``[0.3, 0.9 * MAX_PUMP_SPEED]`` and
-    # evolves through a truncated Gaussian random walk that limits hourly
-    # changes.  The ``is_on`` state is tracked with a small dwell time to avoid
-    # unrealistic rapid cycling near zero.
-    max_step = 0.1 * MAX_PUMP_SPEED  # maximum absolute change per hour
-    min_dwell = 2   # minimum hours before switching on/off
+        # Pump speeds follow a continuous, temporally correlated process. Each
+        # pump starts from a random speed in ``[0.3, 0.9 * MAX_PUMP_SPEED]`` and
+        # evolves through a truncated Gaussian random walk that limits hourly
+        # changes.  The ``is_on`` state is tracked with a small dwell time to avoid
+        # unrealistic rapid cycling near zero.
+        max_step = 0.1 * MAX_PUMP_SPEED  # maximum absolute change per hour
+        min_dwell = 2  # minimum hours before switching on/off
 
-    current_speed: Dict[str, float] = {}
-    dwell_time: Dict[str, int] = {}
-    is_on: Dict[str, bool] = {}
+        current_speed: Dict[str, float] = {}
+        dwell_time: Dict[str, int] = {}
+        is_on: Dict[str, bool] = {}
 
-    on_threshold = 0.05 * MAX_PUMP_SPEED
+        on_threshold = 0.05 * MAX_PUMP_SPEED
 
-    for pn in wn.pump_name_list:
-        spd = random.uniform(0.3, 0.9 * MAX_PUMP_SPEED)
-        current_speed[pn] = spd
-        pump_controls[pn].append(spd)
-        is_on[pn] = spd > on_threshold
-        dwell_time[pn] = 1
-
-    for _h in range(1, hours):
         for pn in wn.pump_name_list:
-            prev = current_speed[pn]
-            step = random.gauss(0.0, 0.05 * MAX_PUMP_SPEED)
-            step = float(np.clip(step, -max_step, max_step))
-            cand = prev + step
-            if is_on[pn] and cand <= on_threshold and dwell_time[pn] < min_dwell:
-                cand = max(cand, 0.1)
-            if not is_on[pn] and cand > on_threshold and dwell_time[pn] < min_dwell:
-                cand = min(cand, on_threshold)
-            cand = float(np.clip(cand, 0.0, MAX_PUMP_SPEED))
-            pump_controls[pn].append(cand)
-            current_speed[pn] = cand
-            if (cand > on_threshold) == is_on[pn]:
-                dwell_time[pn] += 1
-            else:
-                is_on[pn] = cand > on_threshold
-                dwell_time[pn] = 1
+            spd = random.uniform(0.3, 0.9 * MAX_PUMP_SPEED)
+            current_speed[pn] = spd
+            pump_controls[pn].append(spd)
+            is_on[pn] = spd > on_threshold
+            dwell_time[pn] = 1
 
-        if wn.pump_name_list and all(pump_controls[pn][-1] <= on_threshold for pn in wn.pump_name_list):
-            keep_on = random.choice(wn.pump_name_list)
-            forced = random.uniform(0.3, 0.9 * MAX_PUMP_SPEED)
-            pump_controls[keep_on][-1] = forced
-            current_speed[keep_on] = forced
-            is_on[keep_on] = True
-            dwell_time[keep_on] = 1
+        for _h in range(1, hours):
+            for pn in wn.pump_name_list:
+                prev = current_speed[pn]
+                step = random.gauss(0.0, 0.05 * MAX_PUMP_SPEED)
+                step = float(np.clip(step, -max_step, max_step))
+                cand = prev + step
+                if is_on[pn] and cand <= on_threshold and dwell_time[pn] < min_dwell:
+                    cand = max(cand, 0.1)
+                if not is_on[pn] and cand > on_threshold and dwell_time[pn] < min_dwell:
+                    cand = min(cand, on_threshold)
+                cand = float(np.clip(cand, 0.0, MAX_PUMP_SPEED))
+                pump_controls[pn].append(cand)
+                current_speed[pn] = cand
+                if (cand > on_threshold) == is_on[pn]:
+                    dwell_time[pn] += 1
+                else:
+                    is_on[pn] = cand > on_threshold
+                    dwell_time[pn] = 1
+
+            if wn.pump_name_list and all(pump_controls[pn][-1] <= on_threshold for pn in wn.pump_name_list):
+                keep_on = random.choice(wn.pump_name_list)
+                forced = random.uniform(0.3, 0.9 * MAX_PUMP_SPEED)
+                pump_controls[keep_on][-1] = forced
+                current_speed[keep_on] = forced
+                is_on[keep_on] = True
+                dwell_time[keep_on] = 1
 
     # Inject pump outage by forcing a pump off for a short period
     if pump_outage and wn.pump_name_list:
@@ -272,6 +281,7 @@ def _run_single_scenario(
     local_surge_rate: float = 0.0,
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
     demand_scale_range: Tuple[float, float] = (0.8, 1.2),
+    fixed_pump_speed: Optional[float] = None,
     extreme_event_prob: Optional[float] = None,
 ) -> Optional[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
@@ -307,6 +317,7 @@ def _run_single_scenario(
             tank_level_range=tank_level_range,
             demand_scale_range=demand_scale_range,
             stress_test=stress,
+            fixed_pump_speed=fixed_pump_speed,
         )
 
         events = []
@@ -375,6 +386,7 @@ def run_scenarios(
     local_surge_rate: float = 0.0,
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
     demand_scale_range: Tuple[float, float] = (0.8, 1.2),
+    fixed_pump_speed: Optional[float] = None,
     num_workers: Optional[int] = None,
     show_progress: bool = False,
 ) -> List[
@@ -400,6 +412,7 @@ def run_scenarios(
             local_surge_rate=local_surge_rate,
             tank_level_range=tank_level_range,
             demand_scale_range=demand_scale_range,
+            fixed_pump_speed=fixed_pump_speed,
         )
         if show_progress and tqdm is not None:
             raw_results = [
@@ -788,6 +801,12 @@ def main() -> None:
         help="Probability of applying a localized demand surge",
     )
     parser.add_argument(
+        "--fixed-pump-speed",
+        type=float,
+        default=None,
+        help="Run all pumps at a constant relative speed and disable random walks",
+    )
+    parser.add_argument(
         "--tank-level-range",
         type=float,
         nargs=2,
@@ -851,6 +870,7 @@ def main() -> None:
         local_surge_rate=args.local_surge_rate,
         tank_level_range=tuple(args.tank_level_range),
         demand_scale_range=tuple(args.demand_scale_range),
+        fixed_pump_speed=args.fixed_pump_speed,
         num_workers=args.num_workers,
         show_progress=args.show_progress,
     )
