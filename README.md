@@ -261,7 +261,8 @@ scenarios may be slightly smaller than requested.
 
 Use ``--demand-scale-range MIN MAX`` to adjust the spread of hourly demand
 multipliers. The default ``0.8 1.2`` keeps demands centered around their
-original values while introducing modest variability.
+original values while introducing modest variability. Pass ``--no-demand-scaling``
+to disable random demand multipliers altogether (equivalent to ``--demand-scale-range 1 1``).
 
 ``--pump-outage-rate`` randomly shuts off one pump for 2–4 hours while
 ``--local-surge-rate`` applies ±80% demand changes to a small subnetwork for a

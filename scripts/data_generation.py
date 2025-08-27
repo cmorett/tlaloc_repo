@@ -804,6 +804,11 @@ def main() -> None:
         help="Uniform range for randomized demand scaling multipliers",
     )
     parser.add_argument(
+        "--no-demand-scaling",
+        action="store_true",
+        help="Disable randomized demand scaling and use base demands",
+    )
+    parser.add_argument(
         "--output-dir",
         default=DATA_DIR,
         help="Directory to store generated datasets",
@@ -826,6 +831,9 @@ def main() -> None:
         help="Display a progress bar during scenario simulation",
     )
     args = parser.parse_args()
+
+    if args.no_demand_scaling:
+        args.demand_scale_range = (1.0, 1.0)
 
     if args.seed is not None:
         configure_seeds(args.seed, args.deterministic)
