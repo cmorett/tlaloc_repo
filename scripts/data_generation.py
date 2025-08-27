@@ -74,6 +74,7 @@ from wntr.metrics.economic import pump_energy
 import networkx as nx
 import json
 import csv
+import stat
 
 
 def simulate_extreme_event(
@@ -1028,18 +1029,25 @@ def append_pressure_stats(
         std_pressure,
     ]
     stats_path.parent.mkdir(parents=True, exist_ok=True)
-    if stats_path.exists():
-        try:
-            current_mode = stats_path.stat().st_mode
-            stats_path.chmod(current_mode | 0o666)
-        except OSError:
-            pass
-    try:
+
+    def _write() -> None:
         with open(stats_path, "a", newline="") as f:
             writer = csv.writer(f)
             if write_header:
                 writer.writerow(header)
             writer.writerow(row)
+
+    try:
+        _write()
+    except PermissionError:
+        try:
+            if stats_path.exists():
+                stats_path.chmod(stats_path.stat().st_mode | stat.S_IWRITE)
+                _write()
+            else:
+                raise OSError
+        except OSError:
+            warnings.warn(f"Could not write to {stats_path}")
     except OSError:
         warnings.warn(f"Could not write to {stats_path}")
 
