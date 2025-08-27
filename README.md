@@ -264,6 +264,10 @@ python scripts/data_generation.py --fixed-pump-speed 1.0 \
 ```
 
 generates a clean batch to inspect mean pressures.
+After each run the script prints the mean and standard deviation of all
+simulated pressures and appends these values along with the key flags to
+`pressure_stats.csv` inside the chosen `--output-dir` so repeated runs can be
+compared.
 If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.
