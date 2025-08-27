@@ -1028,13 +1028,19 @@ def append_pressure_stats(
         std_pressure,
     ]
     stats_path.parent.mkdir(parents=True, exist_ok=True)
+    if stats_path.exists():
+        try:
+            current_mode = stats_path.stat().st_mode
+            stats_path.chmod(current_mode | 0o666)
+        except OSError:
+            pass
     try:
         with open(stats_path, "a", newline="") as f:
             writer = csv.writer(f)
             if write_header:
                 writer.writerow(header)
             writer.writerow(row)
-    except PermissionError:
+    except OSError:
         warnings.warn(f"Could not write to {stats_path}")
 
 if __name__ == "__main__":
