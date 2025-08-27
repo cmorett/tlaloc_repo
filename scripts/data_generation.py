@@ -73,6 +73,7 @@ from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
 import networkx as nx
 import json
+import csv
 
 
 def simulate_extreme_event(
@@ -957,6 +958,42 @@ def main() -> None:
     with open(os.path.join(out_dir, "test_results_list.pkl"), "wb") as f:
         pickle.dump(test_res, f)
 
+    mean_pressure = float(np.mean(all_pressures))
+    std_pressure = float(np.std(all_pressures))
+    print(f"Mean pressure: {mean_pressure:.2f} m")
+    print(f"Std pressure: {std_pressure:.2f} m")
+
+    stats_path = out_dir / "pressure_stats.csv"
+    write_header = not stats_path.exists()
+    header = [
+        "timestamp",
+        "num_scenarios",
+        "fixed_pump_speed",
+        "demand_min",
+        "demand_max",
+        "extreme_rate",
+        "pump_outage_rate",
+        "local_surge_rate",
+        "mean_pressure",
+        "std_pressure",
+    ]
+    row = [
+        run_ts,
+        N,
+        args.fixed_pump_speed if args.fixed_pump_speed is not None else "",
+        args.demand_scale_range[0],
+        args.demand_scale_range[1],
+        args.extreme_rate,
+        args.pump_outage_rate,
+        args.local_surge_rate,
+        mean_pressure,
+        std_pressure,
+    ]
+    with open(stats_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(header)
+        writer.writerow(row)
 
 if __name__ == "__main__":
     main()
