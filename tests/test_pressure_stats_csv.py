@@ -132,7 +132,7 @@ def test_append_pressure_stats_permission_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr("builtins.open", _raise)
 
-    with pytest.warns(UserWarning, match="Could not write"):
+    with pytest.raises(RuntimeError):
         append_pressure_stats(
             stats_path,
             args,
@@ -142,4 +142,4 @@ def test_append_pressure_stats_permission_error(tmp_path, monkeypatch):
             timestamp="20240101_000000",
         )
 
-    assert not stats_path.exists()
+    assert stats_path.exists()
