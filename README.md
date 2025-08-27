@@ -267,7 +267,9 @@ generates a clean batch to inspect mean pressures.
 After each run the script prints the mean and standard deviation of all
 simulated pressures and appends these values along with the key flags to
 `pressure_stats.csv` inside the chosen `--output-dir` so repeated runs can be
-compared.
+compared. The CSV now records all command line parameters such as
+`--sequence-length`, `--deterministic`, `--num-workers` and others for easier
+reproducibility.
 If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.

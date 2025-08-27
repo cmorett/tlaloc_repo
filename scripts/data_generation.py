@@ -964,28 +964,66 @@ def main() -> None:
     print(f"Std pressure: {std_pressure:.2f} m")
 
     stats_path = out_dir / "pressure_stats.csv"
+    append_pressure_stats(
+        stats_path,
+        args,
+        N,
+        mean_pressure,
+        std_pressure,
+        run_ts,
+    )
+
+
+def append_pressure_stats(
+    stats_path: Path,
+    args: argparse.Namespace,
+    num_scenarios: int,
+    mean_pressure: float,
+    std_pressure: float,
+    timestamp: str,
+) -> None:
+    """Append a row of run parameters and pressure statistics to ``stats_path``."""
+
     write_header = not stats_path.exists()
     header = [
         "timestamp",
         "num_scenarios",
+        "seed",
+        "deterministic",
+        "num_workers",
+        "sequence_length",
         "fixed_pump_speed",
         "demand_min",
         "demand_max",
         "extreme_rate",
         "pump_outage_rate",
         "local_surge_rate",
+        "tank_min",
+        "tank_max",
+        "no_demand_scaling",
+        "show_progress",
+        "output_dir",
         "mean_pressure",
         "std_pressure",
     ]
     row = [
-        run_ts,
-        N,
+        timestamp,
+        num_scenarios,
+        args.seed if args.seed is not None else "",
+        bool(args.deterministic),
+        args.num_workers if args.num_workers is not None else "",
+        args.sequence_length,
         args.fixed_pump_speed if args.fixed_pump_speed is not None else "",
         args.demand_scale_range[0],
         args.demand_scale_range[1],
         args.extreme_rate,
         args.pump_outage_rate,
         args.local_surge_rate,
+        args.tank_level_range[0],
+        args.tank_level_range[1],
+        getattr(args, "no_demand_scaling", False),
+        bool(getattr(args, "show_progress", False)),
+        str(args.output_dir),
         mean_pressure,
         std_pressure,
     ]

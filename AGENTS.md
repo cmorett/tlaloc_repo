@@ -55,6 +55,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `test_output_clamp.py`
   - `test_physics_training.py`
   - `test_pump_controls.py`
+  - `test_pressure_stats_csv.py`
   - `test_recurrent_forward.py`
   - `test_reservoir_feature.py`
   - `test_reservoir_mask.py`
