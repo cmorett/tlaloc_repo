@@ -828,8 +828,6 @@ def train_sequence(
                     .reshape(edge_index.size(1), -1)
                 )
                 dem_seq = X_seq[..., 0]
-                if dem_seq.size(1) > 1:
-                    dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
                 demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
                 if hasattr(model, "x_mean") and model.x_mean is not None:
                     if model.x_mean.ndim == 2:
@@ -1062,8 +1060,6 @@ def evaluate_sequence(
                             .reshape(edge_index.size(1), -1)
                         )
                         dem_seq = X_seq[..., 0]
-                        if dem_seq.size(1) > 1:
-                            dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
                         demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
                         if hasattr(model, "x_mean") and model.x_mean is not None:
                             if model.x_mean.ndim == 2:
