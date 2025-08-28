@@ -882,7 +882,14 @@ def main() -> None:
     all_pressures: List[float] = []
     base_pressures: List[float] = []
     manifest_records: List[Dict[str, float]] = []
-    for i, (sim, scale_dict, pump_ctrl) in enumerate(results):
+    # Optional progress bar for post-processing
+    iterator = enumerate(results)
+    if args.show_progress and tqdm is not None:
+        iterator = tqdm(iterator, total=len(results), desc="Post-processing")
+    elif args.show_progress and tqdm is None:
+        warnings.warn("tqdm is not installed; post-processing progress disabled.")
+
+    for i, (sim, scale_dict, pump_ctrl) in iterator:
         p_vals = sim.node["pressure"].values.astype(float).ravel()
         all_pressures.extend(p_vals.tolist())
         if getattr(sim, "scenario_type", "normal") == "normal":
@@ -957,6 +964,8 @@ def main() -> None:
         pickle.dump(val_res, f)
     with open(os.path.join(out_dir, "test_results_list.pkl"), "wb") as f:
         pickle.dump(test_res, f)
+
+    print("Post-processing complete")
 
     mean_pressure = float(np.mean(all_pressures))
     std_pressure = float(np.std(all_pressures))

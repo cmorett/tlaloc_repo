@@ -253,8 +253,8 @@ The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.np
 ``pump_coeffs.npy`` alongside the feature and label arrays. It utilizes all available CPU cores by default. The value
 ``2000`` matches the new default of ``--num-scenarios``. Use
 ``--num-workers`` to override the number of parallel workers if needed.
-Pass ``--show-progress`` to display a live progress bar during simulation
-when ``tqdm`` is installed.
+Pass ``--show-progress`` to display live progress bars during scenario
+simulation and post-processing when ``tqdm`` is installed.
 Use ``--fixed-pump-speed`` to hold pumps at a constant relative speed and
 skip pump randomization. For example, running
 
