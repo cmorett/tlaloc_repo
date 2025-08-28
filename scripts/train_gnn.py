@@ -1660,12 +1660,15 @@ def main(args: argparse.Namespace):
             amp=args.amp,
             progress=False,
         )
+        # ``evaluate_sequence`` returns loss components in the order:
+        # (total, pressure, flow, mass, head, symmetry, pump, mass_imbalance,
+        #  head_violation). Use these baseline physics losses to set scales.
         if args.physics_loss and mass_scale <= 0:
-            mass_scale = float(base_eval[4]) if base_eval[4] > 0 else 1.0
+            mass_scale = float(base_eval[3]) if base_eval[3] > 0 else 1.0
         if args.pressure_loss and head_scale <= 0:
-            head_scale = float(base_eval[5]) if base_eval[5] > 0 else 1.0
+            head_scale = float(base_eval[4]) if base_eval[4] > 0 else 1.0
         if args.pump_loss and pump_scale <= 0:
-            pump_scale = float(base_eval[7]) if base_eval[7] > 0 else 1.0
+            pump_scale = float(base_eval[6]) if base_eval[6] > 0 else 1.0
     MIN_SCALE = 1e-3
     mass_scale = max(mass_scale, MIN_SCALE)
     head_scale = max(head_scale, MIN_SCALE)
