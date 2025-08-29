@@ -2141,15 +2141,25 @@ def main(args: argparse.Namespace):
                             node_out = (
                                 out["node_outputs"] if isinstance(out, dict) else out
                             )
-                            node_out = node_out * y_std_node + y_mean_node
-                            batch_y = batch.y * y_std_node + y_mean_node
+                            num_nodes = y_mean_node.shape[0]
+                            node_out = node_out.view(batch.num_graphs, num_nodes, -1)
+                            batch_y = batch.y.view(batch.num_graphs, num_nodes, -1)
+                            node_out = node_out * y_std_node.view(1, num_nodes, -1) + y_mean_node.view(1, num_nodes, -1)
+                            batch_y = batch_y * y_std_node.view(1, num_nodes, -1) + y_mean_node.view(1, num_nodes, -1)
+                            node_out = node_out.view(-1, node_out.shape[-1])
+                            batch_y = batch_y.view(-1, batch_y.shape[-1])
                             if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
                                 y_mean_edge = model.y_mean['edge_outputs'].to(out.device)
                                 y_std_edge = model.y_std['edge_outputs'].to(out.device)
-                                edge_out = out["edge_outputs"].squeeze(-1)
-                                edge_y = batch.edge_y.squeeze(-1)
-                                edge_out = edge_out * y_std_edge + y_mean_edge
-                                edge_y = edge_y * y_std_edge + y_mean_edge
+                                edge_out = out["edge_outputs"]
+                                edge_y = batch.edge_y
+                                num_edges = y_mean_edge.shape[0]
+                                edge_out = edge_out.view(batch.num_graphs, num_edges, -1)
+                                edge_y = edge_y.view(batch.num_graphs, num_edges, -1)
+                                edge_out = edge_out * y_std_edge.view(1, num_edges, -1) + y_mean_edge.view(1, num_edges, -1)
+                                edge_y = edge_y * y_std_edge.view(1, num_edges, -1) + y_mean_edge.view(1, num_edges, -1)
+                                edge_out = edge_out.view(-1, edge_out.shape[-1])
+                                edge_y = edge_y.view(-1, edge_y.shape[-1])
                             else:
                                 edge_out = edge_y = None
                         else:
