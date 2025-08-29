@@ -333,6 +333,60 @@ def plot_loss_components(
     return fig if return_fig else None
 
 
+def pred_vs_actual_scatter(
+    pred: Sequence[float],
+    true: Sequence[float],
+    run_name: str,
+    plots_dir: Optional[Path] = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Plot predicted vs actual pressures as a scatter plot."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    p = np.asarray(pred, dtype=float)
+    t = np.asarray(true, dtype=float)
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.scatter(t, p, s=5, alpha=0.5)
+    lims = [min(t.min(), p.min()), max(t.max(), p.max())]
+    ax.plot(lims, lims, "k--", linewidth=1)
+    ax.set_xlabel("Actual Pressure (m)")
+    ax.set_ylabel("Predicted Pressure (m)")
+    ax.set_title("Pressure: Predicted vs Actual")
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"pred_vs_actual_pressure_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
+def plot_error_histogram(
+    errors: Sequence[float],
+    run_name: str,
+    plots_dir: Optional[Path] = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Plot histogram and box plot of prediction errors."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    err = np.asarray(errors, dtype=float)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].hist(err, bins=50, color="tab:blue", alpha=0.7)
+    axes[0].set_title("Pressure Error")
+    axes[1].boxplot(err, vert=True)
+    axes[1].set_title("Pressure Error")
+    for ax in axes:
+        ax.tick_params(labelsize=8)
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"error_histograms_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
 def plot_sequence_prediction(
     model: nn.Module,
     dataset: "SequenceDataset",
@@ -2071,6 +2125,8 @@ def main(args: argparse.Namespace):
         model.eval()
 
         p_stats = RunningStats()
+        pred_samples: List[float] = []
+        true_samples: List[float] = []
 
         exclude = set(wn.reservoir_name_list) | set(wn.tank_name_list)
         node_mask_np = np.array([n not in exclude for n in wn.node_name_list])
@@ -2122,7 +2178,13 @@ def main(args: argparse.Namespace):
                     true_p = Y_node[..., 0].reshape(-1, node_mask.numel())
                     pred_p = pred_p[:, node_mask].reshape(-1)
                     true_p = true_p[:, node_mask].reshape(-1)
-                    p_stats.update(pred_p.cpu().numpy(), true_p.cpu().numpy())
+                    pred_np = pred_p.cpu().numpy()
+                    true_np = true_p.cpu().numpy()
+                    p_stats.update(pred_np, true_np)
+                    if args.eval_sample != 0 and len(pred_samples) < args.eval_sample:
+                        remain = args.eval_sample - len(pred_samples)
+                        pred_samples.extend(pred_np[:remain])
+                        true_samples.extend(true_np[:remain])
             else:
                 for batch in test_loader:
                     batch = batch.to(device, non_blocking=True)
@@ -2185,9 +2247,20 @@ def main(args: argparse.Namespace):
                     mask_batch = node_mask.repeat(batch.num_graphs)
                     pred_p = node_out[:, 0][mask_batch]
                     true_p = batch_y[:, 0][mask_batch]
-                    p_stats.update(pred_p.cpu().numpy(), true_p.cpu().numpy())
+                    pred_np = pred_p.cpu().numpy()
+                    true_np = true_p.cpu().numpy()
+                    p_stats.update(pred_np, true_np)
+                    if args.eval_sample != 0 and len(pred_samples) < args.eval_sample:
+                        remain = args.eval_sample - len(pred_samples)
+                        pred_samples.extend(pred_np[:remain])
+                        true_samples.extend(true_np[:remain])
 
         save_accuracy_metrics(p_stats, run_name)
+        if args.eval_sample != 0 and pred_samples:
+            pred_arr = np.array(pred_samples, dtype=float)
+            true_arr = np.array(true_samples, dtype=float)
+            pred_vs_actual_scatter(pred_arr, true_arr, run_name)
+            plot_error_histogram(pred_arr - true_arr, run_name)
 
     cfg_extra = {
         "norm_stats_md5": norm_md5,
@@ -2450,6 +2523,12 @@ if __name__ == "__main__":
         "--neighbor-sampling",
         action="store_true",
         help="Use random neighbor sampling instead of clustering",
+    )
+    parser.add_argument(
+        "--eval-sample",
+        type=int,
+        default=1000,
+        help="Number of predictions to retain for evaluation plots (0 disables)",
     )
     parser.add_argument(
         "--checkpoint",

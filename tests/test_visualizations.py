@@ -7,6 +7,8 @@ from scripts.train_gnn import (
     SequenceDataset,
     plot_sequence_prediction,
     correlation_heatmap,
+    pred_vs_actual_scatter,
+    plot_error_histogram,
 )
 from scripts.mpc_control import plot_convergence_curve
 
@@ -93,6 +95,15 @@ def test_plot_sequence_prediction_single_step(tmp_path: Path):
 
     plot_sequence_prediction(model, ds, "unit1", plots_dir=tmp_path)
     assert (tmp_path / "time_series_example_unit1.png").exists()
+
+
+def test_pred_vs_actual_scatter(tmp_path: Path):
+    pred = np.linspace(0, 1, 10)
+    true = np.linspace(0, 1, 10)
+    pred_vs_actual_scatter(pred, true, "unit", plots_dir=tmp_path)
+    assert (tmp_path / "pred_vs_actual_pressure_unit.png").exists()
+    plot_error_histogram(pred - true, "unit", plots_dir=tmp_path)
+    assert (tmp_path / "error_histograms_unit.png").exists()
 
 
 def test_correlation_heatmap(tmp_path: Path):
