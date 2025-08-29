@@ -562,8 +562,8 @@ def train(
     loss_fn: str = "mae",
     node_mask: Optional[torch.Tensor] = None,
     progress: bool = True,
-    w_press: float = 3.0,
-    w_flow: float = 1.0,
+    w_press: float = 5.0,
+    w_flow: float = 3.0,
 ):
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
