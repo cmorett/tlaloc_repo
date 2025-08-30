@@ -1791,7 +1791,7 @@ def main(args: argparse.Namespace):
                     )
                 else:
                     pump_scale = 1.0
-    MIN_SCALE = 1e-3
+    MIN_SCALE = 1.0
     mass_scale = max(mass_scale, MIN_SCALE)
     head_scale = max(head_scale, MIN_SCALE)
     pump_scale = max(pump_scale, MIN_SCALE)
@@ -2646,19 +2646,19 @@ if __name__ == "__main__":
         "--mass-scale",
         type=float,
         default=0.0,
-        help="Baseline magnitude for mass conservation loss (0 = auto-compute; clamped to ≥1e-3)",
+        help="Baseline magnitude for mass conservation loss (0 = auto-compute; clamped to ≥1.0)",
     )
     parser.add_argument(
         "--head-scale",
         type=float,
         default=0.0,
-        help="Baseline magnitude for head loss consistency (0 = auto-compute; clamped to ≥1e-3)",
+        help="Baseline magnitude for head loss consistency (0 = auto-compute; clamped to ≥1.0)",
     )
     parser.add_argument(
         "--pump-scale",
         type=float,
         default=0.0,
-        help="Baseline magnitude for pump curve loss (0 = auto-compute; clamped to ≥1e-3)",
+        help="Baseline magnitude for pump curve loss (0 = auto-compute; clamped to ≥1.0)",
     )
     parser.add_argument(
         "--cluster-batch-size",

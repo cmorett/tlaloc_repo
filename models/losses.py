@@ -184,7 +184,7 @@ def scale_physics_losses(
         Raw physics loss values.
     mass_scale, head_scale, pump_scale: float, optional
         Baseline magnitudes for each loss. Values ``\le 0`` disable scaling.
-        Very small positive scales are clamped to ``1e-3`` to avoid division
+        Very small positive scales are clamped to ``1.0`` to avoid division
         by near-zero numbers.
 
     Returns
@@ -192,7 +192,7 @@ def scale_physics_losses(
     Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         Scaled ``mass_loss``, ``head_loss`` and ``pump_loss``.
     """
-    eps = 1e-3
+    eps = 1.0
     if mass_scale > 0:
         mass_loss = mass_loss / max(mass_scale, eps)
     if head_scale > 0:
