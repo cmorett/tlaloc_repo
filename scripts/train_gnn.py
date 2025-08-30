@@ -1757,14 +1757,25 @@ def main(args: argparse.Namespace):
 
             if args.pressure_loss and head_scale <= 0:
                 pipe_mask = edge_types.flatten() == 0
-                length = edge_attr_phys_np[pipe_mask, 0]
-                diam = np.clip(edge_attr_phys_np[pipe_mask, 1], 1e-6, None)
-                rough = np.clip(edge_attr_phys_np[pipe_mask, 2], 1e-6, None)
                 q_pipe = flows_flat[:, pipe_mask]
-                q_m3 = np.abs(q_pipe) * 0.001
-                denom = np.clip(rough ** 1.852 * diam ** 4.87, 1e-6, None)
-                hw_hl = 10.67 * length * (q_m3 ** 1.852) / denom
-                head_scale = float(np.mean(hw_hl ** 2)) if hw_hl.size > 0 else 1.0
+                active_edges = np.any(np.abs(q_pipe) > 1e-6, axis=0)
+                q_pipe = q_pipe[:, active_edges]
+                if q_pipe.size > 0:
+                    length = edge_attr_phys_np[pipe_mask, 0][active_edges]
+                    diam = np.clip(
+                        edge_attr_phys_np[pipe_mask, 1][active_edges], 1e-6, None
+                    )
+                    rough = np.clip(
+                        edge_attr_phys_np[pipe_mask, 2][active_edges], 1e-6, None
+                    )
+                    q_m3 = np.abs(q_pipe) * 0.001
+                    denom = np.clip(rough ** 1.852 * diam ** 4.87, 1e-6, None)
+                    hw_hl = 10.67 * length * (q_m3 ** 1.852) / denom
+                    head_scale = (
+                        float(np.mean(hw_hl ** 2)) if hw_hl.size > 0 else 1.0
+                    )
+                else:
+                    head_scale = 1.0
 
             if args.pump_loss and pump_scale <= 0:
                 pump_mask = edge_types.flatten() == 1
