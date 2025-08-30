@@ -55,9 +55,29 @@ def compute_mass_balance_loss(
     demand: Optional[torch.Tensor] = None,
     node_type: Optional[torch.Tensor] = None,
     *,
+    flow_reg_weight: float = 0.0,
     return_imbalance: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """Return mean squared node imbalance for predicted flows.
+
+    Parameters
+    ----------
+    pred_flows: torch.Tensor
+        Predicted edge flows.
+    edge_index: torch.Tensor
+        Edge index describing the directed graph.
+    node_count: int
+        Number of nodes in the graph.
+    demand: torch.Tensor, optional
+        Optional nodal demands to subtract from the balance.
+    node_type: torch.Tensor, optional
+        Node type mask where ``1`` and ``2`` correspond to tanks and
+        reservoirs which are excluded from the loss.
+    flow_reg_weight: float, optional
+        Weight of an additional L2 regularization term on edge flows. A small
+        value (e.g. ``1e-6``) encourages non-zero flows when demand exists.
+    return_imbalance: bool, optional
+        When ``True`` also return the mean absolute imbalance for logging.
 
     When ``return_imbalance`` is ``True`` this function also returns the
     average absolute mass imbalance which can be logged as a metric.
@@ -91,6 +111,8 @@ def compute_mass_balance_loss(
         node_balance[mask] = 0
 
     loss = torch.mean(node_balance ** 2)
+    if flow_reg_weight > 0:
+        loss = loss + flow_reg_weight * torch.mean(flows ** 2)
     if return_imbalance:
         return loss, node_balance.abs().mean()
     return loss
