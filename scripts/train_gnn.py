@@ -212,6 +212,121 @@ def compute_edge_attr_stats(edge_attr: np.ndarray) -> Tuple[torch.Tensor, torch.
     return attr_mean, attr_std
 
 
+def compute_loss_scales(
+    X_raw: np.ndarray,
+    Y_raw: np.ndarray,
+    edge_attr_phys_np: np.ndarray,
+    edge_types: np.ndarray,
+    pump_coeffs_np: np.ndarray,
+    args: argparse.Namespace,
+    seq_mode: bool,
+) -> Tuple[float, float, float]:
+    """Determine physics loss scales from the dataset.
+
+    Scales are derived from dataset statistics. When the dataset lacks the
+    required information (e.g., no edge flow labels or all-zero flows), the
+    corresponding physics loss is disabled with a warning.
+    """
+    mass_scale = args.mass_scale
+    head_scale = args.head_scale
+    pump_scale = args.pump_scale
+    if seq_mode and (
+        (args.physics_loss and mass_scale <= 0)
+        or (args.pressure_loss and head_scale <= 0)
+        or (args.pump_loss and pump_scale <= 0)
+    ):
+        if args.physics_loss and mass_scale <= 0:
+            demand = X_raw[..., 0]
+            active = np.abs(demand) > 1e-6
+            if active.any():
+                mass_scale = float(np.mean(demand[active] ** 2))
+            else:
+                warnings.warn(
+                    "No demand values found; disabling mass balance loss.",
+                    UserWarning,
+                )
+                args.physics_loss = False
+        need_edge_stats = (args.pressure_loss and head_scale <= 0) or (
+            args.pump_loss and pump_scale <= 0
+        )
+        if need_edge_stats:
+            edge_flows = None
+            if isinstance(Y_raw[0], dict) or (
+                isinstance(Y_raw[0], np.ndarray) and Y_raw.dtype == object
+            ):
+                if "edge_outputs" in Y_raw[0]:
+                    edge_flows = np.stack([y["edge_outputs"] for y in Y_raw])
+            else:
+                edge_flows = Y_raw
+            if edge_flows is None:
+                if args.pressure_loss:
+                    warnings.warn(
+                        "No edge flow labels provided; disabling pressure loss.",
+                        UserWarning,
+                    )
+                    args.pressure_loss = False
+                if args.pump_loss:
+                    warnings.warn(
+                        "No edge flow labels provided; disabling pump loss.",
+                        UserWarning,
+                    )
+                    args.pump_loss = False
+            else:
+                flows_flat = edge_flows.reshape(-1, edge_flows.shape[-1])
+                if args.pressure_loss and head_scale <= 0:
+                    pipe_mask = edge_types.flatten() == 0
+                    q_pipe = flows_flat[:, pipe_mask]
+                    active_edges = np.any(np.abs(q_pipe) > 1e-6, axis=0)
+                    q_pipe = q_pipe[:, active_edges]
+                    if q_pipe.size > 0:
+                        length = edge_attr_phys_np[pipe_mask, 0][active_edges]
+                        diam = np.clip(
+                            edge_attr_phys_np[pipe_mask, 1][active_edges], 1e-6, None
+                        )
+                        rough = np.clip(
+                            edge_attr_phys_np[pipe_mask, 2][active_edges], 1e-6, None
+                        )
+                        q_m3 = np.abs(q_pipe) * 0.001
+                        denom = np.clip(rough ** 1.852 * diam ** 4.87, 1e-6, None)
+                        hw_hl = 10.67 * length * (q_m3 ** 1.852) / denom
+                        if hw_hl.size > 0:
+                            head_scale = float(np.mean(hw_hl ** 2))
+                    else:
+                        warnings.warn(
+                            "No informative pipe flows found; disabling pressure loss.",
+                            UserWarning,
+                        )
+                        args.pressure_loss = False
+                if args.pump_loss and pump_scale <= 0:
+                    pump_mask = edge_types.flatten() == 1
+                    q_pump = flows_flat[:, pump_mask]
+                    if q_pump.size > 0:
+                        coeff = pump_coeffs_np[pump_mask]
+                        a = coeff[:, 0]
+                        b = coeff[:, 1]
+                        c = coeff[:, 2]
+                        head = a - b * np.abs(q_pump) ** c
+                        if head.size > 0:
+                            pump_scale = float(np.mean(np.abs(head)))
+                    else:
+                        warnings.warn(
+                            "No informative pump flows found; disabling pump loss.",
+                            UserWarning,
+                        )
+                        args.pump_loss = False
+    MIN_SCALE = 1.0
+    if args.physics_loss:
+        mass_scale = max(mass_scale, MIN_SCALE)
+    if args.pressure_loss:
+        head_scale = max(head_scale, MIN_SCALE)
+    if args.pump_loss:
+        pump_scale = max(pump_scale, MIN_SCALE)
+    args.mass_scale = mass_scale
+    args.head_scale = head_scale
+    args.pump_scale = pump_scale
+    return mass_scale, head_scale, pump_scale
+
+
 @dataclass
 class RunningStats:
     """Accumulate error statistics without storing full arrays."""
@@ -1737,77 +1852,15 @@ def main(args: argparse.Namespace):
     )
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=6)
 
-    mass_scale = args.mass_scale
-    head_scale = args.head_scale
-    pump_scale = args.pump_scale
-    if seq_mode and (
-        (args.physics_loss and mass_scale <= 0)
-        or (args.pressure_loss and head_scale <= 0)
-        or (args.pump_loss and pump_scale <= 0)
-    ):
-        # Compute deterministic physics scales from dataset statistics so they
-        # do not depend on random model initialisation.
-        if args.physics_loss and mass_scale <= 0:
-            # First feature is node demand; use its magnitude to scale the mass
-            # balance loss.
-            demand = X_raw[..., 0]
-            mass_scale = float(np.mean(demand ** 2)) if demand.size > 0 else 1.0
-
-        need_edge_stats = (args.pressure_loss and head_scale <= 0) or (
-            args.pump_loss and pump_scale <= 0
-        )
-        if need_edge_stats:
-            if isinstance(Y_raw[0], dict) or (
-                isinstance(Y_raw[0], np.ndarray) and Y_raw.dtype == object
-            ):
-                edge_flows = np.stack([y["edge_outputs"] for y in Y_raw])
-            else:
-                edge_flows = Y_raw
-            flows_flat = edge_flows.reshape(-1, edge_flows.shape[-1])
-
-            if args.pressure_loss and head_scale <= 0:
-                pipe_mask = edge_types.flatten() == 0
-                q_pipe = flows_flat[:, pipe_mask]
-                active_edges = np.any(np.abs(q_pipe) > 1e-6, axis=0)
-                q_pipe = q_pipe[:, active_edges]
-                if q_pipe.size > 0:
-                    length = edge_attr_phys_np[pipe_mask, 0][active_edges]
-                    diam = np.clip(
-                        edge_attr_phys_np[pipe_mask, 1][active_edges], 1e-6, None
-                    )
-                    rough = np.clip(
-                        edge_attr_phys_np[pipe_mask, 2][active_edges], 1e-6, None
-                    )
-                    q_m3 = np.abs(q_pipe) * 0.001
-                    denom = np.clip(rough ** 1.852 * diam ** 4.87, 1e-6, None)
-                    hw_hl = 10.67 * length * (q_m3 ** 1.852) / denom
-                    head_scale = (
-                        float(np.mean(hw_hl ** 2)) if hw_hl.size > 0 else 1.0
-                    )
-                else:
-                    head_scale = 1.0
-
-            if args.pump_loss and pump_scale <= 0:
-                pump_mask = edge_types.flatten() == 1
-                q_pump = flows_flat[:, pump_mask]
-                coeff = pump_coeffs_np[pump_mask]
-                if q_pump.size > 0:
-                    a = coeff[:, 0]
-                    b = coeff[:, 1]
-                    c = coeff[:, 2]
-                    head = a - b * np.abs(q_pump) ** c
-                    pump_scale = (
-                        float(np.mean(np.abs(head))) if head.size > 0 else 1.0
-                    )
-                else:
-                    pump_scale = 1.0
-    MIN_SCALE = 1.0
-    mass_scale = max(mass_scale, MIN_SCALE)
-    head_scale = max(head_scale, MIN_SCALE)
-    pump_scale = max(pump_scale, MIN_SCALE)
-    args.mass_scale = mass_scale
-    args.head_scale = head_scale
-    args.pump_scale = pump_scale
+    mass_scale, head_scale, pump_scale = compute_loss_scales(
+        X_raw,
+        Y_raw,
+        edge_attr_phys_np,
+        edge_types,
+        pump_coeffs_np,
+        args,
+        seq_mode,
+    )
     if seq_mode and (args.physics_loss or args.pressure_loss or args.pump_loss):
         print(
             f"Using physics loss scales: mass={mass_scale:.4e}, head={head_scale:.4e}, pump={pump_scale:.4e}"
