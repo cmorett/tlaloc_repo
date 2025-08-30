@@ -223,9 +223,10 @@ def compute_loss_scales(
 ) -> Tuple[float, float, float]:
     """Determine physics loss scales from the dataset.
 
-    Scales are derived from dataset statistics. When the dataset lacks the
-    required information (e.g., no edge flow labels or all-zero flows), the
-    corresponding physics loss is disabled with a warning.
+    Scales are estimated from robust dataset statistics (95th percentile).
+    When the dataset lacks the required information (e.g., no edge flow labels
+    or all-zero flows), the corresponding physics loss is disabled with a
+    warning.
     """
     mass_scale = args.mass_scale
     head_scale = args.head_scale
@@ -239,7 +240,7 @@ def compute_loss_scales(
             demand = X_raw[..., 0]
             active = np.abs(demand) > 1e-6
             if active.any():
-                mass_scale = float(np.mean(demand[active] ** 2))
+                mass_scale = float(np.percentile(demand[active] ** 2, 95))
             else:
                 warnings.warn(
                     "No demand values found; disabling mass balance loss.",
@@ -290,7 +291,9 @@ def compute_loss_scales(
                         denom = np.clip(rough ** 1.852 * diam ** 4.87, 1e-6, None)
                         hw_hl = 10.67 * length * (q_m3 ** 1.852) / denom
                         if hw_hl.size > 0:
-                            head_scale = float(np.mean(hw_hl ** 2))
+                            head_scale = float(
+                                np.percentile(hw_hl ** 2, 95)
+                            )
                     else:
                         warnings.warn(
                             "No informative pipe flows found; disabling pressure loss.",
@@ -307,20 +310,15 @@ def compute_loss_scales(
                         c = coeff[:, 2]
                         head = a - b * np.abs(q_pump) ** c
                         if head.size > 0:
-                            pump_scale = float(np.mean(np.abs(head)))
+                            pump_scale = float(
+                                np.percentile(np.abs(head), 95)
+                            )
                     else:
                         warnings.warn(
                             "No informative pump flows found; disabling pump loss.",
                             UserWarning,
                         )
                         args.pump_loss = False
-    MIN_SCALE = 1.0
-    if args.physics_loss:
-        mass_scale = max(mass_scale, MIN_SCALE)
-    if args.pressure_loss:
-        head_scale = max(head_scale, MIN_SCALE)
-    if args.pump_loss:
-        pump_scale = max(pump_scale, MIN_SCALE)
     args.mass_scale = mass_scale
     args.head_scale = head_scale
     args.pump_scale = pump_scale
