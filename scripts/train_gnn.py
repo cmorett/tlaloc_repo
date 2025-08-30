@@ -1047,6 +1047,7 @@ def train_sequence(
                     node_count,
                     demand=demand_mb,
                     node_type=nt,
+                    flow_reg_weight=args.flow_reg_weight,
                     return_imbalance=True,
                 )
                 sym_errors = []
@@ -1308,6 +1309,7 @@ def evaluate_sequence(
                             node_count,
                             demand=demand_mb,
                             node_type=nt,
+                            flow_reg_weight=args.flow_reg_weight,
                             return_imbalance=True,
                         )
                         sym_errors = []
@@ -2737,6 +2739,12 @@ if __name__ == "__main__":
         type=float,
         default=3.0,
         help="Weight of the edge (flow) loss term",
+    )
+    parser.add_argument(
+        "--flow-reg-weight",
+        type=float,
+        default=0.0,
+        help="Weight of L2 regularization on predicted edge flows in the mass balance loss",
     )
     parser.add_argument(
         "--mass-scale",

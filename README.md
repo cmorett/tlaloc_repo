@@ -105,6 +105,8 @@ terms with data losses to keep predictions physically plausible. These
 regularisers operate independently of the flow mean absolute error weight so
 they may be enabled even when ``--w-flow 0`` is used to disable the flow MAE
 term.
+Pass ``--flow-reg-weight`` to add a small L2 penalty on predicted edge flows,
+ensuring zero-flow solutions with non-zero demand still incur loss.
 
 Training performs node-wise regression and by default optimizes the mean
 absolute error (MAE).  Specify ``--loss-fn`` to switch between MAE (``mae``),
