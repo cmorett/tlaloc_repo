@@ -155,6 +155,8 @@ python scripts/train_gnn.py \
 
 Physics-based losses (mass conservation, pressure–headloss consistency and pump curve penalties) require a non-zero `--w-flow` because they operate on flow predictions. If `--w-flow` is set to `0`, these physics terms are automatically disabled.
 
+Use `--auto-w-flow` to automatically scale the flow loss weight based on dataset flow variance so that its gradient magnitude matches that of the pressure loss.
+
 GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8}) and ``--hidden-dim`` ({128,256}).
 Use ``--residual`` to enable skip connections and ``--use-attention`` for graph attention on node updates.
 The LSTM hidden size can be set with ``--lstm-hidden`` (64 or 128).

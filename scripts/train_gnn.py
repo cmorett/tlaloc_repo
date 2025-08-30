@@ -924,6 +924,7 @@ def train_sequence(
     w_pump: float = 1.0,
     w_press: float = 3.0,
     w_flow: float = 1.0,
+    flow_reg_weight: float = 0.0,
     amp: bool = False,
     progress: bool = True,
 ) -> Tuple[float, float, float, float, float, float, float, float, float]:
@@ -1047,7 +1048,7 @@ def train_sequence(
                     node_count,
                     demand=demand_mb,
                     node_type=nt,
-                    flow_reg_weight=args.flow_reg_weight,
+                    flow_reg_weight=flow_reg_weight,
                     return_imbalance=True,
                 )
                 sym_errors = []
@@ -1202,6 +1203,7 @@ def evaluate_sequence(
     w_pump: float = 1.0,
     w_press: float = 3.0,
     w_flow: float = 1.0,
+    flow_reg_weight: float = 0.0,
     amp: bool = False,
     progress: bool = True,
 ) -> Tuple[float, float, float, float, float, float, float, float, float]:
@@ -1309,7 +1311,7 @@ def evaluate_sequence(
                             node_count,
                             demand=demand_mb,
                             node_type=nt,
-                            flow_reg_weight=args.flow_reg_weight,
+                            flow_reg_weight=flow_reg_weight,
                             return_imbalance=True,
                         )
                         sym_errors = []
@@ -1673,6 +1675,35 @@ def main(args: argparse.Namespace):
         x_mean = x_std = y_mean = y_std = None
         norm_stats = None
 
+    if args.auto_w_flow:
+        if y_std is None:
+            if seq_mode:
+                _, _, _, y_std_tmp = compute_sequence_norm_stats(
+                    X_raw, Y_raw, per_node=args.per_node_norm
+                )
+            else:
+                _, _, _, y_std_tmp = compute_norm_stats(
+                    data_list, per_node=args.per_node_norm
+                )
+        else:
+            y_std_tmp = y_std
+        if isinstance(y_std_tmp, dict) and y_std_tmp.get("edge_outputs") is not None:
+            press_std = y_std_tmp["node_outputs"].mean().item()
+            flow_std = y_std_tmp["edge_outputs"].mean().item()
+            if flow_std > 0:
+                args.w_flow = args.w_press * (press_std / flow_std)
+                print(f"Auto-scaled w_flow to {args.w_flow:.4e}")
+            else:
+                warnings.warn(
+                    "Flow standard deviation is zero; cannot auto-scale w_flow.",
+                    UserWarning,
+                )
+        else:
+            warnings.warn(
+                "Edge flow statistics not available; cannot auto-scale w_flow.",
+                UserWarning,
+            )
+
     if not seq_mode:
         if args.neighbor_sampling:
             sample_size = args.cluster_batch_size or max(
@@ -1976,6 +2007,7 @@ def main(args: argparse.Namespace):
                     w_pump=args.w_pump,
                     w_press=args.w_press,
                     w_flow=args.w_flow,
+                    flow_reg_weight=args.flow_reg_weight,
                     amp=args.amp,
                     progress=args.progress,
                 )
@@ -2012,6 +2044,7 @@ def main(args: argparse.Namespace):
                         w_pump=args.w_pump,
                         w_press=args.w_press,
                         w_flow=args.w_flow,
+                        flow_reg_weight=args.flow_reg_weight,
                         amp=args.amp,
                         progress=args.progress,
                     )
@@ -2739,6 +2772,13 @@ if __name__ == "__main__":
         type=float,
         default=3.0,
         help="Weight of the edge (flow) loss term",
+    )
+    parser.add_argument(
+        "--auto-w-flow",
+        "--auto_w_flow",
+        dest="auto_w_flow",
+        action="store_true",
+        help="Scale w_flow based on dataset flow variance so its gradient magnitude matches pressure",
     )
     parser.add_argument(
         "--flow-reg-weight",
