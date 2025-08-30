@@ -2122,6 +2122,62 @@ def main(args: argparse.Namespace):
             else checkpoint
         )
         model.load_state_dict(state)
+
+        norm_stats = checkpoint.get("norm_stats") if isinstance(checkpoint, dict) else None
+        if norm_stats is None:
+            norm_path = Path(str(Path(model_path).with_suffix("")) + "_norm.npz")
+            if norm_path.exists():
+                arr = np.load(norm_path)
+                if "y_mean" in arr:
+                    norm_stats = {"y_mean": arr["y_mean"], "y_std": arr["y_std"]}
+                elif "y_mean_node" in arr:
+                    y_mean_np = {"node_outputs": arr["y_mean_node"]}
+                    y_std_np = {"node_outputs": arr["y_std_node"]}
+                    if "y_mean_edge" in arr:
+                        y_mean_np["edge_outputs"] = arr["y_mean_edge"]
+                        y_std_np["edge_outputs"] = arr["y_std_edge"]
+                    norm_stats = {"y_mean": y_mean_np, "y_std": y_std_np}
+        if norm_stats is not None:
+            y_mean_np = norm_stats.get("y_mean")
+            y_std_np = norm_stats.get("y_std")
+            if isinstance(y_mean_np, dict):
+                model.y_mean = {
+                    "node_outputs": torch.tensor(
+                        y_mean_np["node_outputs"], dtype=torch.float32, device=device
+                    )
+                }
+                model.y_std = {
+                    "node_outputs": torch.tensor(
+                        y_std_np["node_outputs"], dtype=torch.float32, device=device
+                    )
+                }
+                y_mean_edge_np = y_mean_np.get("edge_outputs")
+                y_std_edge_np = y_std_np.get("edge_outputs")
+                if y_mean_edge_np is not None:
+                    model.y_mean_edge = torch.tensor(
+                        y_mean_edge_np, dtype=torch.float32, device=device
+                    )
+                    model.y_std_edge = torch.tensor(
+                        y_std_edge_np, dtype=torch.float32, device=device
+                    )
+                else:
+                    model.y_mean_edge = model.y_std_edge = None
+            elif y_mean_np is not None:
+                model.y_mean = torch.tensor(
+                    y_mean_np, dtype=torch.float32, device=device
+                )
+                model.y_std = torch.tensor(
+                    y_std_np, dtype=torch.float32, device=device
+                )
+                model.y_mean_edge = model.y_std_edge = None
+            else:
+                model.y_mean = model.y_std = None
+                model.y_mean_edge = model.y_std_edge = None
+        else:
+            model.y_mean = model.y_std = None
+            model.y_mean_edge = model.y_std_edge = None
+        if args.normalize and model.y_mean is None:
+            raise RuntimeError("Normalization statistics not found for denormalization")
         model.eval()
 
         p_stats = RunningStats()
@@ -2158,21 +2214,23 @@ def main(args: argparse.Namespace):
                         Y_edge = None
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         if isinstance(model.y_mean, dict):
-                            y_mean_node = model.y_mean['node_outputs'].to(node_pred.device)
-                            y_std_node = model.y_std['node_outputs'].to(node_pred.device)
-                            node_pred = node_pred * y_std_node + y_mean_node
-                            Y_node = Y_node * y_std_node + y_mean_node
-                            if edge_pred is not None and Y_edge is not None:
-                                y_mean_edge = model.y_mean['edge_outputs'].to(node_pred.device)
-                                y_std_edge = model.y_std['edge_outputs'].to(node_pred.device)
-                                edge_pred = edge_pred.squeeze(-1)
-                                edge_pred = edge_pred * y_std_edge + y_mean_edge
-                                Y_edge = Y_edge * y_std_edge + y_mean_edge
+                            y_mean_node = model.y_mean["node_outputs"].to(node_pred.device)
+                            y_std_node = model.y_std["node_outputs"].to(node_pred.device)
                         else:
-                            y_std = model.y_std.to(node_pred.device)
-                            y_mean = model.y_mean.to(node_pred.device)
-                            node_pred = node_pred * y_std + y_mean
-                            Y_node = Y_node * y_std + y_mean
+                            y_mean_node = model.y_mean.to(node_pred.device)
+                            y_std_node = model.y_std.to(node_pred.device)
+                        node_pred = node_pred * y_std_node + y_mean_node
+                        Y_node = Y_node * y_std_node + y_mean_node
+                        if (
+                            edge_pred is not None
+                            and Y_edge is not None
+                            and getattr(model, "y_mean_edge", None) is not None
+                        ):
+                            y_mean_edge = model.y_mean_edge.to(node_pred.device)
+                            y_std_edge = model.y_std_edge.to(node_pred.device)
+                            edge_pred = edge_pred.squeeze(-1)
+                            edge_pred = edge_pred * y_std_edge + y_mean_edge
+                            Y_edge = Y_edge * y_std_edge + y_mean_edge
 
                     pred_p = node_pred[..., 0].reshape(-1, node_mask.numel())
                     true_p = Y_node[..., 0].reshape(-1, node_mask.numel())
@@ -2198,8 +2256,8 @@ def main(args: argparse.Namespace):
                         )
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         if isinstance(model.y_mean, dict):
-                            y_mean_node = model.y_mean['node_outputs'].to(out.device)
-                            y_std_node = model.y_std['node_outputs'].to(out.device)
+                            y_mean_node = model.y_mean["node_outputs"].to(out.device)
+                            y_std_node = model.y_std["node_outputs"].to(out.device)
                             node_out = (
                                 out["node_outputs"] if isinstance(out, dict) else out
                             )
@@ -2210,20 +2268,6 @@ def main(args: argparse.Namespace):
                             batch_y = batch_y * y_std_node.view(1, num_nodes, -1) + y_mean_node.view(1, num_nodes, -1)
                             node_out = node_out.view(-1, node_out.shape[-1])
                             batch_y = batch_y.view(-1, batch_y.shape[-1])
-                            if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
-                                y_mean_edge = model.y_mean['edge_outputs'].to(out.device)
-                                y_std_edge = model.y_std['edge_outputs'].to(out.device)
-                                edge_out = out["edge_outputs"]
-                                edge_y = batch.edge_y
-                                num_edges = y_mean_edge.shape[0]
-                                edge_out = edge_out.view(batch.num_graphs, num_edges, -1)
-                                edge_y = edge_y.view(batch.num_graphs, num_edges, -1)
-                                edge_out = edge_out * y_std_edge.view(1, num_edges, -1) + y_mean_edge.view(1, num_edges, -1)
-                                edge_y = edge_y * y_std_edge.view(1, num_edges, -1) + y_mean_edge.view(1, num_edges, -1)
-                                edge_out = edge_out.view(-1, edge_out.shape[-1])
-                                edge_y = edge_y.view(-1, edge_y.shape[-1])
-                            else:
-                                edge_out = edge_y = None
                         else:
                             y_std = model.y_std.to(out.device)
                             y_mean = model.y_mean.to(out.device)
@@ -2232,8 +2276,29 @@ def main(args: argparse.Namespace):
                             )
                             node_out = node_out * y_std + y_mean
                             batch_y = batch.y * y_std + y_mean
+                        if (
+                            isinstance(out, dict)
+                            and getattr(batch, "edge_y", None) is not None
+                            and getattr(model, "y_mean_edge", None) is not None
+                        ):
+                            y_mean_edge = model.y_mean_edge.to(out.device)
+                            y_std_edge = model.y_std_edge.to(out.device)
+                            edge_out = out["edge_outputs"]
+                            edge_y = batch.edge_y
+                            num_edges = y_mean_edge.shape[0]
+                            edge_out = edge_out.view(batch.num_graphs, num_edges, -1)
+                            edge_y = edge_y.view(batch.num_graphs, num_edges, -1)
+                            edge_out = edge_out * y_std_edge.view(1, num_edges, -1) + y_mean_edge.view(1, num_edges, -1)
+                            edge_y = edge_y * y_std_edge.view(1, num_edges, -1) + y_mean_edge.view(1, num_edges, -1)
+                            edge_out = edge_out.view(-1, edge_out.shape[-1])
+                            edge_y = edge_y.view(-1, edge_y.shape[-1])
+                        else:
                             edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
                             edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
+                            if edge_out is not None:
+                                edge_out = edge_out.squeeze(-1)
+                            if edge_y is not None:
+                                edge_y = edge_y.squeeze(-1)
                     else:
                         node_out = out["node_outputs"] if isinstance(out, dict) else out
                         batch_y = batch.y
@@ -2255,6 +2320,8 @@ def main(args: argparse.Namespace):
                         pred_samples.extend(pred_np[:remain])
                         true_samples.extend(true_np[:remain])
 
+        if args.normalize and getattr(model, "y_mean", None) is None:
+            raise RuntimeError("Denormalized metrics requested but normalization stats are missing")
         save_accuracy_metrics(p_stats, run_name)
         if args.eval_sample != 0 and pred_samples:
             pred_arr = np.array(pred_samples, dtype=float)
