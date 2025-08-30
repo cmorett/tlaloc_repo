@@ -148,6 +148,8 @@ python scripts/train_gnn.py \
     --checkpoint
 ```
 
+Physics-based losses (mass conservation, pressure–headloss consistency and pump curve penalties) require a non-zero `--w-flow` because they operate on flow predictions. If `--w-flow` is set to `0`, these physics terms are automatically disabled.
+
 GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8}) and ``--hidden-dim`` ({128,256}).
 Use ``--residual`` to enable skip connections and ``--use-attention`` for graph attention on node updates.
 The LSTM hidden size can be set with ``--lstm-hidden`` (64 or 128).
@@ -206,6 +208,7 @@ default to enforce pressure–headloss consistency via the Hazen--Williams
 equation.  The mass penalty uses a default weight of ``2.0`` while
 the headloss term uses ``1.0``. Node pressure and flow terms use
 weights ``--w-press`` (default ``5.0``) and ``--w-flow`` (``3.0``).
+Physics losses are ignored if ``--w-flow`` is set to ``0``.
 The relative importance can still be tuned via these flags together with
 ``--w_mass`` and ``--w_head``.  To keep the physics penalties on a comparable
 scale the script estimates baseline magnitudes for the mass, headloss and pump
