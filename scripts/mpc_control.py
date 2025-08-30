@@ -727,35 +727,36 @@ def load_surrogate_model(
     if norm_stats is not None:
         model.x_mean = torch.tensor(norm_stats["x_mean"], dtype=torch.float32, device=device)
         model.x_std = torch.tensor(norm_stats["x_std"], dtype=torch.float32, device=device)
-        y_mean_np = norm_stats.get("y_mean")
-        y_std_np = norm_stats.get("y_std")
-        if isinstance(y_mean_np, dict):
-            node_mean = torch.tensor(
-                y_mean_np.get("node_outputs"), dtype=torch.float32, device=device
-            )
-            node_std = torch.tensor(
-                y_std_np.get("node_outputs"), dtype=torch.float32, device=device
-            )
-            model.y_mean = {"node_outputs": node_mean}
-            model.y_std = {"node_outputs": node_std}
-            y_mean_edge_np = y_mean_np.get("edge_outputs")
-            y_std_edge_np = y_std_np.get("edge_outputs")
-            if y_mean_edge_np is not None:
-                model.y_mean_edge = torch.tensor(
-                    y_mean_edge_np, dtype=torch.float32, device=device
-                )
-                model.y_std_edge = torch.tensor(
-                    y_std_edge_np, dtype=torch.float32, device=device
-                )
+        if "y_mean_node" in norm_stats:
+            model.y_mean = torch.tensor(norm_stats["y_mean_node"], dtype=torch.float32, device=device)
+            model.y_std = torch.tensor(norm_stats["y_std_node"], dtype=torch.float32, device=device)
+            if "y_mean_edge" in norm_stats:
+                model.y_mean_edge = torch.tensor(norm_stats["y_mean_edge"], dtype=torch.float32, device=device)
+                model.y_std_edge = torch.tensor(norm_stats["y_std_edge"], dtype=torch.float32, device=device)
             else:
                 model.y_mean_edge = model.y_std_edge = None
-        elif y_mean_np is not None:
-            model.y_mean = torch.tensor(y_mean_np, dtype=torch.float32, device=device)
-            model.y_std = torch.tensor(y_std_np, dtype=torch.float32, device=device)
-            model.y_mean_edge = model.y_std_edge = None
         else:
-            model.y_mean = model.y_std = None
-            model.y_mean_edge = model.y_std_edge = None
+            y_mean_np = norm_stats.get("y_mean")
+            y_std_np = norm_stats.get("y_std")
+            if isinstance(y_mean_np, dict):
+                node_mean = torch.tensor(y_mean_np.get("node_outputs"), dtype=torch.float32, device=device)
+                node_std = torch.tensor(y_std_np.get("node_outputs"), dtype=torch.float32, device=device)
+                model.y_mean = node_mean
+                model.y_std = node_std
+                y_mean_edge_np = y_mean_np.get("edge_outputs")
+                y_std_edge_np = y_std_np.get("edge_outputs")
+                if y_mean_edge_np is not None:
+                    model.y_mean_edge = torch.tensor(y_mean_edge_np, dtype=torch.float32, device=device)
+                    model.y_std_edge = torch.tensor(y_std_edge_np, dtype=torch.float32, device=device)
+                else:
+                    model.y_mean_edge = model.y_std_edge = None
+            elif y_mean_np is not None:
+                model.y_mean = torch.tensor(y_mean_np, dtype=torch.float32, device=device)
+                model.y_std = torch.tensor(y_std_np, dtype=torch.float32, device=device)
+                model.y_mean_edge = model.y_std_edge = None
+            else:
+                model.y_mean = model.y_std = None
+                model.y_mean_edge = model.y_std_edge = None
 
         model.y_mean_energy = None
         model.y_std_energy = None
@@ -768,27 +769,20 @@ def load_surrogate_model(
             model.edge_mean = model.edge_std = None
     elif norm_path.exists():
         arr = np.load(norm_path)
-        # Moved normalization constants to GPU to avoid device transfer
         model.x_mean = torch.tensor(arr["x_mean"], dtype=torch.float32, device=device)
         model.x_std = torch.tensor(arr["x_std"], dtype=torch.float32, device=device)
-        if "y_mean" in arr:
+        if "y_mean_node" in arr:
+            model.y_mean = torch.tensor(arr["y_mean_node"], dtype=torch.float32, device=device)
+            model.y_std = torch.tensor(arr["y_std_node"], dtype=torch.float32, device=device)
+            if "y_mean_edge" in arr:
+                model.y_mean_edge = torch.tensor(arr["y_mean_edge"], dtype=torch.float32, device=device)
+                model.y_std_edge = torch.tensor(arr["y_std_edge"], dtype=torch.float32, device=device)
+            else:
+                model.y_mean_edge = model.y_std_edge = None
+        elif "y_mean" in arr:
             model.y_mean = torch.tensor(arr["y_mean"], dtype=torch.float32, device=device)
             model.y_std = torch.tensor(arr["y_std"], dtype=torch.float32, device=device)
             model.y_mean_edge = model.y_std_edge = None
-        elif "y_mean_node" in arr:
-            node_mean = torch.tensor(arr["y_mean_node"], dtype=torch.float32, device=device)
-            node_std = torch.tensor(arr["y_std_node"], dtype=torch.float32, device=device)
-            model.y_mean = {"node_outputs": node_mean}
-            model.y_std = {"node_outputs": node_std}
-            if "y_mean_edge" in arr:
-                model.y_mean_edge = torch.tensor(
-                    arr["y_mean_edge"], dtype=torch.float32, device=device
-                )
-                model.y_std_edge = torch.tensor(
-                    arr["y_std_edge"], dtype=torch.float32, device=device
-                )
-            else:
-                model.y_mean_edge = model.y_std_edge = None
         else:
             model.y_mean = model.y_std = None
             model.y_mean_edge = model.y_std_edge = None

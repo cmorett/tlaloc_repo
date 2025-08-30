@@ -1453,11 +1453,23 @@ def main(args: argparse.Namespace):
             "edge_std": edge_std.to(torch.float32).cpu().numpy(),
         }
         if isinstance(y_mean, dict):
-            norm_stats["y_mean"] = {k: v.to(torch.float32).cpu().numpy() for k, v in y_mean.items()}
-            norm_stats["y_std"] = {k: y_std[k].to(torch.float32).cpu().numpy() for k in y_mean}
+            node_mean = y_mean.get("node_outputs")
+            node_std = y_std.get("node_outputs")
+            norm_stats["y_mean_node"] = node_mean.to(torch.float32).cpu().numpy()
+            norm_stats["y_std_node"] = node_std.to(torch.float32).cpu().numpy()
+            edge_mean_t = y_mean.get("edge_outputs")
+            edge_std_t = y_std.get("edge_outputs")
+            if edge_mean_t is not None and edge_std_t is not None:
+                norm_stats["y_mean_edge"] = edge_mean_t.to(torch.float32).cpu().numpy()
+                norm_stats["y_std_edge"] = edge_std_t.to(torch.float32).cpu().numpy()
+            # Backward compatibility for older checkpoints
+            norm_stats["y_mean"] = norm_stats["y_mean_node"]
+            norm_stats["y_std"] = norm_stats["y_std_node"]
         else:
-            norm_stats["y_mean"] = y_mean.to(torch.float32).cpu().numpy()
-            norm_stats["y_std"] = y_std.to(torch.float32).cpu().numpy()
+            norm_stats["y_mean_node"] = y_mean.to(torch.float32).cpu().numpy()
+            norm_stats["y_std_node"] = y_std.to(torch.float32).cpu().numpy()
+            norm_stats["y_mean"] = norm_stats["y_mean_node"]
+            norm_stats["y_std"] = norm_stats["y_std_node"]
         norm_stats["hash"] = norm_md5
     else:
         x_mean = x_std = y_mean = y_std = None
@@ -1657,18 +1669,20 @@ def main(args: argparse.Namespace):
 
     # expose normalization stats on the model for later un-normalisation
     if args.normalize:
-        if seq_mode and getattr(data_ds, "multi", False):
-            # for multi-task sequence data retain separate stats for node and
-            # edge outputs so physics losses can un-normalize correctly
-            model.y_mean = y_mean
-            model.y_std = y_std
+        if isinstance(y_mean, dict):
+            model.y_mean = y_mean.get("node_outputs")
+            model.y_std = y_std.get("node_outputs")
+            model.y_mean_edge = y_mean.get("edge_outputs")
+            model.y_std_edge = y_std.get("edge_outputs")
         else:
             model.y_mean = y_mean
             model.y_std = y_std
+            model.y_mean_edge = model.y_std_edge = None
         model.x_mean = x_mean
         model.x_std = x_std
     else:
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
+        model.y_mean_edge = model.y_std_edge = None
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
@@ -1992,26 +2006,34 @@ def main(args: argparse.Namespace):
                         {
                             "x_mean": norm_stats["x_mean"],
                             "x_std": norm_stats["x_std"],
-                            "y_mean": norm_stats["y_mean"],
-                            "y_std": norm_stats["y_std"],
+                            "y_mean_node": norm_stats["y_mean_node"],
+                            "y_std_node": norm_stats["y_std_node"],
                             "edge_mean": norm_stats["edge_mean"],
                             "edge_std": norm_stats["edge_std"],
                         }
                     )
+                    if "y_mean_edge" in norm_stats:
+                        meta.update(
+                            {
+                                "y_mean_edge": norm_stats["y_mean_edge"],
+                                "y_std_edge": norm_stats["y_std_edge"],
+                            }
+                        )
+                    # backward compatibility
+                    meta["y_mean"] = norm_stats["y_mean_node"]
+                    meta["y_std"] = norm_stats["y_std_node"]
                 ckpt["model_meta"] = meta
                 torch.save(ckpt, model_path)
                 if norm_stats is not None:
-                    y_mean_np = norm_stats["y_mean"]
-                    y_std_np = norm_stats["y_std"]
-                    if isinstance(y_mean_np, dict):
+                    if "y_mean_edge" in norm_stats:
                         np.savez(
                             norm_path,
                             x_mean=norm_stats["x_mean"],
                             x_std=norm_stats["x_std"],
-                            y_mean_node=y_mean_np["node_outputs"],
-                            y_std_node=y_std_np["node_outputs"],
-                            y_mean_edge=y_mean_np["edge_outputs"],
-                            y_std_edge=y_std_np["edge_outputs"],
+                            y_mean_node=norm_stats["y_mean_node"],
+                            y_std_node=norm_stats["y_std_node"],
+                            y_mean_edge=norm_stats["y_mean_edge"],
+                            y_std_edge=norm_stats["y_std_edge"],
                             edge_mean=norm_stats["edge_mean"],
                             edge_std=norm_stats["edge_std"],
                         )
@@ -2020,8 +2042,8 @@ def main(args: argparse.Namespace):
                             norm_path,
                             x_mean=norm_stats["x_mean"],
                             x_std=norm_stats["x_std"],
-                            y_mean=y_mean_np,
-                            y_std=y_std_np,
+                            y_mean=norm_stats["y_mean_node"],
+                            y_std=norm_stats["y_std_node"],
                             edge_mean=norm_stats["edge_mean"],
                             edge_std=norm_stats["edge_std"],
                         )
@@ -2128,51 +2150,67 @@ def main(args: argparse.Namespace):
             norm_path = Path(str(Path(model_path).with_suffix("")) + "_norm.npz")
             if norm_path.exists():
                 arr = np.load(norm_path)
-                if "y_mean" in arr:
-                    norm_stats = {"y_mean": arr["y_mean"], "y_std": arr["y_std"]}
-                elif "y_mean_node" in arr:
-                    y_mean_np = {"node_outputs": arr["y_mean_node"]}
-                    y_std_np = {"node_outputs": arr["y_std_node"]}
+                if "y_mean_node" in arr:
+                    norm_stats = {
+                        "y_mean_node": arr["y_mean_node"],
+                        "y_std_node": arr["y_std_node"],
+                    }
                     if "y_mean_edge" in arr:
-                        y_mean_np["edge_outputs"] = arr["y_mean_edge"]
-                        y_std_np["edge_outputs"] = arr["y_std_edge"]
-                    norm_stats = {"y_mean": y_mean_np, "y_std": y_std_np}
+                        norm_stats["y_mean_edge"] = arr["y_mean_edge"]
+                        norm_stats["y_std_edge"] = arr["y_std_edge"]
+                elif "y_mean" in arr:
+                    norm_stats = {"y_mean": arr["y_mean"], "y_std": arr["y_std"]}
         if norm_stats is not None:
-            y_mean_np = norm_stats.get("y_mean")
-            y_std_np = norm_stats.get("y_std")
-            if isinstance(y_mean_np, dict):
-                model.y_mean = {
-                    "node_outputs": torch.tensor(
-                        y_mean_np["node_outputs"], dtype=torch.float32, device=device
-                    )
-                }
-                model.y_std = {
-                    "node_outputs": torch.tensor(
-                        y_std_np["node_outputs"], dtype=torch.float32, device=device
-                    )
-                }
-                y_mean_edge_np = y_mean_np.get("edge_outputs")
-                y_std_edge_np = y_std_np.get("edge_outputs")
-                if y_mean_edge_np is not None:
+            if "y_mean_node" in norm_stats:
+                model.y_mean = torch.tensor(
+                    norm_stats["y_mean_node"], dtype=torch.float32, device=device
+                )
+                model.y_std = torch.tensor(
+                    norm_stats["y_std_node"], dtype=torch.float32, device=device
+                )
+                if "y_mean_edge" in norm_stats:
                     model.y_mean_edge = torch.tensor(
-                        y_mean_edge_np, dtype=torch.float32, device=device
+                        norm_stats["y_mean_edge"], dtype=torch.float32, device=device
                     )
                     model.y_std_edge = torch.tensor(
-                        y_std_edge_np, dtype=torch.float32, device=device
+                        norm_stats["y_std_edge"], dtype=torch.float32, device=device
                     )
                 else:
                     model.y_mean_edge = model.y_std_edge = None
-            elif y_mean_np is not None:
-                model.y_mean = torch.tensor(
-                    y_mean_np, dtype=torch.float32, device=device
-                )
-                model.y_std = torch.tensor(
-                    y_std_np, dtype=torch.float32, device=device
-                )
-                model.y_mean_edge = model.y_std_edge = None
             else:
-                model.y_mean = model.y_std = None
-                model.y_mean_edge = model.y_std_edge = None
+                y_mean_np = norm_stats.get("y_mean")
+                y_std_np = norm_stats.get("y_std")
+                if isinstance(y_mean_np, dict):
+                    node_mean = y_mean_np.get("node_outputs")
+                    node_std = y_std_np.get("node_outputs")
+                    model.y_mean = torch.tensor(
+                        node_mean, dtype=torch.float32, device=device
+                    )
+                    model.y_std = torch.tensor(
+                        node_std, dtype=torch.float32, device=device
+                    )
+                    y_mean_edge_np = y_mean_np.get("edge_outputs")
+                    y_std_edge_np = y_std_np.get("edge_outputs")
+                    if y_mean_edge_np is not None:
+                        model.y_mean_edge = torch.tensor(
+                            y_mean_edge_np, dtype=torch.float32, device=device
+                        )
+                        model.y_std_edge = torch.tensor(
+                            y_std_edge_np, dtype=torch.float32, device=device
+                        )
+                    else:
+                        model.y_mean_edge = model.y_std_edge = None
+                elif y_mean_np is not None:
+                    model.y_mean = torch.tensor(
+                        y_mean_np, dtype=torch.float32, device=device
+                    )
+                    model.y_std = torch.tensor(
+                        y_std_np, dtype=torch.float32, device=device
+                    )
+                    model.y_mean_edge = model.y_std_edge = None
+                else:
+                    model.y_mean = model.y_std = None
+                    model.y_mean_edge = model.y_std_edge = None
         else:
             model.y_mean = model.y_std = None
             model.y_mean_edge = model.y_std_edge = None
@@ -2221,16 +2259,16 @@ def main(args: argparse.Namespace):
                             y_std_node = model.y_std.to(node_pred.device)
                         node_pred = node_pred * y_std_node + y_mean_node
                         Y_node = Y_node * y_std_node + y_mean_node
-                        if (
-                            edge_pred is not None
-                            and Y_edge is not None
-                            and getattr(model, "y_mean_edge", None) is not None
-                        ):
-                            y_mean_edge = model.y_mean_edge.to(node_pred.device)
-                            y_std_edge = model.y_std_edge.to(node_pred.device)
-                            edge_pred = edge_pred.squeeze(-1)
-                            edge_pred = edge_pred * y_std_edge + y_mean_edge
-                            Y_edge = Y_edge * y_std_edge + y_mean_edge
+                    if (
+                        edge_pred is not None
+                        and Y_edge is not None
+                        and getattr(model, "y_mean_edge", None) is not None
+                    ):
+                        y_mean_edge = model.y_mean_edge.to(node_pred.device)
+                        y_std_edge = model.y_std_edge.to(node_pred.device)
+                        edge_pred = edge_pred.squeeze(-1)
+                        edge_pred = edge_pred * y_std_edge + y_mean_edge
+                        Y_edge = Y_edge * y_std_edge + y_mean_edge
 
                     pred_p = node_pred[..., 0].reshape(-1, node_mask.numel())
                     true_p = Y_node[..., 0].reshape(-1, node_mask.numel())
@@ -2255,12 +2293,10 @@ def main(args: argparse.Namespace):
                             getattr(batch, "edge_type", None),
                         )
                     if hasattr(model, "y_mean") and model.y_mean is not None:
+                        node_out = out["node_outputs"] if isinstance(out, dict) else out
                         if isinstance(model.y_mean, dict):
                             y_mean_node = model.y_mean["node_outputs"].to(out.device)
                             y_std_node = model.y_std["node_outputs"].to(out.device)
-                            node_out = (
-                                out["node_outputs"] if isinstance(out, dict) else out
-                            )
                             num_nodes = y_mean_node.shape[0]
                             node_out = node_out.view(batch.num_graphs, num_nodes, -1)
                             batch_y = batch.y.view(batch.num_graphs, num_nodes, -1)
@@ -2271,20 +2307,17 @@ def main(args: argparse.Namespace):
                         else:
                             y_std = model.y_std.to(out.device)
                             y_mean = model.y_mean.to(out.device)
-                            node_out = (
-                                out["node_outputs"] if isinstance(out, dict) else out
-                            )
                             node_out = node_out * y_std + y_mean
                             batch_y = batch.y * y_std + y_mean
+                        edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
+                        edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
                         if (
-                            isinstance(out, dict)
-                            and getattr(batch, "edge_y", None) is not None
+                            edge_out is not None
+                            and edge_y is not None
                             and getattr(model, "y_mean_edge", None) is not None
                         ):
                             y_mean_edge = model.y_mean_edge.to(out.device)
                             y_std_edge = model.y_std_edge.to(out.device)
-                            edge_out = out["edge_outputs"]
-                            edge_y = batch.edge_y
                             num_edges = y_mean_edge.shape[0]
                             edge_out = edge_out.view(batch.num_graphs, num_edges, -1)
                             edge_y = edge_y.view(batch.num_graphs, num_edges, -1)
@@ -2293,8 +2326,6 @@ def main(args: argparse.Namespace):
                             edge_out = edge_out.view(-1, edge_out.shape[-1])
                             edge_y = edge_y.view(-1, edge_y.shape[-1])
                         else:
-                            edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
-                            edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
                             if edge_out is not None:
                                 edge_out = edge_out.squeeze(-1)
                             if edge_y is not None:
