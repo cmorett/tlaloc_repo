@@ -873,10 +873,18 @@ def train_sequence(
                     raise AssertionError(f"{name} loss {val.item():.3e} invalid")
             if physics_loss:
                 flows_mb = edge_preds.squeeze(-1)
-                if hasattr(model, "y_mean") and model.y_mean is not None:
+                if getattr(model, "y_mean_edge", None) is not None:
+                    q_mean = model.y_mean_edge.to(device)
+                    q_std = model.y_std_edge.to(device)
+                    flows_mb = (
+                        flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                    )
+                elif isinstance(getattr(model, "y_mean", None), dict):
                     q_mean = model.y_mean["edge_outputs"].to(device)
                     q_std = model.y_std["edge_outputs"].to(device)
-                    flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                    flows_mb = (
+                        flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                    )
                 flows_mb = (
                     flows_mb.permute(2, 0, 1)
                     .reshape(edge_index.size(1), -1)
@@ -918,19 +926,28 @@ def train_sequence(
             if pressure_loss:
                 press = preds['node_outputs'][..., 0].float()
                 flow = edge_preds.squeeze(-1)
-                if hasattr(model, 'y_mean') and model.y_mean is not None:
-                    if isinstance(model.y_mean, dict):
-                        p_mean = model.y_mean['node_outputs'].to(device)
-                        p_std = model.y_std['node_outputs'].to(device)
-                        if p_mean.ndim == 2:
-                            p_mean = p_mean[..., 0]
-                            p_std = p_std[..., 0]
-                        press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                if isinstance(getattr(model, 'y_mean', None), dict):
+                    p_mean = model.y_mean['node_outputs'].to(device)
+                    p_std = model.y_std['node_outputs'].to(device)
+                    if p_mean.ndim == 2:
+                        p_mean = p_mean[..., 0]
+                        p_std = p_std[..., 0]
+                    press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                    if 'edge_outputs' in model.y_mean:
                         q_mean = model.y_mean['edge_outputs'].to(device)
                         q_std = model.y_std['edge_outputs'].to(device)
                         flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
-                    else:
-                        press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                elif getattr(model, 'y_mean', None) is not None:
+                    p_mean = model.y_mean.to(device)
+                    p_std = model.y_std.to(device)
+                    if p_mean.ndim == 2:
+                        p_mean = p_mean[..., 0]
+                        p_std = p_std[..., 0]
+                    press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                    if getattr(model, 'y_mean_edge', None) is not None:
+                        q_mean = model.y_mean_edge.to(device)
+                        q_std = model.y_std_edge.to(device)
+                        flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                 head_loss, head_violation = pressure_headloss_consistency_loss(
                     press,
                     flow,
@@ -944,13 +961,14 @@ def train_sequence(
                 head_violation = torch.tensor(0.0, device=device)
             if pump_loss and pump_coeffs is not None:
                 flow_pc = edge_preds.squeeze(-1)
-                if hasattr(model, 'y_mean') and model.y_mean is not None:
-                    if isinstance(model.y_mean, dict):
-                        q_mean = model.y_mean['edge_outputs'].to(device)
-                        q_std = model.y_std['edge_outputs'].to(device)
-                        flow_pc = flow_pc * q_std + q_mean
-                    else:
-                        flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
+                if getattr(model, 'y_mean_edge', None) is not None:
+                    q_mean = model.y_mean_edge.to(device)
+                    q_std = model.y_std_edge.to(device)
+                    flow_pc = flow_pc * q_std + q_mean
+                elif isinstance(getattr(model, 'y_mean', None), dict):
+                    q_mean = model.y_mean['edge_outputs'].to(device)
+                    q_std = model.y_std['edge_outputs'].to(device)
+                    flow_pc = flow_pc * q_std + q_mean
                 pump_loss_val = pump_curve_loss(
                     flow_pc,
                     pump_coeffs,
@@ -1105,10 +1123,20 @@ def evaluate_sequence(
                     )
                     if physics_loss:
                         flows_mb = edge_preds.squeeze(-1)
-                        if hasattr(model, "y_mean") and model.y_mean is not None:
+                        if getattr(model, "y_mean_edge", None) is not None:
+                            q_mean = model.y_mean_edge.to(device)
+                            q_std = model.y_std_edge.to(device)
+                            flows_mb = (
+                                flows_mb * q_std.view(1, 1, -1)
+                                + q_mean.view(1, 1, -1)
+                            )
+                        elif isinstance(getattr(model, "y_mean", None), dict):
                             q_mean = model.y_mean["edge_outputs"].to(device)
                             q_std = model.y_std["edge_outputs"].to(device)
-                            flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                            flows_mb = (
+                                flows_mb * q_std.view(1, 1, -1)
+                                + q_mean.view(1, 1, -1)
+                            )
                         flows_mb = (
                             flows_mb.permute(2, 0, 1)
                             .reshape(edge_index.size(1), -1)
@@ -1150,19 +1178,28 @@ def evaluate_sequence(
                     if pressure_loss:
                         press = preds['node_outputs'][..., 0].float()
                         flow = edge_preds.squeeze(-1)
-                        if hasattr(model, 'y_mean') and model.y_mean is not None:
-                            if isinstance(model.y_mean, dict):
-                                p_mean = model.y_mean['node_outputs'].to(device)
-                                p_std = model.y_std['node_outputs'].to(device)
-                                if p_mean.ndim == 2:
-                                    p_mean = p_mean[..., 0]
-                                    p_std = p_std[..., 0]
-                                press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                        if isinstance(getattr(model, 'y_mean', None), dict):
+                            p_mean = model.y_mean['node_outputs'].to(device)
+                            p_std = model.y_std['node_outputs'].to(device)
+                            if p_mean.ndim == 2:
+                                p_mean = p_mean[..., 0]
+                                p_std = p_std[..., 0]
+                            press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                            if 'edge_outputs' in model.y_mean:
                                 q_mean = model.y_mean['edge_outputs'].to(device)
                                 q_std = model.y_std['edge_outputs'].to(device)
                                 flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
-                            else:
-                                press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                        elif getattr(model, 'y_mean', None) is not None:
+                            p_mean = model.y_mean.to(device)
+                            p_std = model.y_std.to(device)
+                            if p_mean.ndim == 2:
+                                p_mean = p_mean[..., 0]
+                                p_std = p_std[..., 0]
+                            press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                            if getattr(model, 'y_mean_edge', None) is not None:
+                                q_mean = model.y_mean_edge.to(device)
+                                q_std = model.y_std_edge.to(device)
+                                flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                         head_loss, head_violation = pressure_headloss_consistency_loss(
                             press,
                             flow,
@@ -1176,13 +1213,14 @@ def evaluate_sequence(
                         head_violation = torch.tensor(0.0, device=device)
                     if pump_loss and pump_coeffs is not None:
                         flow_pc = edge_preds.squeeze(-1)
-                        if hasattr(model, 'y_mean') and model.y_mean is not None:
-                            if isinstance(model.y_mean, dict):
-                                q_mean = model.y_mean['edge_outputs'].to(device)
-                                q_std = model.y_std['edge_outputs'].to(device)
-                                flow_pc = flow_pc * q_std + q_mean
-                            else:
-                                flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
+                        if getattr(model, 'y_mean_edge', None) is not None:
+                            q_mean = model.y_mean_edge.to(device)
+                            q_std = model.y_std_edge.to(device)
+                            flow_pc = flow_pc * q_std + q_mean
+                        elif isinstance(getattr(model, 'y_mean', None), dict):
+                            q_mean = model.y_mean['edge_outputs'].to(device)
+                            q_std = model.y_std['edge_outputs'].to(device)
+                            flow_pc = flow_pc * q_std + q_mean
                         pump_loss_val = pump_curve_loss(
                             flow_pc,
                             pump_coeffs,
