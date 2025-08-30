@@ -1285,6 +1285,16 @@ PLOTS_DIR = REPO_ROOT / "plots"
 
 def main(args: argparse.Namespace):
     configure_seeds(args.seed, args.deterministic)
+    if args.w_flow == 0 and (
+        args.physics_loss or args.pressure_loss or args.pump_loss
+    ):
+        warnings.warn(
+            "Physics-based losses require a non-zero --w-flow; disabling physics-related losses.",
+            RuntimeWarning,
+        )
+        args.physics_loss = False
+        args.pressure_loss = False
+        args.pump_loss = False
     signal.signal(signal.SIGINT, _signal_handler)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     edge_index_np = np.load(args.edge_index_path)
