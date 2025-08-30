@@ -1,5 +1,10 @@
+import sys
+from pathlib import Path
+
 import torch
-from scripts.train_gnn import RecurrentGNNSurrogate, MultiTaskGNNSurrogate
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from models.gnn_surrogate import RecurrentGNNSurrogate, MultiTaskGNNSurrogate
 
 
 def test_recurrent_output_clamp():
@@ -77,3 +82,31 @@ def test_output_clamp_with_per_node_norm():
     X = torch.zeros(1, 1, 2, 2)
     out = model(X, edge_index, edge_attr)
     assert out["node_outputs"].shape == (1, 1, 2, 2)
+    assert torch.all(out["node_outputs"] >= 0)
+
+
+def test_recurrent_output_clamp_with_per_node_norm():
+    edge_index = torch.tensor([[0], [1]], dtype=torch.long)
+    edge_attr = torch.ones(1, 3)
+    model = RecurrentGNNSurrogate(
+        in_channels=2,
+        hidden_channels=4,
+        edge_dim=3,
+        output_dim=1,
+        num_layers=1,
+        use_attention=False,
+        gat_heads=1,
+        dropout=0.0,
+        residual=False,
+        rnn_hidden_dim=4,
+    )
+    model.decoder.weight.data.zero_()
+    model.decoder.bias.data.fill_(-3.0)
+    model.y_mean = {"node_outputs": torch.tensor([[0.0], [2.0]])}
+    model.y_std = {"node_outputs": torch.ones(2, 1)}
+    X = torch.zeros(1, 1, 2, 2)
+    out = model(X, edge_index, edge_attr)
+    expected = torch.tensor([[[[0.0], [-2.0]]]])
+    assert torch.allclose(out, expected)
+    denorm = out * model.y_std["node_outputs"] + model.y_mean["node_outputs"]
+    assert torch.all(denorm >= 0)

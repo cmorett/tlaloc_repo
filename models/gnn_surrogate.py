@@ -248,39 +248,41 @@ class RecurrentGNNSurrogate(nn.Module):
         rnn_in = emb.permute(0, 2, 1, 3).reshape(batch_size * num_nodes, T, -1)
         rnn_out, _ = self.rnn(rnn_in)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
-        out = self.decoder(rnn_out)
-        out = out.clone()
+        node_pred = self.decoder(rnn_out)
+        node_pred = node_pred.clone()
         min_p = min_c = 0.0
         if getattr(self, "y_mean", None) is not None:
             if isinstance(self.y_mean, dict):
-                p_mean = self.y_mean["node_outputs"][0].to(out.device)
-                p_std = self.y_std["node_outputs"][0].to(out.device)
-                if self.y_mean["node_outputs"].numel() > 1:
-                    c_mean = self.y_mean["node_outputs"][1].to(out.device)
-                    c_std = self.y_std["node_outputs"][1].to(out.device)
+                node_mean = self.y_mean["node_outputs"].to(node_pred.device)
+                node_std = self.y_std["node_outputs"].to(node_pred.device)
+                p_mean = node_mean[..., 0]
+                p_std = node_std[..., 0]
+                min_p = -p_mean / p_std
+                if node_mean.shape[-1] > 1:
+                    c_mean = node_mean[..., 1]
+                    c_std = node_std[..., 1]
+                    min_c = -c_mean / c_std
                 else:
-                    c_mean = torch.tensor(0.0, device=out.device)
-                    c_std = torch.tensor(1.0, device=out.device)
+                    min_c = torch.zeros_like(min_p)
             else:
-                p_mean = self.y_mean[0].to(out.device)
-                p_std = self.y_std[0].to(out.device)
+                p_mean = self.y_mean[0].to(node_pred.device)
+                p_std = self.y_std[0].to(node_pred.device)
+                min_p = -p_mean / p_std
                 if self.y_mean.numel() > 1:
-                    c_mean = self.y_mean[1].to(out.device)
-                    c_std = self.y_std[1].to(out.device)
+                    c_mean = self.y_mean[1].to(node_pred.device)
+                    c_std = self.y_std[1].to(node_pred.device)
+                    min_c = -c_mean / c_std
                 else:
-                    c_mean = torch.tensor(0.0, device=out.device)
-                    c_std = torch.tensor(1.0, device=out.device)
-            min_p = -p_mean / p_std
-            min_c = -c_mean / c_std
+                    min_c = torch.zeros_like(min_p)
 
-        if out.size(-1) >= 1:
-            comps = [torch.clamp(out[..., 0], min=min_p).unsqueeze(-1)]
-            if out.size(-1) >= 2:
-                comps.append(torch.clamp(out[..., 1], min=min_c).unsqueeze(-1))
-                if out.size(-1) > 2:
-                    comps.append(out[..., 2:])
-            out = torch.cat(comps, dim=-1)
-        return out
+        if node_pred.size(-1) >= 1:
+            comps = [torch.clamp(node_pred[..., 0], min=min_p).unsqueeze(-1)]
+            if node_pred.size(-1) >= 2:
+                comps.append(torch.clamp(node_pred[..., 1], min=min_c).unsqueeze(-1))
+                if node_pred.size(-1) > 2:
+                    comps.append(node_pred[..., 2:])
+            node_pred = torch.cat(comps, dim=-1)
+        return node_pred
 
 
 class MultiTaskGNNSurrogate(nn.Module):
