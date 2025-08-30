@@ -24,9 +24,10 @@ def compute_norm_stats(data_list, per_node: bool = False):
     if any(getattr(d, "edge_y", None) is not None for d in data_list):
         if per_node:
             all_y_node = torch.stack([d.y.float() for d in data_list], dim=0)
+            all_y_edge = torch.stack([d.edge_y.float() for d in data_list], dim=0)
         else:
             all_y_node = torch.cat([d.y.float() for d in data_list], dim=0)
-        all_y_edge = torch.cat([d.edge_y.float() for d in data_list], dim=0)
+            all_y_edge = torch.cat([d.edge_y.float() for d in data_list], dim=0)
         y_mean = {
             "node_outputs": all_y_node.mean(dim=0),
             "edge_outputs": all_y_edge.mean(dim=0),
