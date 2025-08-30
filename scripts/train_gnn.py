@@ -752,27 +752,37 @@ def train(
                 getattr(batch, "node_type", None),
                 getattr(batch, "edge_type", None),
             )
-            if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
+            if isinstance(out, dict):
                 pred_nodes = out["node_outputs"].float()
-                edge_pred = out["edge_outputs"].float()
+                edge_pred = out.get("edge_outputs")
                 target_nodes = batch.y.float()
-                edge_target = batch.edge_y.float()
+                edge_target = getattr(batch, "edge_y", None)
                 if node_mask is not None:
                     repeat = pred_nodes.size(0) // node_mask.numel()
                     mask = node_mask.repeat(repeat)
                     pred_nodes = pred_nodes[mask]
                     target_nodes = target_nodes[mask]
-                loss, press_l, flow_l = weighted_mtl_loss(
-                    pred_nodes,
-                    target_nodes,
-                    edge_pred,
-                    edge_target,
-                    loss_fn=loss_fn,
-                    w_press=w_press,
-                    w_flow=w_flow,
-                )
+                use_flow_loss = edge_target is not None and w_flow != 0
+                if use_flow_loss:
+                    edge_target = edge_target.float()
+                    loss, press_l, flow_l = weighted_mtl_loss(
+                        pred_nodes,
+                        target_nodes,
+                        edge_pred.float(),
+                        edge_target,
+                        loss_fn=loss_fn,
+                        w_press=w_press,
+                        w_flow=w_flow,
+                    )
+                else:
+                    loss_press = _apply_loss(
+                        pred_nodes[..., 0], target_nodes[..., 0], loss_fn
+                    )
+                    loss = w_press * loss_press
+                    press_l = loss_press
+                    flow_l = torch.tensor(0.0, device=device)
             else:
-                out_t = out if not isinstance(out, dict) else out["node_outputs"]
+                out_t = out
                 target = batch.y.float()
                 if node_mask is not None:
                     repeat = out_t.size(0) // node_mask.numel()
@@ -839,27 +849,37 @@ def evaluate(
                     getattr(batch, "node_type", None),
                     getattr(batch, "edge_type", None),
                 )
-                if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
+                if isinstance(out, dict):
                     pred_nodes = out["node_outputs"].float()
-                    edge_pred = out["edge_outputs"].float()
+                    edge_pred = out.get("edge_outputs")
                     target_nodes = batch.y.float()
-                    edge_target = batch.edge_y.float()
+                    edge_target = getattr(batch, "edge_y", None)
                     if node_mask is not None:
                         repeat = pred_nodes.size(0) // node_mask.numel()
                         mask = node_mask.repeat(repeat)
                         pred_nodes = pred_nodes[mask]
                         target_nodes = target_nodes[mask]
-                    loss, press_l, flow_l = weighted_mtl_loss(
-                        pred_nodes,
-                        target_nodes,
-                        edge_pred,
-                        edge_target,
-                        loss_fn=loss_fn,
-                        w_press=w_press,
-                        w_flow=w_flow,
-                    )
+                    use_flow_loss = edge_target is not None and w_flow != 0
+                    if use_flow_loss:
+                        edge_target = edge_target.float()
+                        loss, press_l, flow_l = weighted_mtl_loss(
+                            pred_nodes,
+                            target_nodes,
+                            edge_pred.float(),
+                            edge_target,
+                            loss_fn=loss_fn,
+                            w_press=w_press,
+                            w_flow=w_flow,
+                        )
+                    else:
+                        loss_press = _apply_loss(
+                            pred_nodes[..., 0], target_nodes[..., 0], loss_fn
+                        )
+                        loss = w_press * loss_press
+                        press_l = loss_press
+                        flow_l = torch.tensor(0.0, device=device)
                 else:
-                    out_t = out if not isinstance(out, dict) else out["node_outputs"]
+                    out_t = out
                     target = batch.y.float()
                     if node_mask is not None:
                         repeat = out_t.size(0) // node_mask.numel()
@@ -969,17 +989,26 @@ def train_sequence(
             if node_mask is not None:
                 pred_nodes = pred_nodes[:, :, node_mask, :]
                 target_nodes = target_nodes[:, :, node_mask, :]
-            edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
-            edge_preds = preds['edge_outputs'].float()
-            loss, loss_press, loss_edge = weighted_mtl_loss(
-                pred_nodes,
-                target_nodes.float(),
-                edge_preds,
-                edge_target.float(),
-                loss_fn=loss_fn,
-                w_press=w_press,
-                w_flow=w_flow,
-            )
+            edge_preds = preds.get('edge_outputs')
+            edge_target = Y_seq.get('edge_outputs')
+            use_flow_loss = edge_target is not None and w_flow != 0
+            if use_flow_loss:
+                edge_target = edge_target.unsqueeze(-1).to(device)
+                loss, loss_press, loss_edge = weighted_mtl_loss(
+                    pred_nodes,
+                    target_nodes.float(),
+                    edge_preds.float(),
+                    edge_target.float(),
+                    loss_fn=loss_fn,
+                    w_press=w_press,
+                    w_flow=w_flow,
+                )
+            else:
+                loss_press = _apply_loss(
+                    pred_nodes[..., 0], target_nodes[..., 0], loss_fn
+                )
+                loss = w_press * loss_press
+                loss_edge = torch.tensor(0.0, device=device)
             for name, val in [
                 ("pressure", loss_press),
                 ("flow", loss_edge),
@@ -1225,17 +1254,26 @@ def evaluate_sequence(
                     if node_mask is not None:
                         pred_nodes = pred_nodes[:, :, node_mask, :]
                         target_nodes = target_nodes[:, :, node_mask, :]
-                    edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
-                    edge_preds = preds['edge_outputs'].float()
-                    loss, loss_press, loss_edge = weighted_mtl_loss(
-                        pred_nodes,
-                        target_nodes.float(),
-                        edge_preds,
-                        edge_target.float(),
-                        loss_fn=loss_fn,
-                        w_press=w_press,
-                        w_flow=w_flow,
-                    )
+                    edge_preds = preds.get('edge_outputs')
+                    edge_target = Y_seq.get('edge_outputs')
+                    use_flow_loss = edge_target is not None and w_flow != 0
+                    if use_flow_loss:
+                        edge_target = edge_target.unsqueeze(-1).to(device)
+                        loss, loss_press, loss_edge = weighted_mtl_loss(
+                            pred_nodes,
+                            target_nodes.float(),
+                            edge_preds.float(),
+                            edge_target.float(),
+                            loss_fn=loss_fn,
+                            w_press=w_press,
+                            w_flow=w_flow,
+                        )
+                    else:
+                        loss_press = _apply_loss(
+                            pred_nodes[..., 0], target_nodes[..., 0], loss_fn
+                        )
+                        loss = w_press * loss_press
+                        loss_edge = torch.tensor(0.0, device=device)
                     if physics_loss:
                         flows_mb = edge_preds.squeeze(-1)
                         if getattr(model, "y_mean_edge", None) is not None:
@@ -1404,12 +1442,9 @@ def main(args: argparse.Namespace):
         args.physics_loss or args.pressure_loss or args.pump_loss
     ):
         warnings.warn(
-            "Physics-based losses require a non-zero --w-flow; disabling physics-related losses.",
+            "Flow loss weight is zero; physics losses will be applied without flow MAE regularization.",
             RuntimeWarning,
         )
-        args.physics_loss = False
-        args.pressure_loss = False
-        args.pump_loss = False
     signal.signal(signal.SIGINT, _signal_handler)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     edge_index_np = np.load(args.edge_index_path)
