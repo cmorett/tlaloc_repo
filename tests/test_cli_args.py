@@ -189,7 +189,7 @@ def test_cli_loss_weights(tmp_path):
     assert "'w_flow': 1.5" in log_text
 
 
-def test_cli_zero_w_flow_disables_physics(tmp_path):
+def test_cli_zero_w_flow_keeps_physics(tmp_path):
     repo = Path(__file__).resolve().parents[1]
     data_dir = repo / "data"
     data_dir.mkdir(exist_ok=True)
@@ -246,6 +246,6 @@ def test_cli_zero_w_flow_disables_physics(tmp_path):
 
     assert log_file.exists()
     log_text = log_file.read_text()
-    assert "'physics_loss': False" in log_text
-    assert "'pressure_loss': False" in log_text
-    assert "'pump_loss': False" in log_text
+    assert "'physics_loss': True" in log_text
+    assert "'pressure_loss': True" in log_text
+    assert "'pump_loss': True" in log_text

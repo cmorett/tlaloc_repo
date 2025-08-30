@@ -101,7 +101,10 @@ Optional physics losses in ``models/loss_utils.py`` further regularise
 training. ``compute_mass_balance_loss`` penalises node flow imbalance,
 ``pressure_headloss_consistency_loss`` enforces Hazen–Williams head losses and
 ``pump_curve_loss`` discourages infeasible pump operating points. Combine these
-terms with data losses to keep predictions physically plausible.
+terms with data losses to keep predictions physically plausible. These
+regularisers operate independently of the flow mean absolute error weight so
+they may be enabled even when ``--w-flow 0`` is used to disable the flow MAE
+term.
 
 Training performs node-wise regression and by default optimizes the mean
 absolute error (MAE).  Specify ``--loss-fn`` to switch between MAE (``mae``),
