@@ -1888,6 +1888,7 @@ def main(args: argparse.Namespace):
         print(
             f"Using physics loss scales: mass={mass_scale:.4e}, head={head_scale:.4e}, pump={pump_scale:.4e}"
         )
+    pressure_only = args.w_cl <= 0 and args.w_flow <= 0
 
     # prepare logging
     if args.resume:
@@ -1928,13 +1929,23 @@ def main(args: argparse.Namespace):
             f"scales: mass={mass_scale}, head={head_scale}, pump={pump_scale}\n"
         )
         if seq_mode:
-            f.write(
-                "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation,val_press_loss,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation,lr\n"
-            )
+            if pressure_only:
+                f.write(
+                    "epoch,train_loss,val_press_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation,lr\n"
+                )
+            else:
+                f.write(
+                    "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation,val_press_loss,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation,lr\n"
+                )
         else:
-            f.write(
-                "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,val_press_loss,val_cl_loss,val_flow_loss,lr\n"
-            )
+            if pressure_only:
+                f.write(
+                    "epoch,train_loss,val_press_loss,press_loss,cl_loss,flow_loss,val_cl_loss,val_flow_loss,lr\n"
+                )
+            else:
+                f.write(
+                    "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,val_press_loss,val_cl_loss,val_flow_loss,lr\n"
+                )
         best_val = float("inf")
         patience = 0
         for epoch in range(start_epoch, args.epochs):
@@ -2037,14 +2048,21 @@ def main(args: argparse.Namespace):
                 else:
                     val_loss = loss
                     val_press_l, val_cl_l, val_flow_l = press_l, cl_l, flow_l
-            scheduler.step(val_loss)
+            val_metric = val_press_l if pressure_only else val_loss
+            scheduler.step(val_metric)
             curr_lr = optimizer.param_groups[0]['lr']
-            losses.append((loss, val_loss))
+            losses.append((loss, val_metric))
             if seq_mode:
-                f.write(
-                    f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},{mass_imb:.6f},{head_viols:.6f},"
-                    f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols:.6f},{curr_lr:.6e}\n"
-                )
+                if pressure_only:
+                    f.write(
+                        f"{epoch},{loss:.6f},{val_press_l:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},{mass_imb:.6f},{head_viols:.6f},"
+                        f"{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols:.6f},{curr_lr:.6e}\n"
+                    )
+                else:
+                    f.write(
+                        f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},{mass_imb:.6f},{head_viols:.6f},"
+                        f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols:.6f},{curr_lr:.6e}\n"
+                    )
                 if tb_writer is not None:
                     tb_writer.add_scalars(
                         "loss/train",
@@ -2059,7 +2077,7 @@ def main(args: argparse.Namespace):
                     tb_writer.add_scalars(
                         "loss/val",
                         {
-                            "total": val_loss,
+                            "total": val_metric,
                             "pressure": val_press_l,
                             "chlorine": val_cl_l,
                             "flow": val_flow_l,
@@ -2094,10 +2112,16 @@ def main(args: argparse.Namespace):
                 else:
                     print(f"Epoch {epoch}")
             else:
-                f.write(
-                    f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
-                    f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e}\n"
-                )
+                if pressure_only:
+                    f.write(
+                        f"{epoch},{loss:.6f},{val_press_l:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
+                        f"{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e}\n"
+                    )
+                else:
+                    f.write(
+                        f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
+                        f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e}\n"
+                    )
                 if tb_writer is not None:
                     tb_writer.add_scalars(
                         "loss/train",
@@ -2112,7 +2136,7 @@ def main(args: argparse.Namespace):
                     tb_writer.add_scalars(
                         "loss/val",
                         {
-                            "total": val_loss,
+                            "total": val_metric,
                             "pressure": val_press_l,
                             "chlorine": val_cl_l,
                             "flow": val_flow_l,
@@ -2122,8 +2146,8 @@ def main(args: argparse.Namespace):
                 print(
                     f"Epoch {epoch}: press={press_l:.3f}, cl={cl_l:.3f}, flow={flow_l:.3f}"
                 )
-            if val_loss < best_val - 1e-6:
-                best_val = val_loss
+            if val_metric < best_val - 1e-6:
+                best_val = val_metric
                 patience = 0
                 os.makedirs(os.path.dirname(model_path), exist_ok=True)
                 ckpt = {
