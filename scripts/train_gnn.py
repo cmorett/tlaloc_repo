@@ -223,10 +223,10 @@ def compute_loss_scales(
 ) -> Tuple[float, float, float]:
     """Determine physics loss scales from the dataset.
 
-    Scales are estimated from robust dataset statistics (95th percentile).
-    When the dataset lacks the required information (e.g., no edge flow labels
-    or all-zero flows), the corresponding physics loss is disabled with a
-    warning.
+    Flows are assumed to be provided in ``m^3/s``. Scales are estimated from
+    robust dataset statistics (95th percentile). When the dataset lacks the
+    required information (e.g., no edge flow labels or all-zero flows), the
+    corresponding physics loss is disabled with a warning.
     """
     mass_scale = args.mass_scale
     head_scale = args.head_scale
@@ -287,7 +287,7 @@ def compute_loss_scales(
                         rough = np.clip(
                             edge_attr_phys_np[pipe_mask, 2][active_edges], 1e-6, None
                         )
-                        q_m3 = np.abs(q_pipe) * 0.001
+                        q_m3 = np.abs(q_pipe)  # flows already in m^3/s
                         denom = np.clip(rough ** 1.852 * diam ** 4.87, 1e-6, None)
                         hw_hl = 10.67 * length * (q_m3 ** 1.852) / denom
                         if hw_hl.size > 0:

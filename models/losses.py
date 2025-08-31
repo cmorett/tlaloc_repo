@@ -132,8 +132,9 @@ def pressure_headloss_consistency_loss(
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """Return MSE between predicted and Hazen--Williams head losses.
 
-    When ``return_violation`` is ``True`` the percentage of edges where the
-    predicted head loss has the wrong sign is also returned.
+    Parameters are expected to use edge flows in ``m^3/s``. When
+    ``return_violation`` is ``True`` the percentage of edges where the predicted
+    head loss has the wrong sign is also returned.
     """
     # Un-normalise edge attributes if statistics are available
     if edge_attr_mean is not None and edge_attr_std is not None:
@@ -166,7 +167,7 @@ def pressure_headloss_consistency_loss(
     diam = diam[pipe_mask]
     rough = rough[pipe_mask]
     q_pipe = q[:, pipe_mask]
-    q_m3 = q_pipe * 0.001
+    q_m3 = q_pipe  # flows already in m^3/s
     flow_sign = torch.sign(q_pipe)
     denom = (rough.pow(1.852) * diam.pow(4.87)).clamp(min=epsilon)
     hw_hl = const * length * q_m3.abs().pow(1.852) / denom
