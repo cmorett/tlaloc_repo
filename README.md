@@ -157,6 +157,13 @@ Physics-based losses (mass conservation, pressure–headloss consistency and pum
 
 Use `--auto-w-flow` to automatically scale the flow loss weight based on dataset flow variance so that its gradient magnitude matches that of the pressure loss.
 
+``--auto-w-physics`` performs a similar rescaling for the physics loss weights.
+After the first epoch the script observes the unscaled mass, headloss and pump
+penalties and adjusts ``w_mass``, ``w_head`` and ``w_pump`` so that each scaled
+term contributes a comparable amount to the total loss.  Passing a value such as
+``--auto-w-physics 7`` matches the typical head term magnitude observed during
+training.
+
 GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8}) and ``--hidden-dim`` ({128,256}).
 Use ``--residual`` to enable skip connections and ``--use-attention`` for graph attention on node updates.
 The LSTM hidden size can be set with ``--lstm-hidden`` (64 or 128).
@@ -225,6 +232,12 @@ The automatically detected scales can be overridden via ``--mass-scale``,
 ``--head-scale`` and ``--pump-scale`` if manual tuning or logging is desired.
 Scales below ``1.0`` are automatically clamped to prevent excessively large
 physics penalties.
+The optional ``--auto-w-physics`` flag adjusts the weights ``w_mass``,
+``w_head`` and ``w_pump`` after the first training epoch so that each scaled
+physics term contributes a similar magnitude to the total loss.  The flag accepts
+an optional target value for the desired contribution; running with
+``--auto-w-physics`` defaults to ``1.0`` while ``--auto-w-physics 7`` matches the
+roughly ``7`` unit head term observed on the C‑Town network.
 Training logs also report the average mass imbalance per batch and the
 percentage of edges with inconsistent headloss signs.
 

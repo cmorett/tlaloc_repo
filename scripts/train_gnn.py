@@ -319,6 +319,9 @@ def compute_loss_scales(
                             UserWarning,
                         )
                         args.pump_loss = False
+    mass_scale = max(float(mass_scale), 1.0)
+    head_scale = max(float(head_scale), 1.0)
+    pump_scale = max(float(pump_scale), 1.0)
     args.mass_scale = mass_scale
     args.head_scale = head_scale
     args.pump_scale = pump_scale
@@ -927,7 +930,7 @@ def train_sequence(
     flow_reg_weight: float = 0.0,
     amp: bool = False,
     progress: bool = True,
-) -> Tuple[float, float, float, float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float, float, float, float, float, float]:
     global interrupted
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
@@ -935,6 +938,7 @@ def train_sequence(
     press_total = flow_total = 0.0
     mass_total = head_total = sym_total = pump_total = 0.0
     mass_imb_total = head_viol_total = 0.0
+    mass_raw_total = head_raw_total = pump_raw_total = 0.0
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device)
     edge_attr_phys = edge_attr_phys.to(device)
@@ -1121,6 +1125,9 @@ def train_sequence(
                 )
             else:
                 pump_loss_val = torch.tensor(0.0, device=device)
+            mass_raw = mass_loss.detach()
+            head_raw = head_loss.detach()
+            pump_raw = pump_loss_val.detach()
             mass_loss, head_loss, pump_loss_val = scale_physics_losses(
                 mass_loss,
                 head_loss,
@@ -1142,6 +1149,7 @@ def train_sequence(
             loss_press = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
             head_loss = pump_loss_val = torch.tensor(0.0, device=device)
             mass_imb = head_violation = torch.tensor(0.0, device=device)
+            mass_raw = head_raw = pump_raw = torch.tensor(0.0, device=device)
             with autocast(device_type=device.type, enabled=amp):
                 loss = _apply_loss(preds, Y_seq.float(), loss_fn)
         if amp:
@@ -1163,6 +1171,9 @@ def train_sequence(
         pump_total += pump_loss_val.item() * X_seq.size(0)
         mass_imb_total += mass_imb.item() * X_seq.size(0)
         head_viol_total += head_violation.item() * X_seq.size(0)
+        mass_raw_total += mass_raw.item() * X_seq.size(0)
+        head_raw_total += head_raw.item() * X_seq.size(0)
+        pump_raw_total += pump_raw.item() * X_seq.size(0)
         if interrupted:
             break
     denom = len(loader.dataset)
@@ -1176,6 +1187,9 @@ def train_sequence(
         pump_total / denom,
         mass_imb_total / denom,
         head_viol_total / denom,
+        mass_raw_total / denom,
+        head_raw_total / denom,
+        pump_raw_total / denom,
     )
 
 
@@ -2012,7 +2026,19 @@ def main(args: argparse.Namespace):
                     progress=args.progress,
                 )
                 loss = loss_tuple[0]
-                press_l, flow_l, mass_l, head_l, sym_l, pump_l, mass_imb, head_viols = loss_tuple[1:]
+                (
+                    press_l,
+                    flow_l,
+                    mass_l,
+                    head_l,
+                    sym_l,
+                    pump_l,
+                    mass_imb,
+                    head_viols,
+                    raw_mass,
+                    raw_head,
+                    raw_pump,
+                ) = loss_tuple[1:]
                 comp = [press_l, flow_l, mass_l, sym_l]
                 if args.pressure_loss:
                     comp.append(head_l)
@@ -2168,6 +2194,30 @@ def main(args: argparse.Namespace):
                 print(
                     f"Epoch {epoch}: press={press_l:.3f}, flow={flow_l:.3f}"
                 )
+            if args.auto_w_physics and epoch == start_epoch:
+                scaled = []
+                if args.physics_loss and raw_mass > 0:
+                    scaled.append(("w_mass", raw_mass / max(mass_scale, 1e-8)))
+                if args.pressure_loss and raw_head > 0:
+                    scaled.append(("w_head", raw_head / max(head_scale, 1e-8)))
+                if args.pump_loss and raw_pump > 0:
+                    scaled.append(("w_pump", raw_pump / max(pump_scale, 1e-8)))
+                if scaled:
+                    target = args.auto_w_physics
+                    if target <= 0:
+                        target = sum(v for _, v in scaled) / len(scaled)
+                    for name, val in scaled:
+                        setattr(args, name, target / max(val, 1e-8))
+                    weights_info = {
+                        "w_mass": args.w_mass,
+                        "w_head": args.w_head,
+                        "w_pump": args.w_pump,
+                    }
+                    f.write(f"auto_w_physics: {weights_info}\n")
+                    print(
+                        "Auto-scaled physics weights to "
+                        f"w_mass={args.w_mass:.3f}, w_head={args.w_head:.3f}, w_pump={args.w_pump:.3f}"
+                    )
             if val_loss < best_val - 1e-6:
                 best_val = val_loss
                 patience = 0
@@ -2779,6 +2829,19 @@ if __name__ == "__main__":
         dest="auto_w_flow",
         action="store_true",
         help="Scale w_flow based on dataset flow variance so its gradient magnitude matches pressure",
+    )
+    parser.add_argument(
+        "--auto-w-physics",
+        type=float,
+        nargs="?",
+        const=1.0,
+        default=0.0,
+        metavar="TARGET",
+        help=(
+            "Rescale w_mass, w_head and w_pump after the first epoch so each scaled "
+            "physics loss is roughly TARGET (default 1.0 when flag is used). "
+            "A value around 7 balances the C-Town dataset."
+        ),
     )
     parser.add_argument(
         "--flow-reg-weight",
