@@ -55,7 +55,7 @@ from models.gnn_surrogate import (
     MultiTaskGNNSurrogate,
 )
 
-from scripts.metrics import export_table
+from scripts.metrics import export_table, per_node_mae
 
 try:
     from .feature_utils import (
@@ -2562,6 +2562,10 @@ def main(args: argparse.Namespace):
         pred_samples: List[float] = []
         true_samples: List[float] = []
 
+        junction_names = [n for n in wn.node_name_list if n not in exclude]
+        per_node_pred: List[np.ndarray] = []
+        per_node_true: List[np.ndarray] = []
+
         exclude = set(wn.reservoir_name_list) | set(wn.tank_name_list)
         node_mask_np = np.array([n not in exclude for n in wn.node_name_list])
         node_mask = torch.tensor(node_mask_np, dtype=torch.bool, device=device)
@@ -2616,17 +2620,19 @@ def main(args: argparse.Namespace):
                         edge_pred = edge_pred * y_std_edge + y_mean_edge
                         Y_edge = Y_edge * y_std_edge + y_mean_edge
 
-                    pred_p = node_pred[..., 0].reshape(-1, node_mask.numel())
-                    true_p = Y_node[..., 0].reshape(-1, node_mask.numel())
-                    pred_p = pred_p[:, node_mask].reshape(-1)
-                    true_p = true_p[:, node_mask].reshape(-1)
-                    pred_np = pred_p.cpu().numpy()
-                    true_np = true_p.cpu().numpy()
-                    p_stats.update(pred_np, true_np)
+                    pred_nodes = node_pred[..., 0].reshape(-1, node_mask.numel())
+                    true_nodes = Y_node[..., 0].reshape(-1, node_mask.numel())
+                    pred_np = pred_nodes.cpu().numpy()[:, node_mask_np]
+                    true_np = true_nodes.cpu().numpy()[:, node_mask_np]
+                    per_node_pred.append(pred_np)
+                    per_node_true.append(true_np)
+                    p_stats.update(pred_np.reshape(-1), true_np.reshape(-1))
                     if args.eval_sample != 0 and len(pred_samples) < args.eval_sample:
                         remain = args.eval_sample - len(pred_samples)
-                        pred_samples.extend(pred_np[:remain])
-                        true_samples.extend(true_np[:remain])
+                        flat_pred = pred_np.reshape(-1)
+                        flat_true = true_np.reshape(-1)
+                        pred_samples.extend(flat_pred[:remain])
+                        true_samples.extend(flat_true[:remain])
             else:
                 for batch in test_loader:
                     batch = batch.to(device, non_blocking=True)
@@ -2689,20 +2695,28 @@ def main(args: argparse.Namespace):
                         if edge_y is not None:
                             edge_y = edge_y.squeeze(-1)
 
-                    mask_batch = node_mask.repeat(batch.num_graphs)
-                    pred_p = node_out[:, 0][mask_batch]
-                    true_p = batch_y[:, 0][mask_batch]
-                    pred_np = pred_p.cpu().numpy()
-                    true_np = true_p.cpu().numpy()
-                    p_stats.update(pred_np, true_np)
+                    node_pred = node_out[:, 0].view(batch.num_graphs, -1)
+                    node_true = batch_y[:, 0].view(batch.num_graphs, -1)
+                    pred_np = node_pred.cpu().numpy()[:, node_mask_np]
+                    true_np = node_true.cpu().numpy()[:, node_mask_np]
+                    per_node_pred.append(pred_np)
+                    per_node_true.append(true_np)
+                    p_stats.update(pred_np.reshape(-1), true_np.reshape(-1))
                     if args.eval_sample != 0 and len(pred_samples) < args.eval_sample:
                         remain = args.eval_sample - len(pred_samples)
-                        pred_samples.extend(pred_np[:remain])
-                        true_samples.extend(true_np[:remain])
+                        flat_pred = pred_np.reshape(-1)
+                        flat_true = true_np.reshape(-1)
+                        pred_samples.extend(flat_pred[:remain])
+                        true_samples.extend(flat_true[:remain])
 
         if args.normalize and getattr(model, "y_mean", None) is None:
             raise RuntimeError("Denormalized metrics requested but normalization stats are missing")
         save_accuracy_metrics(p_stats, run_name)
+        if per_node_pred and per_node_true:
+            pred_matrix = np.concatenate(per_node_pred, axis=0)
+            true_matrix = np.concatenate(per_node_true, axis=0)
+            node_mae_df = per_node_mae(true_matrix, pred_matrix, junction_names)
+            export_table(node_mae_df, str(REPO_ROOT / "logs" / f"per_node_mae_{run_name}.csv"))
         if args.eval_sample != 0 and pred_samples:
             pred_arr = np.array(pred_samples, dtype=float)
             true_arr = np.array(true_samples, dtype=float)

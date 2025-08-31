@@ -72,7 +72,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `test_workers.py`
 - `data/` – ignored by git; used for generated datasets and temporary simulation outputs.
 - `plots/` – ignored by git; stores figures generated during training, validation and MPC runs.
-- `logs/` – ignored by git; JSON summaries such as `surrogate_metrics.json` and `mpc_summary.json`.
+- `logs/` – ignored by git; stores outputs such as `surrogate_metrics.json`, `mpc_summary.json` and `per_node_mae_<run>.csv`.
 - `.vscode/` – VS Code configuration (contains `settings.json`).
 
 ## Architecture Overview
