@@ -87,6 +87,14 @@ except ImportError:  # pragma: no cover
 PUMP_LOSS_WARN_THRESHOLD = 1.0
 
 
+def apply_warmup(weight: float, epoch: int, warmup: int) -> float:
+    """Linearly ramp ``weight`` over ``warmup`` epochs."""
+    if warmup <= 0:
+        return weight
+    factor = min((epoch + 1) / warmup, 1.0)
+    return weight * factor
+
+
 def summarize_target_norm_stats(y_mean, y_std):
     """Return scalar normalization stats for logging.
 
@@ -2070,6 +2078,18 @@ def main(args: argparse.Namespace):
         best_val = float("inf")
         patience = 0
         for epoch in range(start_epoch, args.epochs):
+            w_mass = apply_warmup(args.w_mass, epoch, args.mass_warmup)
+            w_head = apply_warmup(args.w_head, epoch, args.head_warmup)
+            w_pump = apply_warmup(args.w_pump, epoch, args.pump_warmup)
+            print(
+                f"Epoch {epoch + 1}: w_mass={w_mass:.3f} w_head={w_head:.3f} w_pump={w_pump:.3f}"
+            )
+            if tb_writer is not None:
+                tb_writer.add_scalars(
+                    "weights",
+                    {"mass": w_mass, "head": w_head, "pump": w_pump},
+                    epoch,
+                )
             if seq_mode:
                 loss_tuple = train_sequence(
                     model,
@@ -2091,9 +2111,9 @@ def main(args: argparse.Namespace):
                     mass_scale=mass_scale,
                     head_scale=head_scale,
                     pump_scale=pump_scale,
-                    w_mass=args.w_mass,
-                    w_head=args.w_head,
-                    w_pump=args.w_pump,
+                    w_mass=w_mass,
+                    w_head=w_head,
+                    w_pump=w_pump,
                     w_press=args.w_press,
                     w_flow=args.w_flow,
                     flow_reg_weight=args.flow_reg_weight,
@@ -2128,9 +2148,9 @@ def main(args: argparse.Namespace):
                         mass_scale=mass_scale,
                         head_scale=head_scale,
                         pump_scale=pump_scale,
-                        w_mass=args.w_mass,
-                        w_head=args.w_head,
-                        w_pump=args.w_pump,
+                        w_mass=w_mass,
+                        w_head=w_head,
+                        w_pump=w_pump,
                         w_press=args.w_press,
                         w_flow=args.w_flow,
                         flow_reg_weight=args.flow_reg_weight,
@@ -2877,6 +2897,24 @@ if __name__ == "__main__":
         type=float,
         default=0.25,
         help="Weight of the pump curve loss term",
+    )
+    parser.add_argument(
+        "--mass-warmup",
+        type=int,
+        default=0,
+        help="Epochs to ramp w_mass from 0 to its value",
+    )
+    parser.add_argument(
+        "--head-warmup",
+        type=int,
+        default=0,
+        help="Epochs to ramp w_head from 0 to its value",
+    )
+    parser.add_argument(
+        "--pump-warmup",
+        type=int,
+        default=0,
+        help="Epochs to ramp w_pump from 0 to its value",
     )
     parser.add_argument(
         "--w-press",
