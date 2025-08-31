@@ -1112,6 +1112,9 @@ def train_sequence(
                     if model.x_mean.ndim == 2:
                         dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
                         dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
+                        dem_mean, dem_std = _trim_norm_stats(
+                            dem_mean, dem_std, demand_mb.size(0)
+                        )
                     else:
                         dem_mean = model.x_mean[0].to(device)
                         dem_std = model.x_std[0].to(device)
@@ -1412,6 +1415,9 @@ def evaluate_sequence(
                             if model.x_mean.ndim == 2:
                                 dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
                                 dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
+                                dem_mean, dem_std = _trim_norm_stats(
+                                    dem_mean, dem_std, demand_mb.size(0)
+                                )
                             else:
                                 dem_mean = model.x_mean[0].to(device)
                                 dem_std = model.x_std[0].to(device)
