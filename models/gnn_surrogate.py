@@ -165,6 +165,7 @@ class EnhancedGNNEncoder(nn.Module):
         edge_attr: Optional[torch.Tensor] = None,
         node_type: Optional[torch.Tensor] = None,
         edge_type: Optional[torch.Tensor] = None,
+        batch: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         for conv, attn, norm in zip(self.convs, self.attentions, self.norms):
             identity = x
@@ -175,8 +176,27 @@ class EnhancedGNNEncoder(nn.Module):
             else:
                 x = conv(x, edge_index)
             if not isinstance(attn, nn.Identity):
-                x, _ = attn(x.unsqueeze(0), x.unsqueeze(0), x.unsqueeze(0))
-                x = x.squeeze(0)
+                if batch is None:
+                    x, _ = attn(
+                        x.unsqueeze(0),
+                        x.unsqueeze(0),
+                        x.unsqueeze(0),
+                        need_weights=False,
+                    )
+                    x = x.squeeze(0)
+                else:
+                    out = torch.empty_like(x)
+                    for b in batch.unique(sorted=True):
+                        mask = batch == b
+                        xb = x[mask]
+                        xb, _ = attn(
+                            xb.unsqueeze(0),
+                            xb.unsqueeze(0),
+                            xb.unsqueeze(0),
+                            need_weights=False,
+                        )
+                        out[mask] = xb.squeeze(0)
+                    x = out
             x = self.act_fn(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = norm(x)
@@ -247,6 +267,7 @@ class RecurrentGNNSurrogate(nn.Module):
         edge_type_rep = (
             edge_type.repeat(batch_size) if edge_type is not None else None
         )
+        batch_vec = torch.arange(batch_size, device=device).repeat_interleave(num_nodes)
 
         node_embeddings = []
         for t in range(T):
@@ -259,6 +280,7 @@ class RecurrentGNNSurrogate(nn.Module):
                     edge_attr_rep,
                     node_type_rep,
                     edge_type_rep,
+                    batch_vec,
                 )
 
             if self.use_checkpoint and self.training:
@@ -404,6 +426,7 @@ class MultiTaskGNNSurrogate(nn.Module):
         edge_type_rep = (
             edge_type.repeat(batch_size) if edge_type is not None else None
         )
+        batch_vec = torch.arange(batch_size, device=device).repeat_interleave(num_nodes)
 
         node_embeddings = []
         for t in range(T):
@@ -416,6 +439,7 @@ class MultiTaskGNNSurrogate(nn.Module):
                     edge_attr_rep,
                     node_type_rep,
                     edge_type_rep,
+                    batch_vec,
                 )
 
             if self.use_checkpoint and self.training:

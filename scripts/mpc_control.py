@@ -465,6 +465,8 @@ def load_surrogate_model(
                 parts = k.split(".")
                 idx = int(parts[1])
                 rest = ".".join(parts[2:])
+                if rest.startswith("lin.0."):
+                    rest = "lin." + rest.split(".", 2)[2]
                 base_key = f"layers.{idx}.{rest}"
                 renamed[base_key] = v
                 if ckpt_meta is None:
