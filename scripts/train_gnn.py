@@ -1666,7 +1666,7 @@ def main(args: argparse.Namespace):
     if args.normalize:
         if seq_mode:
             x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
-                X_raw, Y_raw, per_node=args.per_node_norm
+                X_raw, Y_raw, per_node=args.per_node_norm, node_mask=loss_mask
             )
             apply_sequence_normalization(
                 data_ds,
@@ -1677,6 +1677,7 @@ def main(args: argparse.Namespace):
                 edge_mean,
                 edge_std,
                 per_node=args.per_node_norm,
+                node_mask=loss_mask,
             )
             if isinstance(val_list, SequenceDataset):
                 apply_sequence_normalization(
@@ -1688,10 +1689,11 @@ def main(args: argparse.Namespace):
                     edge_mean,
                     edge_std,
                     per_node=args.per_node_norm,
+                    node_mask=loss_mask,
                 )
         else:
             x_mean, x_std, y_mean, y_std = compute_norm_stats(
-                data_list, per_node=args.per_node_norm
+                data_list, per_node=args.per_node_norm, node_mask=loss_mask
             )
             apply_normalization(
                 data_list,
@@ -1702,6 +1704,7 @@ def main(args: argparse.Namespace):
                 edge_mean,
                 edge_std,
                 per_node=args.per_node_norm,
+                node_mask=loss_mask,
             )
             if val_list:
                 apply_normalization(
@@ -1713,6 +1716,7 @@ def main(args: argparse.Namespace):
                     edge_mean,
                     edge_std,
                     per_node=args.per_node_norm,
+                    node_mask=loss_mask,
                 )
         print("Target normalization stats:")
         pressure_stats = summarize_target_norm_stats(y_mean, y_std)
@@ -1772,11 +1776,11 @@ def main(args: argparse.Namespace):
         if y_std is None:
             if seq_mode:
                 _, _, _, y_std_tmp = compute_sequence_norm_stats(
-                    X_raw, Y_raw, per_node=args.per_node_norm
+                    X_raw, Y_raw, per_node=args.per_node_norm, node_mask=loss_mask
                 )
             else:
                 _, _, _, y_std_tmp = compute_norm_stats(
-                    data_list, per_node=args.per_node_norm
+                    data_list, per_node=args.per_node_norm, node_mask=loss_mask
                 )
         else:
             y_std_tmp = y_std
@@ -2398,6 +2402,7 @@ def main(args: argparse.Namespace):
                     edge_mean,
                     edge_std,
                     per_node=args.per_node_norm,
+                    node_mask=loss_mask,
                 )
             test_loader = TorchLoader(
                 test_ds,
@@ -2425,6 +2430,7 @@ def main(args: argparse.Namespace):
                     edge_mean,
                     edge_std,
                     per_node=args.per_node_norm,
+                    node_mask=loss_mask,
                 )
             test_loader = DataLoader(
                 test_list,
