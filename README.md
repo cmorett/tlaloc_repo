@@ -65,8 +65,10 @@ create this folder if it does not yet exist. After each training run
 these plots since their pressures are fixed. ``error_histograms_<run>.png``
 contains histograms and box plots of the prediction errors and the CSV
 ``logs/accuracy_<run>.csv`` records MAE, RMSE, MAPE and maximum error for
-pressure. Reservoir and tank nodes are excluded from these metrics so outliers
-from fixed heads do not skew the results. Metrics are accumulated using running
+pressure, while ``logs/per_node_mae_<run>.csv`` reports the MAE for each
+junction to highlight outliers. Reservoir and tank nodes are excluded from these
+metrics so outliers from fixed heads do not skew the results. Metrics are
+accumulated using running
 statistics so the full prediction arrays are never stored in memory. To limit the
 number of predictions retained for plotting, pass ``--eval-sample N`` (default
 ``1000``) which keeps only the first ``N`` predictions for the scatter and error

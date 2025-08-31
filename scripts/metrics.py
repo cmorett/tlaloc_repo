@@ -98,6 +98,34 @@ def computational_metrics(
     return pd.DataFrame(data, index=index)
 
 
+def per_node_mae(
+    true_pressure: Sequence[Sequence[float]],
+    pred_pressure: Sequence[Sequence[float]],
+    node_names: Sequence[str],
+) -> pd.DataFrame:
+    """Return mean absolute error for each junction.
+
+    Parameters
+    ----------
+    true_pressure, pred_pressure : sequence of sequence of floats
+        Ground truth and predicted pressures with shape ``(N, num_nodes)``.
+    node_names : sequence of str
+        Names of the junctions corresponding to the columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Table with columns ``Junction`` and ``MAE`` listing the error per node.
+    """
+
+    tp = _to_numpy(true_pressure)
+    pp = _to_numpy(pred_pressure)
+    if tp.shape != pp.shape:
+        raise ValueError("Shape mismatch between true and predicted pressure arrays")
+    mae = np.abs(tp - pp).mean(axis=0)
+    return pd.DataFrame({"Junction": list(node_names), "MAE": mae})
+
+
 def export_table(df: pd.DataFrame, path: str) -> None:
     """Export a metric table to CSV, Excel or JSON based on file suffix."""
     p = Path(path)

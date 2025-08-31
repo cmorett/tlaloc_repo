@@ -13,6 +13,7 @@ from scripts.metrics import (
     accuracy_metrics,
     constraint_metrics,
     computational_metrics,
+    per_node_mae,
 )
 
 def test_accuracy_metrics_basic():
@@ -54,3 +55,12 @@ def test_accuracy_metrics_consistent_after_normalization():
     norm_df = accuracy_metrics(tp_denorm, pp_denorm)
 
     assert np.allclose(base_df.values, norm_df.values)
+
+
+def test_per_node_mae_basic():
+    true = [[1.0, 2.0], [3.0, 4.0]]
+    pred = [[1.5, 1.0], [2.5, 5.0]]
+    nodes = ["A", "B"]
+    df = per_node_mae(true, pred, nodes)
+    assert list(df["Junction"]) == nodes
+    assert np.allclose(df["MAE"].values, [0.5, 1.0])
