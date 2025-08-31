@@ -5,6 +5,7 @@ from torch.nn import MultiheadAttention
 from torch_geometric.nn import GCNConv, GATConv, LayerNorm, MessagePassing
 from typing import Optional, Sequence
 import torch.utils.checkpoint
+import warnings
 
 
 class HydroConv(MessagePassing):
@@ -91,6 +92,7 @@ class EnhancedGNNEncoder(nn.Module):
         residual: bool = False,
         edge_dim: Optional[int] = None,
         use_attention: bool = False,
+        attention_after_hydro: bool = False,
         gat_heads: int = 4,
         share_weights: bool = False,
         num_node_types: int = 1,
@@ -99,6 +101,7 @@ class EnhancedGNNEncoder(nn.Module):
         super().__init__()
 
         self.use_attention = use_attention
+        self.attention_after_hydro = attention_after_hydro
         self.dropout = dropout
         self.residual = residual
         self.act_fn = getattr(F, activation)
@@ -108,7 +111,14 @@ class EnhancedGNNEncoder(nn.Module):
 
         def make_conv(in_c: int, out_c: int):
             if use_attention:
-                return GATConv(in_c, out_c // gat_heads, heads=gat_heads, edge_dim=edge_dim)
+                if edge_dim is not None and not attention_after_hydro:
+                    warnings.warn(
+                        "HydroConv disabled because use_attention=True. Set attention_after_hydro=True to retain HydroConv.",
+                        stacklevel=2,
+                    )
+                    return GATConv(in_c, out_c // gat_heads, heads=gat_heads, edge_dim=edge_dim)
+                if edge_dim is None:
+                    return GATConv(in_c, out_c // gat_heads, heads=gat_heads, edge_dim=edge_dim)
             if edge_dim is not None:
                 return HydroConv(
                     in_c,
@@ -121,17 +131,28 @@ class EnhancedGNNEncoder(nn.Module):
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
+        self.attentions = nn.ModuleList()
+
+        def make_att_module(conv: nn.Module):
+            if use_attention and attention_after_hydro and isinstance(conv, HydroConv):
+                return MultiheadAttention(hidden_channels, gat_heads, batch_first=True)
+            return nn.Identity()
 
         if share_weights:
             first = make_conv(in_channels, hidden_channels)
             self.convs.append(first)
+            self.attentions.append(make_att_module(first))
             shared = first if in_channels == hidden_channels else make_conv(hidden_channels, hidden_channels)
+            shared_att = self.attentions[0] if in_channels == hidden_channels else make_att_module(shared)
             for _ in range(num_layers - 1):
                 self.convs.append(shared)
+                self.attentions.append(shared_att)
         else:
             for i in range(num_layers):
                 in_c = in_channels if i == 0 else hidden_channels
-                self.convs.append(make_conv(in_c, hidden_channels))
+                conv = make_conv(in_c, hidden_channels)
+                self.convs.append(conv)
+                self.attentions.append(make_att_module(conv))
 
         for _ in range(num_layers):
             self.norms.append(LayerNorm(hidden_channels))
@@ -146,7 +167,7 @@ class EnhancedGNNEncoder(nn.Module):
         node_type: Optional[torch.Tensor] = None,
         edge_type: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        for conv, norm in zip(self.convs, self.norms):
+        for conv, attn, norm in zip(self.convs, self.attentions, self.norms):
             identity = x
             if isinstance(conv, HydroConv):
                 x = conv(x, edge_index, edge_attr, node_type, edge_type)
@@ -154,6 +175,9 @@ class EnhancedGNNEncoder(nn.Module):
                 x = conv(x, edge_index, edge_attr)
             else:
                 x = conv(x, edge_index)
+            if not isinstance(attn, nn.Identity):
+                x, _ = attn(x.unsqueeze(0), x.unsqueeze(0), x.unsqueeze(0))
+                x = x.squeeze(0)
             x = self.act_fn(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = norm(x)
@@ -180,6 +204,7 @@ class RecurrentGNNSurrogate(nn.Module):
         share_weights: bool = False,
         num_node_types: int = 1,
         num_edge_types: int = 1,
+        attention_after_hydro: bool = False,
         use_checkpoint: bool = False,
     ) -> None:
         super().__init__()
@@ -192,6 +217,7 @@ class RecurrentGNNSurrogate(nn.Module):
             residual=residual,
             edge_dim=edge_dim,
             use_attention=use_attention,
+            attention_after_hydro=attention_after_hydro,
             gat_heads=gat_heads,
             share_weights=share_weights,
             num_node_types=num_node_types,
@@ -304,6 +330,7 @@ class MultiTaskGNNSurrogate(nn.Module):
         share_weights: bool = False,
         num_node_types: int = 1,
         num_edge_types: int = 1,
+        attention_after_hydro: bool = False,
         use_checkpoint: bool = False,
     ) -> None:
         super().__init__()
@@ -316,6 +343,7 @@ class MultiTaskGNNSurrogate(nn.Module):
             residual=residual,
             edge_dim=edge_dim,
             use_attention=use_attention,
+            attention_after_hydro=attention_after_hydro,
             gat_heads=gat_heads,
             share_weights=share_weights,
             num_node_types=num_node_types,
