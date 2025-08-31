@@ -432,10 +432,16 @@ def correlation_heatmap(
 def plot_loss_components(
     loss_components: Sequence[Sequence[float]],
     run_name: str,
+    press_mae: Optional[Sequence[float]] = None,
     plots_dir: Optional[Path] = None,
     return_fig: bool = False,
 ) -> Optional[plt.Figure]:
-    """Plot individual loss terms over training epochs."""
+    """Plot individual loss terms over training epochs.
+
+    If ``press_mae`` is provided, a dedicated plot of the denormalized
+    pressure MAE (in metres) is also saved alongside the component-wise
+    loss figure.
+    """
     if plots_dir is None:
         plots_dir = PLOTS_DIR
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -457,6 +463,20 @@ def plot_loss_components(
     ax.legend()
     fig.tight_layout()
     fig.savefig(plots_dir / f"loss_components_{run_name}.png")
+
+    if press_mae is not None:
+        press_mae_arr = np.asarray(press_mae, dtype=float)
+        fig_mae, ax_mae = plt.subplots(figsize=(6, 4))
+        ax_mae.plot(epochs, press_mae_arr, label="pressure MAE")
+        ax_mae.set_xlabel("Epoch")
+        ax_mae.set_ylabel("Pressure MAE (m)")
+        ax_mae.set_title("Pressure MAE")
+        ax_mae.legend()
+        fig_mae.tight_layout()
+        fig_mae.savefig(plots_dir / f"pressure_mae_{run_name}.png")
+        if not return_fig:
+            plt.close(fig_mae)
+
     if not return_fig:
         plt.close(fig)
     return fig if return_fig else None
@@ -2060,6 +2080,7 @@ def main(args: argparse.Namespace):
         log_path = os.path.join(DATA_DIR, f"training_{run_name}.log")
     losses = []
     loss_components = []
+    press_mae_hist: List[float] = []
     tb_writer = None
     if SummaryWriter is not None:
         tb_log_dir = REPO_ROOT / "logs" / f"tb_{run_name}"
@@ -2139,6 +2160,7 @@ def main(args: argparse.Namespace):
                 loss = loss_tuple[0]
                 press_l, flow_l, mass_l, head_l, sym_l, pump_l, mass_imb, head_viols, press_mae_l = loss_tuple[1:]
                 comp = [press_l, flow_l, mass_l, sym_l]
+                press_mae_hist.append(press_mae_l)
                 if args.pressure_loss:
                     comp.append(head_l)
                 if args.pump_loss:
@@ -2259,7 +2281,8 @@ def main(args: argparse.Namespace):
                 if args.physics_loss:
                     msg = (
                         f"Epoch {epoch}: press={press_l:.3f}, flow={flow_l:.3f}, "
-                        f"mass={mass_l:.3f}, sym={sym_l:.3f}, imb={mass_imb:.3f}"
+                        f"mass={mass_l:.3f}, sym={sym_l:.3f}, imb={mass_imb:.3f}, "
+                        f"mae={press_mae_l:.3f}"
                     )
                     if args.pressure_loss:
                         msg += f", head={head_l:.3f}, viol%={head_viols * 100:.2f}"
@@ -2272,7 +2295,10 @@ def main(args: argparse.Namespace):
                             )
                     print(msg)
                 else:
-                    print(f"Epoch {epoch}")
+                    print(
+                        f"Epoch {epoch}: press={press_l:.3f}, flow={flow_l:.3f}, "
+                        f"mae={press_mae_l:.3f}"
+                    )
             else:
                 f.write(
                     f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{flow_l:.6f},"
@@ -2386,7 +2412,7 @@ def main(args: argparse.Namespace):
         plt.close()
 
     if loss_components:
-        plot_loss_components(loss_components, run_name)
+        plot_loss_components(loss_components, run_name, press_mae=press_mae_hist or None)
 
     # scatter plot of predictions vs actual on test set
     if args.x_test_path and os.path.exists(args.x_test_path):
