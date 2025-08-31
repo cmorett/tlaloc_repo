@@ -28,4 +28,5 @@ def test_tank_pressure_update():
     model.tank_signs = [torch.tensor([1.0])]
     X = torch.zeros(1,1,2,2)
     out = model(X, edge_index, edge_attr)
-    assert torch.isclose(out['node_outputs'][0,0,0,0], torch.tensor(3.6))
+    # Flow is 1 m^3/s over an hour with unit area -> 3600 m level rise
+    assert torch.isclose(out['node_outputs'][0,0,0,0], torch.tensor(3600.0))

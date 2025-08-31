@@ -6,7 +6,7 @@ def test_headloss_consistency_zero():
     edge_attr = torch.tensor([[1000.0, 0.5, 100.0]], dtype=torch.float32)
     flow = torch.tensor([0.1], dtype=torch.float32)
     const = 10.67
-    q_m3 = flow * 0.001
+    q_m3 = flow  # flows already in m^3/s
     hl = const * edge_attr[0,0] * q_m3.abs().pow(1.852) / (
         edge_attr[0,2].pow(1.852) * edge_attr[0,1].pow(4.87)
     )
