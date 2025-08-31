@@ -92,7 +92,7 @@ class EnhancedGNNEncoder(nn.Module):
         residual: bool = False,
         edge_dim: Optional[int] = None,
         use_attention: bool = False,
-        attention_after_hydro: bool = False,
+        attention_after_hydro: bool = True,
         gat_heads: int = 4,
         share_weights: bool = False,
         num_node_types: int = 1,
@@ -110,15 +110,12 @@ class EnhancedGNNEncoder(nn.Module):
         self.num_edge_types = num_edge_types
 
         def make_conv(in_c: int, out_c: int):
-            if use_attention:
-                if edge_dim is not None and not attention_after_hydro:
-                    warnings.warn(
-                        "HydroConv disabled because use_attention=True. Set attention_after_hydro=True to retain HydroConv.",
-                        stacklevel=2,
-                    )
-                    return GATConv(in_c, out_c // gat_heads, heads=gat_heads, edge_dim=edge_dim)
-                if edge_dim is None:
-                    return GATConv(in_c, out_c // gat_heads, heads=gat_heads, edge_dim=edge_dim)
+            if use_attention and not attention_after_hydro:
+                warnings.warn(
+                    "HydroConv disabled because attention_after_hydro=False.",
+                    stacklevel=2,
+                )
+                return GATConv(in_c, out_c // gat_heads, heads=gat_heads, edge_dim=edge_dim)
             if edge_dim is not None:
                 return HydroConv(
                     in_c,
@@ -127,6 +124,8 @@ class EnhancedGNNEncoder(nn.Module):
                     num_node_types=self.num_node_types,
                     num_edge_types=self.num_edge_types,
                 )
+            if use_attention:
+                return GATConv(in_c, out_c // gat_heads, heads=gat_heads, edge_dim=edge_dim)
             return GCNConv(in_c, out_c)
 
         self.convs = nn.ModuleList()
@@ -134,7 +133,7 @@ class EnhancedGNNEncoder(nn.Module):
         self.attentions = nn.ModuleList()
 
         def make_att_module(conv: nn.Module):
-            if use_attention and attention_after_hydro and isinstance(conv, HydroConv):
+            if use_attention and isinstance(conv, HydroConv):
                 return MultiheadAttention(hidden_channels, gat_heads, batch_first=True)
             return nn.Identity()
 
@@ -204,7 +203,7 @@ class RecurrentGNNSurrogate(nn.Module):
         share_weights: bool = False,
         num_node_types: int = 1,
         num_edge_types: int = 1,
-        attention_after_hydro: bool = False,
+        attention_after_hydro: bool = True,
         use_checkpoint: bool = False,
     ) -> None:
         super().__init__()
@@ -343,7 +342,7 @@ class MultiTaskGNNSurrogate(nn.Module):
         share_weights: bool = False,
         num_node_types: int = 1,
         num_edge_types: int = 1,
-        attention_after_hydro: bool = False,
+        attention_after_hydro: bool = True,
         use_checkpoint: bool = False,
     ) -> None:
         super().__init__()

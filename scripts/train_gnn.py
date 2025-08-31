@@ -1559,6 +1559,7 @@ def main(args: argparse.Namespace):
     num_node_types = max(int(np.max(node_types)) + 1, 2)
     num_edge_types = int(np.max(edge_types)) + 1
     edge_mean, edge_std = compute_edge_attr_stats(edge_attr)
+    edge_dim = None if args.no_hydro and not args.use_attention else edge_attr.shape[1]
     X_raw = np.load(args.x_path, allow_pickle=True)
     Y_raw = np.load(args.y_path, allow_pickle=True)
     seq_mode = X_raw.ndim == 4
@@ -1865,7 +1866,7 @@ def main(args: argparse.Namespace):
             model = MultiTaskGNNSurrogate(
                 in_channels=sample_dim,
                 hidden_channels=args.hidden_dim,
-                edge_dim=edge_attr.shape[1],
+                edge_dim=edge_dim,
                 node_output_dim=1,
                 edge_output_dim=1,
                 num_layers=args.num_layers,
@@ -1903,7 +1904,7 @@ def main(args: argparse.Namespace):
             model = RecurrentGNNSurrogate(
                 in_channels=sample_dim,
                 hidden_channels=args.hidden_dim,
-                edge_dim=edge_attr.shape[1],
+                edge_dim=edge_dim,
                 output_dim=args.output_dim,
                 num_layers=args.num_layers,
                 use_attention=args.use_attention,
@@ -1952,7 +1953,7 @@ def main(args: argparse.Namespace):
             dropout=args.dropout,
             activation=args.activation,
             residual=args.residual,
-            edge_dim=edge_attr.shape[1],
+            edge_dim=edge_dim,
             use_attention=args.use_attention,
             attention_after_hydro=args.attention_after_hydro,
             gat_heads=args.gat_heads,
@@ -1973,7 +1974,7 @@ def main(args: argparse.Namespace):
         "dropout": args.dropout,
         "activation": args.activation,
         "output_dim": args.output_dim,
-        "edge_dim": edge_attr.shape[1],
+        "edge_dim": edge_dim,
         "rnn_hidden_dim": args.rnn_hidden_dim,
         "share_weights": args.share_weights,
         "num_node_types": num_node_types,
@@ -2729,15 +2730,22 @@ if __name__ == "__main__":
         default=128,
         help="Hidden dimension",
     )
-    parser.add_argument("--use-attention", action="store_true",
-                        help="Use GATConv instead of HydroConv for graph convolution")
     parser.add_argument(
-        "--attention-after-hydro",
+        "--use-attention",
         action="store_true",
-        help="Apply self-attention after HydroConv instead of replacing it",
+        help="Apply self-attention after HydroConv layers",
     )
-    parser.add_argument("--gat-heads", type=int, default=4,
-                        help="Number of attention heads for GATConv (if attention is enabled)")
+    parser.add_argument(
+        "--no-hydro",
+        action="store_true",
+        help="Disable HydroConv and use standard GCN/GAT layers",
+    )
+    parser.add_argument(
+        "--gat-heads",
+        type=int,
+        default=4,
+        help="Number of attention heads for GATConv (if attention is enabled)",
+    )
     parser.add_argument("--dropout", type=float, default=0.1,
                         help="Dropout rate applied after each GNN layer")
     parser.add_argument("--num-layers", type=int, choices=[4, 6, 8], default=4,
@@ -2984,4 +2992,5 @@ if __name__ == "__main__":
         help="Checkpoint path to resume training from",
     )
     args = parser.parse_args()
+    args.attention_after_hydro = args.use_attention and not args.no_hydro
     main(args)
