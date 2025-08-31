@@ -6,6 +6,7 @@ from datetime import datetime
 import sys
 import signal
 import warnings
+import logging
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,8 @@ try:  # TensorBoard is optional during tests
     from torch.utils.tensorboard import SummaryWriter
 except Exception:  # pragma: no cover - missing optional dependency
     SummaryWriter = None
+
+logger = logging.getLogger(__name__)
 
 # Ensure the repository root is importable when running this file directly
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -922,9 +925,9 @@ def train_sequence(
     pressure_loss: bool = False,
     pump_loss: bool = False,
     node_mask: Optional[torch.Tensor] = None,
-    mass_scale: float = 1.0,
-    head_scale: float = 1.0,
-    pump_scale: float = 1.0,
+    mass_scale: float = 0.0,
+    head_scale: float = 0.0,
+    pump_scale: float = 0.0,
     w_mass: float = 2.0,
     w_head: float = 1.0,
     w_pump: float = 1.0,
@@ -1103,6 +1106,12 @@ def train_sequence(
                 )
             else:
                 pump_loss_val = torch.tensor(0.0, device=device)
+            logger.debug(
+                "Raw physics losses - mass: %.6e, head: %.6e, pump: %.6e",
+                mass_loss.detach().item(),
+                head_loss.detach().item(),
+                pump_loss_val.detach().item(),
+            )
             mass_loss, head_loss, pump_loss_val = scale_physics_losses(
                 mass_loss,
                 head_loss,
@@ -1179,9 +1188,9 @@ def evaluate_sequence(
     pressure_loss: bool = False,
     pump_loss: bool = False,
     node_mask: Optional[torch.Tensor] = None,
-    mass_scale: float = 1.0,
-    head_scale: float = 1.0,
-    pump_scale: float = 1.0,
+    mass_scale: float = 0.0,
+    head_scale: float = 0.0,
+    pump_scale: float = 0.0,
     w_mass: float = 2.0,
     w_head: float = 1.0,
     w_pump: float = 1.0,
@@ -1341,6 +1350,12 @@ def evaluate_sequence(
                         )
                     else:
                         pump_loss_val = torch.tensor(0.0, device=device)
+                    logger.debug(
+                        "Raw physics losses - mass: %.6e, head: %.6e, pump: %.6e",
+                        mass_loss.detach().item(),
+                        head_loss.detach().item(),
+                        pump_loss_val.detach().item(),
+                    )
                     mass_loss, head_loss, pump_loss_val = scale_physics_losses(
                         mass_loss,
                         head_loss,
@@ -1871,12 +1886,13 @@ def main(args: argparse.Namespace):
             amp=args.amp,
             progress=False,
         )
+        press_base = float(base_eval[1]) if base_eval[1] > 0 else 1.0
         if args.physics_loss and mass_scale <= 0:
-            mass_scale = float(base_eval[4]) if base_eval[4] > 0 else 1.0
+            mass_scale = float(base_eval[4]) / press_base if base_eval[4] > 0 else 1.0
         if args.pressure_loss and head_scale <= 0:
-            head_scale = float(base_eval[5]) if base_eval[5] > 0 else 1.0
+            head_scale = float(base_eval[5]) / press_base if base_eval[5] > 0 else 1.0
         if args.pump_loss and pump_scale <= 0:
-            pump_scale = float(base_eval[7]) if base_eval[7] > 0 else 1.0
+            pump_scale = float(base_eval[7]) / press_base if base_eval[7] > 0 else 1.0
     MIN_SCALE = 1e-3
     mass_scale = max(mass_scale, MIN_SCALE)
     head_scale = max(head_scale, MIN_SCALE)
