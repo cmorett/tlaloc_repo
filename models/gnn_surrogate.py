@@ -256,42 +256,39 @@ class RecurrentGNNSurrogate(nn.Module):
     ) -> torch.Tensor:
         batch_size, T, num_nodes, in_dim = X_seq.size()
         device = X_seq.device
+        total = batch_size * T
         E = edge_index.size(1)
-        batch_edge_index = edge_index.repeat(1, batch_size) + (
-            torch.arange(batch_size, device=device).repeat_interleave(E) * num_nodes
+        batch_edge_index = edge_index.repeat(1, total) + (
+            torch.arange(total, device=device).repeat_interleave(E) * num_nodes
         )
-        edge_attr_rep = edge_attr.repeat(batch_size, 1) if edge_attr is not None else None
+        edge_attr_rep = edge_attr.repeat(total, 1) if edge_attr is not None else None
         node_type_rep = (
-            node_type.repeat(batch_size) if node_type is not None else None
+            node_type.repeat(total) if node_type is not None else None
         )
         edge_type_rep = (
-            edge_type.repeat(batch_size) if edge_type is not None else None
+            edge_type.repeat(total) if edge_type is not None else None
         )
-        batch_vec = torch.arange(batch_size, device=device).repeat_interleave(num_nodes)
+        batch_vec = torch.arange(total, device=device).repeat_interleave(num_nodes)
 
-        node_embeddings = []
-        for t in range(T):
-            x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
+        X_flat = X_seq.reshape(total * num_nodes, in_dim)
 
-            def encode(x):
-                return self.encoder(
-                    x,
-                    batch_edge_index,
-                    edge_attr_rep,
-                    node_type_rep,
-                    edge_type_rep,
-                    batch_vec,
-                )
+        def encode(x: torch.Tensor) -> torch.Tensor:
+            return self.encoder(
+                x,
+                batch_edge_index,
+                edge_attr_rep,
+                node_type_rep,
+                edge_type_rep,
+                batch_vec,
+            )
 
-            if self.use_checkpoint and self.training:
-                x_t = x_t.requires_grad_()
-                gnn_out = torch.utils.checkpoint.checkpoint(encode, x_t, use_reentrant=False)
-            else:
-                gnn_out = encode(x_t)
-            gnn_out = gnn_out.view(batch_size, num_nodes, -1)
-            node_embeddings.append(gnn_out)
+        if self.use_checkpoint and self.training:
+            X_flat = X_flat.requires_grad_()
+            emb_flat = torch.utils.checkpoint.checkpoint(encode, X_flat, use_reentrant=False)
+        else:
+            emb_flat = encode(X_flat)
 
-        emb = torch.stack(node_embeddings, dim=1)
+        emb = emb_flat.view(batch_size, T, num_nodes, -1)
         rnn_in = emb.permute(0, 2, 1, 3).reshape(batch_size * num_nodes, T, -1)
         rnn_out, _ = self.rnn(rnn_in)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
