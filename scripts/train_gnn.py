@@ -1786,6 +1786,7 @@ def main(args: argparse.Namespace):
                 edge_output_dim=1,
                 num_layers=args.num_layers,
                 use_attention=args.use_attention,
+                attention_after_hydro=args.attention_after_hydro,
                 gat_heads=args.gat_heads,
                 dropout=args.dropout,
                 residual=args.residual,
@@ -1822,6 +1823,7 @@ def main(args: argparse.Namespace):
                 output_dim=args.output_dim,
                 num_layers=args.num_layers,
                 use_attention=args.use_attention,
+                attention_after_hydro=args.attention_after_hydro,
                 gat_heads=args.gat_heads,
                 dropout=args.dropout,
                 residual=args.residual,
@@ -1868,6 +1870,7 @@ def main(args: argparse.Namespace):
             residual=args.residual,
             edge_dim=edge_attr.shape[1],
             use_attention=args.use_attention,
+            attention_after_hydro=args.attention_after_hydro,
             gat_heads=args.gat_heads,
             share_weights=args.share_weights,
             num_node_types=num_node_types,
@@ -1880,6 +1883,7 @@ def main(args: argparse.Namespace):
         "hidden_dim": args.hidden_dim,
         "num_layers": args.num_layers,
         "use_attention": args.use_attention,
+        "attention_after_hydro": args.attention_after_hydro,
         "gat_heads": args.gat_heads,
         "residual": args.residual,
         "dropout": args.dropout,
@@ -2627,6 +2631,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--use-attention", action="store_true",
                         help="Use GATConv instead of HydroConv for graph convolution")
+    parser.add_argument(
+        "--attention-after-hydro",
+        action="store_true",
+        help="Apply self-attention after HydroConv instead of replacing it",
+    )
     parser.add_argument("--gat-heads", type=int, default=4,
                         help="Number of attention heads for GATConv (if attention is enabled)")
     parser.add_argument("--dropout", type=float, default=0.1,
