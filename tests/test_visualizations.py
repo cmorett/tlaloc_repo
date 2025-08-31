@@ -27,8 +27,10 @@ def test_plot_loss_components(tmp_path: Path):
         (1.0, 2.0, 3.0, 4.0, 5.0),
         (0.5, 1.5, 2.5, 3.5, 4.5),
     ]
-    plot_loss_components(comps, "unit", plots_dir=tmp_path)
+    mae = [0.2, 0.1]
+    plot_loss_components(comps, "unit", press_mae=mae, plots_dir=tmp_path)
     assert (tmp_path / "loss_components_unit.png").exists()
+    assert (tmp_path / "pressure_mae_unit.png").exists()
 
 
 
