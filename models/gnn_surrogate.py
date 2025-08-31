@@ -195,7 +195,7 @@ class EnhancedGNNEncoder(nn.Module):
                             xb.unsqueeze(0),
                             need_weights=False,
                         )
-                        out[mask] = xb.squeeze(0)
+                        out[mask] = xb.squeeze(0).to(out.dtype)
                     x = out
             x = self.act_fn(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
