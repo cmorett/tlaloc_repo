@@ -225,6 +225,11 @@ The automatically detected scales can be overridden via ``--mass-scale``,
 ``--head-scale`` and ``--pump-scale`` if manual tuning or logging is desired.
 Scales below ``1.0`` are automatically clamped to prevent excessively large
 physics penalties.
+Loss weights may be ramped in gradually with ``--mass-warmup``,
+``--head-warmup`` and ``--pump-warmup`` which linearly scale ``w_mass``,
+``w_head`` and ``w_pump`` from ``0`` to their configured values over the
+specified number of epochs.  The effective weights are printed each epoch for
+transparency.
 Training logs also report the average mass imbalance per batch and the
 percentage of edges with inconsistent headloss signs.
 

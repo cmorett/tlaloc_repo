@@ -20,7 +20,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `mpc_control.py` – run gradient-based MPC using the trained surrogate.
   - `feature_utils.py` – shared feature construction and normalization helpers.
   - `ablation_study.py` – run a small grid of model variants and report validation pressure MAE.
-  - `train_gnn.py` – train a graph neural network surrogate on generated data. Pass `--checkpoint` to enable gradient checkpointing when GPU memory is limited.
+  - `train_gnn.py` – train a graph neural network surrogate on generated data. Pass `--checkpoint` to enable gradient checkpointing when GPU memory is limited. Physics loss weights can be linearly ramped with `--mass-warmup`, `--head-warmup` and `--pump-warmup`; effective weights are printed each epoch.
   - `sweep_training.py` – run hyperparameter sweeps over loss weights and architecture.
   - `plot_sweep.py` – visualise pressure MAE across sweep configurations.
   - `forecast_uncertainty.py` – compute hourly forecast errors and plot forecast vs actual demand with confidence intervals.
