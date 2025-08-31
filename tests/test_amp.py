@@ -1,13 +1,16 @@
+import argparse
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
 import torch
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch.utils.data import DataLoader as TorchLoader
-import numpy as np
-import sys
-from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from scripts.train_gnn import train, GCNEncoder
+from scripts.train_gnn import _get_device, train, GCNEncoder
 from scripts.train_gnn import (
     SequenceDataset,
     MultiTaskGNNSurrogate,
@@ -74,3 +77,12 @@ def test_amp_evaluate_sequence_runs():
         pressure_loss=True,
         amp=True,
     )
+
+
+def test_get_device_disables_amp_on_cpu(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    args = argparse.Namespace(amp=True)
+    with pytest.warns(RuntimeWarning):
+        device = _get_device(args)
+    assert device.type == "cpu"
+    assert args.amp is False
