@@ -213,9 +213,10 @@ weights ``--w-press`` (default ``5.0``), ``--w-cl`` (``0.0``) and ``--w-flow``
 relative importance can still be tuned via these flags together with
 ``--w_mass`` and ``--w_head``.  To keep the physics penalties on a comparable
 scale the script estimates baseline magnitudes for the mass, headloss and pump
-curve terms during the first pass over the training data. These values are used
-to normalise the respective losses before applying the user-specified weights.
-The automatically detected scales can be overridden via ``--mass-scale``,
+curve terms relative to the pressure loss during a calibration pass over the
+training data. These ratios are used to normalise the respective losses before
+applying the user-specified weights. The automatically detected scales can be
+overridden via ``--mass-scale``,
 ``--head-scale`` and ``--pump-scale`` if manual tuning or logging is desired.
 Scales below ``1e-3`` are automatically clamped to prevent excessively large
 physics penalties.
