@@ -1327,14 +1327,15 @@ def evaluate_sequence(
                     press_pred = pred_nodes[..., 0]
                     press_true = target_nodes[..., 0]
                     if isinstance(getattr(model, "y_mean", None), dict):
-                        p_mean = model.y_mean["node_outputs"].to(device)
-                        p_std = model.y_std["node_outputs"].to(device)
-                        if p_mean.ndim == 2:
-                            p_mean = p_mean[..., 0]
-                            p_std = p_std[..., 0]
-                        p_mean, p_std = _trim_norm_stats(p_mean, p_std, press_pred.size(-1))
-                        press_pred = press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
-                        press_true = press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                        if "node_outputs" in model.y_mean:
+                            p_mean = model.y_mean["node_outputs"].to(device)
+                            p_std = model.y_std["node_outputs"].to(device)
+                            if p_mean.ndim == 2:
+                                p_mean = p_mean[..., 0]
+                                p_std = p_std[..., 0]
+                            p_mean, p_std = _trim_norm_stats(p_mean, p_std, press_pred.size(-1))
+                            press_pred = press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                            press_true = press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                     elif getattr(model, "y_mean", None) is not None:
                         p_mean = model.y_mean.to(device)
                         p_std = model.y_std.to(device)
