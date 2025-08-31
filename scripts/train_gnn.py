@@ -114,8 +114,22 @@ def summarize_target_norm_stats(y_mean, y_std):
 
 
 def _trim_norm_stats(mean: torch.Tensor, std: torch.Tensor, size: int):
-    """Slice normalization stats to match ``size`` nodes/edges."""
-    if mean.shape[0] != size:
+    """Slice or pad normalization stats to match ``size`` nodes/edges.
+
+    When per-node statistics are computed using a mask (e.g. excluding
+    reservoirs and tanks) ``mean`` and ``std`` may contain fewer entries than
+    the current graph.  Previously this caused a dimension mismatch when the
+    stats were applied to tensors containing all nodes.  To make the function
+    robust, pad missing entries with ``0`` for the mean and ``1`` for the
+    standard deviation which leaves the corresponding values unchanged during
+    (de)normalisation.
+    """
+    if mean.shape[0] < size:
+        pad = size - mean.shape[0]
+        pad_shape = (pad, *mean.shape[1:])
+        mean = torch.cat([mean, torch.zeros(pad_shape, device=mean.device, dtype=mean.dtype)], dim=0)
+        std = torch.cat([std, torch.ones(pad_shape, device=std.device, dtype=std.dtype)], dim=0)
+    elif mean.shape[0] > size:
         mean = mean[:size]
         std = std[:size]
     return mean, std
