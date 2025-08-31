@@ -12,14 +12,13 @@ def test_negative_flow_headloss_clamped():
     edge_attr = torch.zeros((1, 3))
     node_types = torch.zeros(2, dtype=torch.long)
     edge_types = torch.zeros(1, dtype=torch.long)
-    feature_template = torch.zeros((2, 5))
-    feature_template[:, 3] = torch.tensor([10.0, 0.0])
+    feature_template = torch.zeros((2, 4))
+    feature_template[:, 2] = torch.tensor([10.0, 0.0])
     pressures = torch.zeros(2)
-    chlorine = torch.zeros(2)
 
     class DummyModel(torch.nn.Module):
         def forward(self, x, edge_index, edge_attr, node_types, edge_types):
-            node_outputs = torch.zeros((x.size(0), 2))
+            node_outputs = torch.zeros((x.size(0), 1))
             edge_outputs = torch.tensor([[-5.0]])
             return {'node_outputs': node_outputs, 'edge_outputs': edge_outputs}
 
@@ -37,11 +36,9 @@ def test_negative_flow_headloss_clamped():
             edge_types,
             feature_template,
             pressures,
-            chlorine,
             horizon=1,
             device=torch.device('cpu'),
             Pmin=0.0,
-            Cmin=0.0,
             pump_info=pump_info,
             return_energy=True,
         )

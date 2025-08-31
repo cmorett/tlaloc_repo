@@ -12,7 +12,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import warnings
 import inspect
 from collections import deque
@@ -75,12 +74,11 @@ MAX_PUMP_SPEED = 1.8
 def plot_mpc_time_series(
     df,  # pandas.DataFrame
     Pmin: float,
-    Cmin: float,
     run_name: str,
     plots_dir: Optional[Path] = None,
     return_fig: bool = False,
 ) -> Optional[plt.Figure]:
-    """Time series of minimum pressure/chlorine and pump actions."""
+    """Time series of minimum pressure, energy and pump actions."""
     if plots_dir is None:
         plots_dir = PLOTS_DIR
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -93,9 +91,8 @@ def plot_mpc_time_series(
     axes[0].set_title("Operational Performance Under MPC Control")
     axes[0].legend()
 
-    axes[1].plot(df["time"], df["min_chlorine"], label="Min Chlorine", color="tab:orange")
-    axes[1].axhline(Cmin, color="red", linestyle="--", label="C_min")
-    axes[1].set_ylabel("Chlorine (mg/L)")
+    axes[1].plot(df["time"], df["energy"], label="Energy", color="tab:orange")
+    axes[1].set_ylabel("Energy (J)")
     axes[1].legend()
 
     controls = np.stack(df["controls"].to_list())
@@ -245,9 +242,7 @@ def load_network(
         simulation.
     """
     wn = wntr.network.WaterNetworkModel(inp_file)
-    wn.options.quality.parameter = "CHEMICAL"
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
 
     node_to_index = {n: i for i, n in enumerate(wn.node_name_list)}
@@ -732,35 +727,36 @@ def load_surrogate_model(
     if norm_stats is not None:
         model.x_mean = torch.tensor(norm_stats["x_mean"], dtype=torch.float32, device=device)
         model.x_std = torch.tensor(norm_stats["x_std"], dtype=torch.float32, device=device)
-        y_mean_np = norm_stats.get("y_mean")
-        y_std_np = norm_stats.get("y_std")
-        if isinstance(y_mean_np, dict):
-            node_mean = torch.tensor(
-                y_mean_np.get("node_outputs"), dtype=torch.float32, device=device
-            )
-            node_std = torch.tensor(
-                y_std_np.get("node_outputs"), dtype=torch.float32, device=device
-            )
-            model.y_mean = {"node_outputs": node_mean}
-            model.y_std = {"node_outputs": node_std}
-            y_mean_edge_np = y_mean_np.get("edge_outputs")
-            y_std_edge_np = y_std_np.get("edge_outputs")
-            if y_mean_edge_np is not None:
-                model.y_mean_edge = torch.tensor(
-                    y_mean_edge_np, dtype=torch.float32, device=device
-                )
-                model.y_std_edge = torch.tensor(
-                    y_std_edge_np, dtype=torch.float32, device=device
-                )
+        if "y_mean_node" in norm_stats:
+            model.y_mean = torch.tensor(norm_stats["y_mean_node"], dtype=torch.float32, device=device)
+            model.y_std = torch.tensor(norm_stats["y_std_node"], dtype=torch.float32, device=device)
+            if "y_mean_edge" in norm_stats:
+                model.y_mean_edge = torch.tensor(norm_stats["y_mean_edge"], dtype=torch.float32, device=device)
+                model.y_std_edge = torch.tensor(norm_stats["y_std_edge"], dtype=torch.float32, device=device)
             else:
                 model.y_mean_edge = model.y_std_edge = None
-        elif y_mean_np is not None:
-            model.y_mean = torch.tensor(y_mean_np, dtype=torch.float32, device=device)
-            model.y_std = torch.tensor(y_std_np, dtype=torch.float32, device=device)
-            model.y_mean_edge = model.y_std_edge = None
         else:
-            model.y_mean = model.y_std = None
-            model.y_mean_edge = model.y_std_edge = None
+            y_mean_np = norm_stats.get("y_mean")
+            y_std_np = norm_stats.get("y_std")
+            if isinstance(y_mean_np, dict):
+                node_mean = torch.tensor(y_mean_np.get("node_outputs"), dtype=torch.float32, device=device)
+                node_std = torch.tensor(y_std_np.get("node_outputs"), dtype=torch.float32, device=device)
+                model.y_mean = node_mean
+                model.y_std = node_std
+                y_mean_edge_np = y_mean_np.get("edge_outputs")
+                y_std_edge_np = y_std_np.get("edge_outputs")
+                if y_mean_edge_np is not None:
+                    model.y_mean_edge = torch.tensor(y_mean_edge_np, dtype=torch.float32, device=device)
+                    model.y_std_edge = torch.tensor(y_std_edge_np, dtype=torch.float32, device=device)
+                else:
+                    model.y_mean_edge = model.y_std_edge = None
+            elif y_mean_np is not None:
+                model.y_mean = torch.tensor(y_mean_np, dtype=torch.float32, device=device)
+                model.y_std = torch.tensor(y_std_np, dtype=torch.float32, device=device)
+                model.y_mean_edge = model.y_std_edge = None
+            else:
+                model.y_mean = model.y_std = None
+                model.y_mean_edge = model.y_std_edge = None
 
         model.y_mean_energy = None
         model.y_std_energy = None
@@ -773,27 +769,20 @@ def load_surrogate_model(
             model.edge_mean = model.edge_std = None
     elif norm_path.exists():
         arr = np.load(norm_path)
-        # Moved normalization constants to GPU to avoid device transfer
         model.x_mean = torch.tensor(arr["x_mean"], dtype=torch.float32, device=device)
         model.x_std = torch.tensor(arr["x_std"], dtype=torch.float32, device=device)
-        if "y_mean" in arr:
+        if "y_mean_node" in arr:
+            model.y_mean = torch.tensor(arr["y_mean_node"], dtype=torch.float32, device=device)
+            model.y_std = torch.tensor(arr["y_std_node"], dtype=torch.float32, device=device)
+            if "y_mean_edge" in arr:
+                model.y_mean_edge = torch.tensor(arr["y_mean_edge"], dtype=torch.float32, device=device)
+                model.y_std_edge = torch.tensor(arr["y_std_edge"], dtype=torch.float32, device=device)
+            else:
+                model.y_mean_edge = model.y_std_edge = None
+        elif "y_mean" in arr:
             model.y_mean = torch.tensor(arr["y_mean"], dtype=torch.float32, device=device)
             model.y_std = torch.tensor(arr["y_std"], dtype=torch.float32, device=device)
             model.y_mean_edge = model.y_std_edge = None
-        elif "y_mean_node" in arr:
-            node_mean = torch.tensor(arr["y_mean_node"], dtype=torch.float32, device=device)
-            node_std = torch.tensor(arr["y_std_node"], dtype=torch.float32, device=device)
-            model.y_mean = {"node_outputs": node_mean}
-            model.y_std = {"node_outputs": node_std}
-            if "y_mean_edge" in arr:
-                model.y_mean_edge = torch.tensor(
-                    arr["y_mean_edge"], dtype=torch.float32, device=device
-                )
-                model.y_std_edge = torch.tensor(
-                    arr["y_std_edge"], dtype=torch.float32, device=device
-                )
-            else:
-                model.y_mean_edge = model.y_std_edge = None
         else:
             model.y_mean = model.y_std = None
             model.y_mean_edge = model.y_std_edge = None
@@ -952,38 +941,30 @@ def compute_mpc_cost(
     edge_types: torch.Tensor,
     feature_template: torch.Tensor,
     pressures: torch.Tensor,
-    chlorine: torch.Tensor,
     horizon: int,
     device: torch.device,
     Pmin: float,
-    Cmin: float,
     demands: Optional[torch.Tensor] = None,
     pump_info: Optional[List[Tuple[int, int, int]]] = None,
     return_energy: bool = False,
     init_tank_levels: Optional[torch.Tensor] = None,
     skip_normalization: bool = False,
     w_p: float = 100.0,
-    w_c: float = 100.0,
     w_e: float = 1.0,
     energy_scale: float = 1e-9,
-    barrier: str = "softplus",
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """Return the MPC cost for a sequence of pump speeds.
 
-    The cost combines pressure and chlorine constraint violations, pump
+    The cost combines pressure constraint violations, pump
     energy use and a smoothness term on control differences. ``demands`` can be
     used to provide per-node demand values for each step which keeps the
     surrogate inputs consistent with training.  The energy term is scaled by
     ``energy_scale`` which defaults to converting Joules to megawatt-hours
-    (``1e-9``).  ``w_p``, ``w_c`` and ``w_e`` weight the respective cost
+    (``1e-9``).  ``w_p`` and ``w_e`` weight the respective cost
     components. Pressure violations are always penalised with a squared hinge
-    which softly enforces ``Pmin``. ``barrier`` selects how chlorine
-    violations are penalised: ``"softplus"`` (default) applies a smooth
-    softplus barrier, ``"exp"`` uses an exponential barrier and
-    ``"cubic"`` falls back to the previous cubic hinge.
+    which softly enforces ``Pmin``.
     """
     cur_p = pressures.to(device)
-    cur_c = chlorine.to(device)
 
     if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
         if init_tank_levels is None:
@@ -1007,7 +988,7 @@ def compute_mpc_cost(
         clamped = torch.clamp(raw_speed, 0.0, MAX_PUMP_SPEED)
         speed = raw_speed + (clamped - raw_speed).detach()
         x = prepare_node_features(
-            feature_template, cur_p, cur_c, speed, model, d, skip_normalization
+            feature_template, cur_p, speed, model, d, skip_normalization
         )
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
@@ -1068,31 +1049,17 @@ def compute_mpc_cost(
                     )
         assert not torch.isnan(pred).any(), "NaN prediction"
         pred_p = pred[:, 0]
-        if pred.shape[1] > 1:
-            pred_c = torch.expm1(pred[:, 1]) * 1000.0
-        else:
-            pred_c = torch.zeros_like(pred_p)
 
         # ------------------------------------------------------------------
         # Cost terms
         # ------------------------------------------------------------------
         w_s = 0.01
 
-        Cmin_safe = Cmin + 0.05
-
         psf = torch.relu(Pmin - pred_p)
         pressure_penalty = torch.sum(psf ** 2)
 
-        csf = torch.clamp(Cmin_safe - pred_c, min=0.0)
-        if barrier == "exp":
-            chlorine_penalty = torch.sum(torch.expm1(csf))
-        elif barrier == "cubic":
-            chlorine_penalty = torch.sum(csf ** 3)
-        else:
-            chlorine_penalty = torch.sum(F.softplus(csf) ** 2)
-
         if flows is not None and pump_info is not None:
-            head = pred_p + feature_template[:, 3]
+            head = pred_p + feature_template[:, 2]
             energy_term_j = torch.tensor(0.0, device=device)
             eff = wn.options.energy.global_efficiency / 100.0
             for idx, s_idx, e_idx in pump_info:
@@ -1114,11 +1081,7 @@ def compute_mpc_cost(
 
         energy_term = energy_term_j * energy_scale
 
-        step_cost = (
-            w_p * pressure_penalty
-            + w_c * chlorine_penalty
-            + w_e * energy_term
-        )
+        step_cost = w_p * pressure_penalty + w_e * energy_term
 
         total_cost = total_cost + step_cost
 
@@ -1130,9 +1093,8 @@ def compute_mpc_cost(
             prev_speed = prev_raw + (prev_clamped - prev_raw).detach()
             smoothness_penalty = smoothness_penalty + torch.sum((speed - prev_speed) ** 2)
 
-        # update dictionaries for next step
+        # update pressures for next step
         cur_p = pred_p
-        cur_c = pred_c
 
     total_cost = total_cost + w_s * smoothness_penalty
 
@@ -1150,22 +1112,18 @@ def run_mpc_step(
     edge_types: torch.Tensor,
     feature_template: torch.Tensor,
     pressures: torch.Tensor,
-    chlorine: torch.Tensor,
     horizon: int,
     iterations: int,
     device: torch.device,
     Pmin: float,
-    Cmin: float,
     demands: Optional[torch.Tensor] = None,
     u_warm: Optional[torch.Tensor] = None,
     pump_info: Optional[List[Tuple[int, int, int]]] = None,
     profile: bool = False,
     skip_normalization: bool = False,
     w_p: float = 100.0,
-    w_c: float = 100.0,
     w_e: float = 1.0,
     energy_scale: float = 1e-9,
-    barrier: str = "softplus",
     gmax: float = 1.0,
 ) -> Tuple[torch.Tensor, List[float], float]:
     """Optimize pump speeds for one hour using gradient-based MPC.
@@ -1184,11 +1142,10 @@ def run_mpc_step(
     u_warm : torch.Tensor, optional
         Previous speed sequence to warm start the optimization.
     """
-    num_pumps = feature_template.size(1) - 4
+    num_pumps = feature_template.size(1) - 3
     cost_history: List[float] = []
     start_time = time.time() if profile else None
     pressures = pressures.to(device)
-    chlorine = chlorine.to(device)
     init_levels = None
     if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
         init_press = pressures[model.tank_indices].unsqueeze(0)
@@ -1226,21 +1183,17 @@ def run_mpc_step(
             edge_types,
             feature_template,
             pressures,
-            chlorine,
             horizon,
             device,
             Pmin,
-            Cmin,
             demands,
             pump_info,
             False,
             init_levels,
             skip_normalization,
             w_p,
-            w_c,
             w_e,
             energy_scale,
-            barrier,
         )
         cost.backward()
         if gmax is not None:
@@ -1267,21 +1220,17 @@ def run_mpc_step(
             edge_types,
             feature_template,
             pressures,
-            chlorine,
             horizon,
             device,
             Pmin,
-            Cmin,
             demands,
             pump_info,
             False,
             init_levels,
             skip_normalization,
             w_p,
-            w_c,
             w_e,
             energy_scale,
-            barrier,
         )
         c.backward()
         if gmax is not None:
@@ -1300,21 +1249,17 @@ def run_mpc_step(
         edge_types,
         feature_template,
         pressures,
-        chlorine,
         1,
         device,
         Pmin,
-        Cmin,
         demands[:1] if demands is not None else None,
         pump_info,
         True,
         init_levels,
         skip_normalization,
         w_p,
-        w_c,
         w_e,
         energy_scale,
-        barrier,
     )
     with torch.no_grad():
         pump_speeds.copy_(pump_speeds.clamp(0.0, MAX_PUMP_SPEED))
@@ -1338,23 +1283,20 @@ def propagate_with_surrogate(
     edge_types: torch.Tensor,
     feature_template: torch.Tensor,
     pressures: Dict[str, float],
-    chlorine: Dict[str, float],
     speed_seq: torch.Tensor,
     device: torch.device,
     demands: Optional[torch.Tensor] = None,
     skip_normalization: bool = False,
-) -> Tuple[Dict[str, float], Dict[str, float]]:
+) -> Dict[str, float]:
     """Propagate the network state using the surrogate model.
 
-    The current state ``pressures``/``chlorine`` is advanced through the
-    sequence of pump speeds ``speed_seq`` without running EPANET.  The
-    function returns dictionaries for the next pressures and chlorine levels
-    after applying the entire sequence.  ``pressures`` and ``chlorine`` can be
-    either dictionaries for a single scenario or lists of dictionaries for
-    batched evaluation:
+    The current state ``pressures`` is advanced through the
+    sequence of pump speeds ``speed_seq`` without running EPANET. The
+    function returns a dictionary for the next pressures after applying the
+    entire sequence. ``pressures`` can be either a dictionary for a single
+    scenario or a list of dictionaries for batched evaluation:
 
     ``pressures = [dict(...), dict(...)]``
-    ``chlorine = [dict(...), dict(...)]``
     """
 
     if edge_attr is not None and getattr(model, "edge_mean", None) is not None and not skip_normalization:
@@ -1363,7 +1305,6 @@ def propagate_with_surrogate(
     single = isinstance(pressures, dict)
     if single:
         cur_p = torch.tensor([pressures[n] for n in wn.node_name_list], device=device)
-        cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], device=device)
         b_edge_index = edge_index
         b_edge_attr = edge_attr
         b_node_type = node_types
@@ -1374,10 +1315,6 @@ def propagate_with_surrogate(
         cur_p = torch.stack([
             torch.tensor([p[n] for n in wn.node_name_list], device=device)
             for p in pressures
-        ])
-        cur_c = torch.stack([
-            torch.tensor([c[n] for n in wn.node_name_list], device=device)
-            for c in chlorine
         ])
         num_nodes = feature_template.size(0)
         E = edge_index.size(1)
@@ -1404,7 +1341,7 @@ def propagate_with_surrogate(
                 speed_in = speed
             d = demands[t] if demands is not None else None
             x = prepare_node_features(
-                feature_template, cur_p, cur_c, speed_in, model, d, skip_normalization
+                feature_template, cur_p, speed_in, model, d, skip_normalization
             )
             if hasattr(model, "rnn"):
                 seq_in = x.view(batch_size, 1, feature_template.size(0), x.size(-1))
@@ -1436,19 +1373,14 @@ def propagate_with_surrogate(
                         pred = pred * (y_std + EPS) + y_mean
             assert not torch.isnan(pred).any(), "NaN prediction"
             cur_p = pred[:, :, 0]
-            cur_c = torch.expm1(pred[:, :, 1]) * 1000.0
 
     if single:
-        out_p = {n: float(cur_p[0, i]) for i, n in enumerate(wn.node_name_list)}
-        out_c = {n: float(cur_c[0, i]) for i, n in enumerate(wn.node_name_list)}
-        return out_p, out_c
+        return {n: float(cur_p[0, i]) for i, n in enumerate(wn.node_name_list)}
 
     out_ps = []
-    out_cs = []
     for b in range(batch_size):
         out_ps.append({n: float(cur_p[b, i]) for i, n in enumerate(wn.node_name_list)})
-        out_cs.append({n: float(cur_c[b, i]) for i, n in enumerate(wn.node_name_list)})
-    return out_ps, out_cs
+    return out_ps
 
 
 class PressureBiasCorrector:
@@ -1490,16 +1422,13 @@ def simulate_closed_loop(
     pump_names: List[str],
     device: torch.device,
     Pmin: float,
-    Cmin: float,
     feedback_interval: int = 1,
     run_name: str = "",
     profile: bool = False,
     skip_normalization: bool = False,
     w_p: float = 100.0,
-    w_c: float = 100.0,
     w_e: float = 1.0,
     energy_scale: float = 1e-9,
-    barrier: str = "softplus",
     gmax: float = 1.0,
     bias_correction: bool = False,
     bias_window: int = 1,
@@ -1507,8 +1436,8 @@ def simulate_closed_loop(
     """Run 24-hour closed-loop MPC using the surrogate for fast updates.
 
     EPANET is invoked only every ``feedback_interval`` hours (default once per
-    hour) to obtain ground-truth measurements.  All intermediate steps update
-    the pressures and chlorine levels using the GNN surrogate which allows the
+    hour) to obtain ground-truth measurements. All intermediate steps update
+    the pressures using the GNN surrogate which allows the
     loop to run nearly instantly.
     """
     if feedback_interval > 1:
@@ -1533,7 +1462,6 @@ def simulate_closed_loop(
 
     log = []
     pressure_violations = 0
-    chlorine_violations = 0
     total_energy = 0.0
     pump_info = []
     node_idx = node_to_index
@@ -1554,9 +1482,7 @@ def simulate_closed_loop(
     sim = wntr.sim.EpanetSimulator(wn)
     results = sim.run_sim(str(TEMP_DIR / "temp"))
     p_arr = results.node["pressure"].iloc[0].to_numpy(dtype=np.float32)
-    c_arr = results.node["quality"].iloc[0].to_numpy(dtype=np.float32)
     pressures = dict(zip(wn.node_name_list, p_arr))
-    chlorine = dict(zip(wn.node_name_list, c_arr))
     for res_name in wn.reservoir_name_list:
         idx = node_idx[res_name]
         head = wn.get_node(res_name).base_head
@@ -1568,11 +1494,6 @@ def simulate_closed_loop(
         .pin_memory() if torch.cuda.is_available() else torch.from_numpy(p_arr)
     )
     cur_p = cur_p.to(device, non_blocking=True)
-    cur_c = (
-        torch.from_numpy(c_arr)
-        .pin_memory() if torch.cuda.is_available() else torch.from_numpy(c_arr)
-    )
-    cur_c = cur_c.to(device, non_blocking=True)
 
     if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
         init_press = cur_p[model.tank_indices].unsqueeze(0)
@@ -1600,22 +1521,18 @@ def simulate_closed_loop(
             edge_types,
             feature_template,
             cur_p,
-            cur_c,
             horizon,
             iterations,
             device,
             Pmin,
-            Cmin,
             demands,
             prev_speed,
             pump_info,
             profile,
             skip_normalization,
             w_p,
-            w_c,
             w_e,
             energy_scale,
-            barrier,
             gmax,
         )
         all_costs.extend(costs)
@@ -1646,7 +1563,7 @@ def simulate_closed_loop(
         if feedback_interval > 0 and hour % feedback_interval == 0:
             pred_pressures = None
             if bias_corrector is not None:
-                pred_pressures, _ = propagate_with_surrogate(
+                pred_pressures = propagate_with_surrogate(
                     wn,
                     model,
                     edge_index,
@@ -1655,7 +1572,6 @@ def simulate_closed_loop(
                     edge_types,
                     feature_template,
                     pressures,
-                    chlorine,
                     speed_opt,
                     device,
                     demands,
@@ -1669,9 +1585,7 @@ def simulate_closed_loop(
             sim = wntr.sim.EpanetSimulator(wn)
             results = sim.run_sim(str(TEMP_DIR / "temp"))
             p_arr = results.node["pressure"].iloc[-1].to_numpy(dtype=np.float32)
-            c_arr = results.node["quality"].iloc[-1].to_numpy(dtype=np.float32)
             pressures = dict(zip(wn.node_name_list, p_arr))
-            chlorine = dict(zip(wn.node_name_list, c_arr))
             for res_name in wn.reservoir_name_list:
                 idx = node_idx[res_name]
                 head = wn.get_node(res_name).base_head
@@ -1687,11 +1601,6 @@ def simulate_closed_loop(
                 .pin_memory() if torch.cuda.is_available() else torch.from_numpy(p_arr)
             )
             cur_p = cur_p.to(device, non_blocking=True)
-            cur_c = (
-                torch.from_numpy(c_arr)
-                .pin_memory() if torch.cuda.is_available() else torch.from_numpy(c_arr)
-            )
-            cur_c = cur_c.to(device, non_blocking=True)
             energy_df = pump_energy(
                 results.link["flowrate"][pump_names], results.node["head"], wn
             )
@@ -1700,7 +1609,7 @@ def simulate_closed_loop(
             end = time.time()
         else:
             # Fast surrogate-based propagation
-            pressures, chlorine = propagate_with_surrogate(
+            pressures = propagate_with_surrogate(
                 wn,
                 model,
                 edge_index,
@@ -1709,7 +1618,6 @@ def simulate_closed_loop(
                 edge_types,
                 feature_template,
                 pressures,
-                chlorine,
                 speed_opt,
                 device,
                 demands,
@@ -1718,7 +1626,6 @@ def simulate_closed_loop(
             if bias_corrector is not None:
                 pressures = bias_corrector.apply(pressures, node_idx)
             cur_p = torch.tensor([pressures[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
-            cur_c = torch.tensor([chlorine[n] for n in wn.node_name_list], dtype=torch.float32, device=device)
             end = time.time()
             energy = energy_first
         bias_min = bias_max = 0.0
@@ -1727,17 +1634,13 @@ def simulate_closed_loop(
             bias_min = float(b_abs.min())
             bias_max = float(b_abs.max())
         min_p = max(min(pressures[n] for n in wn.junction_name_list), 0.0)
-        min_c = max(min(chlorine[n] for n in wn.junction_name_list), 0.0)
         if min_p < Pmin:
             pressure_violations += 1
-        if min_c < Cmin:
-            chlorine_violations += 1
         total_energy += energy
         log.append(
             {
                 "time": hour,
                 "min_pressure": min_p,
-                "min_chlorine": min_c,
                 "energy": energy,
                 "runtime_sec": end - start,
                 "controls": first_speeds.cpu().numpy().tolist(),
@@ -1745,7 +1648,6 @@ def simulate_closed_loop(
                 "bias_max": bias_max,
                 # Store full network state for optional animations
                 "pressures": dict(pressures),
-                "chlorine": dict(chlorine),
             }
         )
         if run_name:
@@ -1758,29 +1660,23 @@ def simulate_closed_loop(
             except Exception as exc:
                 warnings.warn(f"plot_network_state_epyt failed: {exc}")
         print(
-            f"Hour {hour}: minP={min_p:.2f}, minC={min_c:.3f}, energy={energy:.2f}, runtime={end-start:.2f}s, bias=[{bias_min:.3f},{bias_max:.3f}]"
+            f"Hour {hour}: minP={min_p:.2f}, energy={energy:.2f}, runtime={end-start:.2f}s, bias=[{bias_min:.3f},{bias_max:.3f}]"
         )
     df = pd.DataFrame(log)
     os.makedirs(DATA_DIR, exist_ok=True)
     df.to_csv(os.path.join(DATA_DIR, "mpc_history.csv"), index=False)
     summary = {
         "pressure_violations": pressure_violations,
-        "chlorine_violations": chlorine_violations,
         "total_energy": float(total_energy),
         "hours": len(log),
     }
-    print(
-        f"[MPC Summary] Pressure violations: {pressure_violations}/{len(log)}h"
-    )
-    print(
-        f"[MPC Summary] Chlorine violations: {chlorine_violations}/{len(log)}h"
-    )
+    print(f"[MPC Summary] Pressure violations: {pressure_violations}/{len(log)}h")
     print(f"[MPC Summary] Total pump energy used: {total_energy:.2f} J")
     os.makedirs(REPO_ROOT / "logs", exist_ok=True)
     with open(REPO_ROOT / "logs" / "mpc_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
     if run_name:
-        plot_mpc_time_series(df, Pmin, Cmin, run_name)
+        plot_mpc_time_series(df, Pmin, run_name)
         plot_convergence_curve(all_costs, run_name)
     return df
 
@@ -1792,7 +1688,6 @@ def main():
         "--iterations", type=int, default=50, help="Gradient descent iterations"
     )
     parser.add_argument("--Pmin", type=float, default=20.0, help="Pressure threshold")
-    parser.add_argument("--Cmin", type=float, default=0.2, help="Chlorine threshold")
     parser.add_argument(
         "--feedback-interval",
         type=int,
@@ -1821,14 +1716,7 @@ def main():
         help="Scale factor applied to pump energy (e.g., 1e-9 converts J to MWh)",
     )
     parser.add_argument("--w_p", type=float, default=100.0, help="Weight on pressure violations")
-    parser.add_argument("--w_c", type=float, default=100.0, help="Weight on chlorine violations")
     parser.add_argument("--w_e", type=float, default=1.0, help="Weight on energy usage")
-    parser.add_argument(
-        "--barrier",
-        choices=["softplus", "exp", "cubic"],
-        default="softplus",
-        help="Penalty type for chlorine violations (pressure uses squared hinge)",
-    )
     parser.add_argument(
         "--gmax",
         type=float,
@@ -1913,16 +1801,13 @@ def main():
         pump_names,
         device,
         args.Pmin,
-        args.Cmin,
         args.feedback_interval,
         run_name,
         args.profile,
         args.skip_normalization,
         args.w_p,
-        args.w_c,
         args.w_e,
         args.energy_scale,
-        args.barrier,
         args.gmax,
         args.bias_correction,
         args.bias_window,

@@ -22,16 +22,14 @@ def weighted_mtl_loss(
     *,
     loss_fn: str = "mae",
     w_press: float = 5.0,
-    w_cl: float = 0.0,
     w_flow: float = 3.0,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return total and component losses for pressure, chlorine and flow.
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return total and component losses for pressure and flow.
 
     Parameters
     ----------
-    pred_nodes: ``[..., num_nodes, 2]``
-        Predicted node outputs where channel ``0`` is pressure and ``1`` is
-        chlorine.
+    pred_nodes: ``[..., num_nodes, 1]``
+        Predicted node outputs where channel ``0`` is pressure.
     target_nodes: same shape as ``pred_nodes``
         Ground truth node outputs.
     edge_preds: ``[..., num_edges, 1]``
@@ -40,19 +38,14 @@ def weighted_mtl_loss(
         Ground truth edge flows.
     loss_fn: {"mae", "mse", "huber"}
         Base loss applied per component.
-    w_press, w_cl, w_flow: float
-        Weights for pressure, chlorine and flow losses respectively. The
-        defaults emphasise pressure and flow (``5.0`` and ``3.0``) while
-        chlorine is disabled (``0.0``).
+    w_press, w_flow: float
+        Weights for pressure and flow losses. The defaults emphasise pressure
+        and flow (``5.0`` and ``3.0``).
     """
     press_loss = _apply_loss(pred_nodes[..., 0], target_nodes[..., 0], loss_fn)
-    if pred_nodes.size(-1) > 1:
-        cl_loss = _apply_loss(pred_nodes[..., 1], target_nodes[..., 1], loss_fn)
-    else:
-        cl_loss = pred_nodes.new_tensor(0.0)
     flow_loss = _apply_loss(edge_preds, edge_target, loss_fn)
-    total = w_press * press_loss + w_cl * cl_loss + w_flow * flow_loss
-    return total, press_loss, cl_loss, flow_loss
+    total = w_press * press_loss + w_flow * flow_loss
+    return total, press_loss, flow_loss
 
 
 def compute_mass_balance_loss(
@@ -62,9 +55,29 @@ def compute_mass_balance_loss(
     demand: Optional[torch.Tensor] = None,
     node_type: Optional[torch.Tensor] = None,
     *,
+    flow_reg_weight: float = 0.0,
     return_imbalance: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """Return mean squared node imbalance for predicted flows.
+
+    Parameters
+    ----------
+    pred_flows: torch.Tensor
+        Predicted edge flows.
+    edge_index: torch.Tensor
+        Edge index describing the directed graph.
+    node_count: int
+        Number of nodes in the graph.
+    demand: torch.Tensor, optional
+        Optional nodal demands to subtract from the balance.
+    node_type: torch.Tensor, optional
+        Node type mask where ``1`` and ``2`` correspond to tanks and
+        reservoirs which are excluded from the loss.
+    flow_reg_weight: float, optional
+        Weight of an additional L2 regularization term on edge flows. A small
+        value (e.g. ``1e-6``) encourages non-zero flows when demand exists.
+    return_imbalance: bool, optional
+        When ``True`` also return the mean absolute imbalance for logging.
 
     When ``return_imbalance`` is ``True`` this function also returns the
     average absolute mass imbalance which can be logged as a metric.
@@ -98,6 +111,8 @@ def compute_mass_balance_loss(
         node_balance[mask] = 0
 
     loss = torch.mean(node_balance ** 2)
+    if flow_reg_weight > 0:
+        loss = loss + flow_reg_weight * torch.mean(flows ** 2)
     if return_imbalance:
         return loss, node_balance.abs().mean()
     return loss
@@ -117,8 +132,9 @@ def pressure_headloss_consistency_loss(
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """Return MSE between predicted and Hazen--Williams head losses.
 
-    When ``return_violation`` is ``True`` the percentage of edges where the
-    predicted head loss has the wrong sign is also returned.
+    Parameters are expected to use edge flows in ``m^3/s``. When
+    ``return_violation`` is ``True`` the percentage of edges where the predicted
+    head loss has the wrong sign is also returned.
     """
     # Un-normalise edge attributes if statistics are available
     if edge_attr_mean is not None and edge_attr_std is not None:
@@ -151,7 +167,7 @@ def pressure_headloss_consistency_loss(
     diam = diam[pipe_mask]
     rough = rough[pipe_mask]
     q_pipe = q[:, pipe_mask]
-    q_m3 = q_pipe * 0.001
+    q_m3 = q_pipe  # flows already in m^3/s
     flow_sign = torch.sign(q_pipe)
     denom = (rough.pow(1.852) * diam.pow(4.87)).clamp(min=epsilon)
     hw_hl = const * length * q_m3.abs().pow(1.852) / denom
@@ -183,7 +199,7 @@ def scale_physics_losses(
     head_scale: float = 1.0,
     pump_scale: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Normalise physics-based losses by baseline magnitudes and clamp small scales.
+    """Normalise physics-based losses by baseline magnitudes.
 
     Parameters
     ----------
@@ -191,15 +207,13 @@ def scale_physics_losses(
         Raw physics loss values.
     mass_scale, head_scale, pump_scale: float, optional
         Baseline magnitudes for each loss. Values ``\le 0`` disable scaling.
-        Very small positive scales are clamped to ``1e-3`` to avoid division
-        by near-zero numbers.
 
     Returns
     -------
     Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         Scaled ``mass_loss``, ``head_loss`` and ``pump_loss``.
     """
-    eps = 1e-3
+    eps = 1e-8
     if mass_scale > 0:
         mass_loss = mass_loss / max(mass_scale, eps)
     if head_scale > 0:

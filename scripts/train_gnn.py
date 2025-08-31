@@ -87,12 +87,11 @@ except ImportError:  # pragma: no cover
 PUMP_LOSS_WARN_THRESHOLD = 1.0
 
 
-def summarize_target_norm_stats(y_mean, y_std, has_chlorine: bool):
+def summarize_target_norm_stats(y_mean, y_std):
     """Return scalar normalization stats for logging.
 
     ``y_mean`` and ``y_std`` may contain per-node statistics. This helper
-    aggregates them across nodes before extracting the pressure and chlorine
-    means and standard deviations."""
+    aggregates them across nodes before extracting the pressure statistics."""
     if isinstance(y_mean, dict):
         node_mean = y_mean["node_outputs"]
         node_std = y_std["node_outputs"]
@@ -103,10 +102,7 @@ def summarize_target_norm_stats(y_mean, y_std, has_chlorine: bool):
         node_mean = node_mean.mean(dim=0)
         node_std = node_std.mean(dim=0)
     pressure = (node_mean[0].item(), node_std[0].item())
-    chlorine = None
-    if has_chlorine and node_mean.numel() > 1:
-        chlorine = (node_mean[1].item(), node_std[1].item())
-    return pressure, chlorine
+    return pressure
 
 
 def load_dataset(
@@ -209,89 +205,127 @@ def load_dataset(
     return data_list
 
 
-def _to_numpy(seq: Sequence[float]) -> np.ndarray:
-    """Convert sequence to NumPy array."""
-    return np.asarray(seq, dtype=float)
-
-
-def predicted_vs_actual_scatter(
-    true_pressure: Sequence[float],
-    pred_pressure: Sequence[float],
-    true_chlorine: Optional[Sequence[float]],
-    pred_chlorine: Optional[Sequence[float]],
-    run_name: str,
-    plots_dir: Optional[Path] = None,
-    return_fig: bool = False,
-    mask: Optional[Sequence[bool]] = None,
-) -> Optional[plt.Figure]:
-    """Scatter plots comparing surrogate predictions with EPANET results.
-
-    ``true_chlorine`` and ``pred_chlorine`` may be ``None`` when the dataset
-    excludes chlorine targets.
-    """
-    if plots_dir is None:
-        plots_dir = PLOTS_DIR
-    plots_dir.mkdir(parents=True, exist_ok=True)
-
-    tp = _to_numpy(true_pressure)
-    pp = _to_numpy(pred_pressure)
-    tc = _to_numpy(true_chlorine) if true_chlorine is not None else None
-    pc = _to_numpy(pred_chlorine) if pred_chlorine is not None else None
-
-    if mask is not None:
-        m = np.asarray(mask, dtype=bool)
-        tp = tp[m]
-        pp = pp[m]
-        if tc is not None and pc is not None:
-            tc = tc[m]
-            pc = pc[m]
-
-    if tc is not None and pc is not None:
-        # chlorine values are stored in log space (log1p). Convert back to mg/L
-        # before plotting so the axes reflect physical units.
-        tc = np.expm1(tc) * 1000.0
-        pc = np.expm1(pc) * 1000.0
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        axes[0].scatter(tp, pp, label="Pressure", color="tab:blue", alpha=0.7)
-        min_p, max_p = tp.min(), tp.max()
-        axes[0].plot([min_p, max_p], [min_p, max_p], "k--", lw=1)
-        axes[0].set_xlabel("Actual Pressure (m)")
-        axes[0].set_ylabel("Predicted Pressure (m)")
-        axes[0].set_title("Pressure")
-
-        axes[1].scatter(tc, pc, label="Chlorine", color="tab:orange", alpha=0.7)
-        min_c, max_c = tc.min(), tc.max()
-        axes[1].plot([min_c, max_c], [min_c, max_c], "k--", lw=1)
-        axes[1].set_xlabel("Actual Chlorine (mg/L)")
-        axes[1].set_ylabel("Predicted Chlorine (mg/L)")
-        axes[1].set_title("Chlorine")
-
-        fig.suptitle("Surrogate Model Prediction Accuracy for Pressure and Chlorine")
-        fig.tight_layout()
-        fig.subplots_adjust(top=0.85)
-    else:
-        fig, axes = plt.subplots(1, 1, figsize=(5, 4))
-        ax = axes if isinstance(axes, plt.Axes) else axes[0]
-        ax.scatter(tp, pp, label="Pressure", color="tab:blue", alpha=0.7)
-        min_p, max_p = tp.min(), tp.max()
-        ax.plot([min_p, max_p], [min_p, max_p], "k--", lw=1)
-        ax.set_xlabel("Actual Pressure (m)")
-        ax.set_ylabel("Predicted Pressure (m)")
-        ax.set_title("Pressure")
-        fig.suptitle("Surrogate Model Prediction Accuracy for Pressure")
-        fig.tight_layout()
-
-    fig.savefig(plots_dir / f"pred_vs_actual_{run_name}.png")
-    if not return_fig:
-        plt.close(fig)
-    return fig if return_fig else None
-
-
 def compute_edge_attr_stats(edge_attr: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
     """Return mean and std for edge attribute matrix."""
     attr_mean = torch.tensor(edge_attr.mean(axis=0), dtype=torch.float32)
     attr_std = torch.tensor(edge_attr.std(axis=0) + 1e-8, dtype=torch.float32)
     return attr_mean, attr_std
+
+
+def compute_loss_scales(
+    X_raw: np.ndarray,
+    Y_raw: np.ndarray,
+    edge_attr_phys_np: np.ndarray,
+    edge_types: np.ndarray,
+    pump_coeffs_np: np.ndarray,
+    args: argparse.Namespace,
+    seq_mode: bool,
+) -> Tuple[float, float, float]:
+    """Determine physics loss scales from the dataset.
+
+    Flows are assumed to be provided in ``m^3/s``. Scales are estimated from
+    robust dataset statistics (95th percentile). When the dataset lacks the
+    required information (e.g., no edge flow labels or all-zero flows), the
+    corresponding physics loss is disabled with a warning.
+    """
+    mass_scale = args.mass_scale
+    head_scale = args.head_scale
+    pump_scale = args.pump_scale
+    if seq_mode and (
+        (args.physics_loss and mass_scale <= 0)
+        or (args.pressure_loss and head_scale <= 0)
+        or (args.pump_loss and pump_scale <= 0)
+    ):
+        if args.physics_loss and mass_scale <= 0:
+            demand = X_raw[..., 0]
+            active = np.abs(demand) > 1e-6
+            if active.any():
+                mass_scale = float(np.percentile(demand[active] ** 2, 95))
+            else:
+                warnings.warn(
+                    "No demand values found; disabling mass balance loss.",
+                    UserWarning,
+                )
+                args.physics_loss = False
+        need_edge_stats = (args.pressure_loss and head_scale <= 0) or (
+            args.pump_loss and pump_scale <= 0
+        )
+        if need_edge_stats:
+            edge_flows = None
+            if isinstance(Y_raw[0], dict) or (
+                isinstance(Y_raw[0], np.ndarray) and Y_raw.dtype == object
+            ):
+                if "edge_outputs" in Y_raw[0]:
+                    edge_flows = np.stack([y["edge_outputs"] for y in Y_raw])
+            else:
+                edge_flows = Y_raw
+            if edge_flows is None:
+                if args.pressure_loss:
+                    warnings.warn(
+                        "No edge flow labels provided; disabling pressure loss.",
+                        UserWarning,
+                    )
+                    args.pressure_loss = False
+                if args.pump_loss:
+                    warnings.warn(
+                        "No edge flow labels provided; disabling pump loss.",
+                        UserWarning,
+                    )
+                    args.pump_loss = False
+            else:
+                flows_flat = edge_flows.reshape(-1, edge_flows.shape[-1])
+                if args.pressure_loss and head_scale <= 0:
+                    pipe_mask = edge_types.flatten() == 0
+                    q_pipe = flows_flat[:, pipe_mask]
+                    active_edges = np.any(np.abs(q_pipe) > 1e-6, axis=0)
+                    q_pipe = q_pipe[:, active_edges]
+                    if q_pipe.size > 0:
+                        length = edge_attr_phys_np[pipe_mask, 0][active_edges]
+                        diam = np.clip(
+                            edge_attr_phys_np[pipe_mask, 1][active_edges], 1e-6, None
+                        )
+                        rough = np.clip(
+                            edge_attr_phys_np[pipe_mask, 2][active_edges], 1e-6, None
+                        )
+                        q_m3 = np.abs(q_pipe)  # flows already in m^3/s
+                        denom = np.clip(rough ** 1.852 * diam ** 4.87, 1e-6, None)
+                        hw_hl = 10.67 * length * (q_m3 ** 1.852) / denom
+                        if hw_hl.size > 0:
+                            head_scale = float(
+                                np.percentile(hw_hl ** 2, 95)
+                            )
+                    else:
+                        warnings.warn(
+                            "No informative pipe flows found; disabling pressure loss.",
+                            UserWarning,
+                        )
+                        args.pressure_loss = False
+                if args.pump_loss and pump_scale <= 0:
+                    pump_mask = edge_types.flatten() == 1
+                    q_pump = flows_flat[:, pump_mask]
+                    if q_pump.size > 0:
+                        coeff = pump_coeffs_np[pump_mask]
+                        a = coeff[:, 0]
+                        b = coeff[:, 1]
+                        c = coeff[:, 2]
+                        head = a - b * np.abs(q_pump) ** c
+                        if head.size > 0:
+                            pump_scale = float(
+                                np.percentile(np.abs(head), 95)
+                            )
+                    else:
+                        warnings.warn(
+                            "No informative pump flows found; disabling pump loss.",
+                            UserWarning,
+                        )
+                        args.pump_loss = False
+    mass_scale = max(float(mass_scale), 1.0)
+    head_scale = max(float(head_scale), 1.0)
+    pump_scale = max(float(pump_scale), 1.0)
+    args.mass_scale = mass_scale
+    args.head_scale = head_scale
+    args.pump_scale = pump_scale
+    return mass_scale, head_scale, pump_scale
 
 
 @dataclass
@@ -326,45 +360,11 @@ class RunningStats:
         return [mae, rmse, mape, self.max_err]
 
 
-def save_scatter_plots(
-    true_p,
-    preds_p,
-    true_c,
-    preds_c,
-    run_name: str,
-    plots_dir: Optional[Path] = None,
-    mask: Optional[Sequence[bool]] = None,
-) -> None:
-    """Save enhanced scatter plots for surrogate predictions."""
-    if plots_dir is None:
-        plots_dir = PLOTS_DIR
-
-    fig = predicted_vs_actual_scatter(
-        true_p,
-        preds_p,
-        true_c,
-        preds_c,
-        run_name,
-        plots_dir=plots_dir,
-        return_fig=True,
-        mask=mask,
-    )
-    # also store individual scatter images for backward compatibility
-    axes = fig.axes
-    axes[0].figure.savefig(plots_dir / f"pred_vs_actual_pressure_{run_name}.png")
-    if len(axes) > 1:
-        axes[1].figure.savefig(
-            plots_dir / f"pred_vs_actual_chlorine_{run_name}.png"
-        )
-    plt.close(fig)
-
 
 def save_accuracy_metrics(
     pressure_stats: RunningStats,
     run_name: str,
     logs_dir: Optional[Path] = None,
-    chlorine_stats: Optional[RunningStats] = None,
-    flow_stats: Optional[RunningStats] = None,
 ) -> None:
     """Compute and export accuracy metrics to a CSV file."""
     if logs_dir is None:
@@ -372,10 +372,6 @@ def save_accuracy_metrics(
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     data = {"Pressure (m)": pressure_stats.metrics()}
-    if chlorine_stats is not None:
-        data["Chlorine (mg/L)"] = chlorine_stats.metrics()
-    if flow_stats is not None:
-        data["Flow (m^3/h)"] = flow_stats.metrics()
 
     index = [
         "Mean Absolute Error (MAE)",
@@ -386,73 +382,6 @@ def save_accuracy_metrics(
     df = pd.DataFrame(data, index=index)
     export_table(df, str(logs_dir / f"accuracy_{run_name}.csv"))
 
-
-def plot_error_histograms(
-    err_p: Sequence[float],
-    err_c: Optional[Sequence[float]],
-    run_name: str,
-    plots_dir: Optional[Path] = None,
-    return_fig: bool = False,
-    mask: Optional[Sequence[bool]] = None,
-) -> Optional[plt.Figure]:
-    """Histogram and box plots of prediction errors."""
-    if plots_dir is None:
-        plots_dir = PLOTS_DIR
-    plots_dir.mkdir(parents=True, exist_ok=True)
-
-    ep = _to_numpy(err_p)
-    ec = _to_numpy(err_c) if err_c is not None else None
-
-    if mask is not None:
-        m = np.asarray(mask, dtype=bool)
-        ep = ep[m]
-        if ec is not None:
-            ec = ec[m]
-
-    if ec is not None:
-        fig, axes = plt.subplots(2, 2, figsize=(10, 8))
-        axes[0, 0].hist(ep, bins=50, color="tab:blue", alpha=0.7)
-        axes[0, 0].set_title("Pressure Error")
-        axes[0, 0].set_xlabel("Prediction Error (m)")
-        axes[0, 0].set_ylabel("Count")
-
-        axes[0, 1].hist(ec, bins=50, color="tab:orange", alpha=0.7)
-        axes[0, 1].set_title("Chlorine Error")
-        axes[0, 1].set_xlabel("Prediction Error (mg/L)")
-        axes[0, 1].set_ylabel("Count")
-
-        axes[1, 0].boxplot(ep, vert=False)
-        axes[1, 0].set_yticklabels(["Pressure"])
-        axes[1, 0].set_xlabel("Prediction Error (m)")
-        axes[1, 0].set_title("Pressure Error Box")
-
-        axes[1, 1].boxplot(ec, vert=False)
-        axes[1, 1].set_yticklabels(["Chlorine"])
-        axes[1, 1].set_xlabel("Prediction Error (mg/L)")
-        axes[1, 1].set_title("Chlorine Error Box")
-
-        for ax in axes.ravel():
-            ax.tick_params(labelsize=8)
-    else:
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        axes[0].hist(ep, bins=50, color="tab:blue", alpha=0.7)
-        axes[0].set_title("Pressure Error")
-        axes[0].set_xlabel("Prediction Error (m)")
-        axes[0].set_ylabel("Count")
-
-        axes[1].boxplot(ep, vert=False)
-        axes[1].set_yticklabels(["Pressure"])
-        axes[1].set_xlabel("Prediction Error (m)")
-        axes[1].set_title("Pressure Error Box")
-
-        for ax in axes.ravel():
-            ax.tick_params(labelsize=8)
-
-    fig.tight_layout()
-    fig.savefig(plots_dir / f"error_histograms_{run_name}.png")
-    if not return_fig:
-        plt.close(fig)
-    return fig if return_fig else None
 
 
 def correlation_heatmap(
@@ -500,7 +429,7 @@ def plot_loss_components(
 
     arr = np.asarray(loss_components, dtype=float)
     epochs = np.arange(1, arr.shape[0] + 1)
-    labels = ["pressure", "chlorine", "flow", "mass", "sym"]
+    labels = ["pressure", "flow", "mass", "sym"]
     if arr.shape[1] > len(labels):
         labels.append("head")
     if arr.shape[1] > len(labels):
@@ -515,6 +444,60 @@ def plot_loss_components(
     ax.legend()
     fig.tight_layout()
     fig.savefig(plots_dir / f"loss_components_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
+def pred_vs_actual_scatter(
+    pred: Sequence[float],
+    true: Sequence[float],
+    run_name: str,
+    plots_dir: Optional[Path] = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Plot predicted vs actual pressures as a scatter plot."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    p = np.asarray(pred, dtype=float)
+    t = np.asarray(true, dtype=float)
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.scatter(t, p, s=5, alpha=0.5)
+    lims = [min(t.min(), p.min()), max(t.max(), p.max())]
+    ax.plot(lims, lims, "k--", linewidth=1)
+    ax.set_xlabel("Actual Pressure (m)")
+    ax.set_ylabel("Predicted Pressure (m)")
+    ax.set_title("Pressure: Predicted vs Actual")
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"pred_vs_actual_pressure_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
+def plot_error_histogram(
+    errors: Sequence[float],
+    run_name: str,
+    plots_dir: Optional[Path] = None,
+    return_fig: bool = False,
+) -> Optional[plt.Figure]:
+    """Plot histogram and box plot of prediction errors."""
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    err = np.asarray(errors, dtype=float)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].hist(err, bins=50, color="tab:blue", alpha=0.7)
+    axes[0].set_title("Pressure Error")
+    axes[1].boxplot(err, vert=True)
+    axes[1].set_title("Pressure Error")
+    for ax in axes:
+        ax.tick_params(labelsize=8)
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"error_histograms_{run_name}.png")
     if not return_fig:
         plt.close(fig)
     return fig if return_fig else None
@@ -582,23 +565,13 @@ def plot_sequence_prediction(
     T = pred_np.shape[0]
     time = np.arange(T)
 
-    fig, axes = plt.subplots(2, 1, figsize=(8, 5))
-    axes[0].plot(time, true_np[:, node_idx, 0], label="Actual")
-    axes[0].plot(time, pred_np[:, node_idx, 0], "--", label="Predicted")
-    axes[0].set_xlabel("Timestep")
-    axes[0].set_ylabel("Pressure (m)")
-    axes[0].set_title(f"Node {node_idx} Pressure")
-    axes[0].legend()
-
-    if pred_np.shape[-1] >= 2:
-        axes[1].plot(time, np.expm1(true_np[:, node_idx, 1]) * 1000.0, label="Actual")
-        axes[1].plot(time, np.expm1(pred_np[:, node_idx, 1]) * 1000.0, "--", label="Predicted")
-        axes[1].set_xlabel("Timestep")
-        axes[1].set_ylabel("Chlorine (mg/L)")
-        axes[1].set_title(f"Node {node_idx} Chlorine")
-        axes[1].legend()
-    else:
-        axes[1].remove()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(time, true_np[:, node_idx, 0], label="Actual")
+    ax.plot(time, pred_np[:, node_idx, 0], "--", label="Predicted")
+    ax.set_xlabel("Timestep")
+    ax.set_ylabel("Pressure (m)")
+    ax.set_title(f"Node {node_idx} Pressure")
+    ax.legend()
 
     fig.tight_layout()
     fig.savefig(plots_dir / f"time_series_example_{run_name}.png")
@@ -759,10 +732,12 @@ def train(
     loss_fn: str = "mae",
     node_mask: Optional[torch.Tensor] = None,
     progress: bool = True,
+    w_press: float = 5.0,
+    w_flow: float = 3.0,
 ):
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
-    total_loss = press_total = cl_total = flow_total = 0.0
+    total_loss = press_total = flow_total = 0.0
     for batch in tqdm(loader, disable=not progress):
         batch = batch.to(device, non_blocking=True)
         if torch.isnan(batch.x).any() or torch.isnan(batch.y).any():
@@ -778,25 +753,37 @@ def train(
                 getattr(batch, "node_type", None),
                 getattr(batch, "edge_type", None),
             )
-            if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
+            if isinstance(out, dict):
                 pred_nodes = out["node_outputs"].float()
-                edge_pred = out["edge_outputs"].float()
+                edge_pred = out.get("edge_outputs")
                 target_nodes = batch.y.float()
-                edge_target = batch.edge_y.float()
+                edge_target = getattr(batch, "edge_y", None)
                 if node_mask is not None:
                     repeat = pred_nodes.size(0) // node_mask.numel()
                     mask = node_mask.repeat(repeat)
                     pred_nodes = pred_nodes[mask]
                     target_nodes = target_nodes[mask]
-                loss, press_l, cl_l, flow_l = weighted_mtl_loss(
-                    pred_nodes,
-                    target_nodes,
-                    edge_pred,
-                    edge_target,
-                    loss_fn=loss_fn,
-                )
+                use_flow_loss = edge_target is not None and w_flow != 0
+                if use_flow_loss:
+                    edge_target = edge_target.float()
+                    loss, press_l, flow_l = weighted_mtl_loss(
+                        pred_nodes,
+                        target_nodes,
+                        edge_pred.float(),
+                        edge_target,
+                        loss_fn=loss_fn,
+                        w_press=w_press,
+                        w_flow=w_flow,
+                    )
+                else:
+                    loss_press = _apply_loss(
+                        pred_nodes[..., 0], target_nodes[..., 0], loss_fn
+                    )
+                    loss = w_press * loss_press
+                    press_l = loss_press
+                    flow_l = torch.tensor(0.0, device=device)
             else:
-                out_t = out if not isinstance(out, dict) else out["node_outputs"]
+                out_t = out
                 target = batch.y.float()
                 if node_mask is not None:
                     repeat = out_t.size(0) // node_mask.numel()
@@ -804,7 +791,7 @@ def train(
                     out_t = out_t[mask]
                     target = target[mask]
                 loss = _apply_loss(out_t, target, loss_fn)
-                press_l = cl_l = flow_l = torch.tensor(0.0, device=device)
+                press_l = flow_l = torch.tensor(0.0, device=device)
         if amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -820,13 +807,11 @@ def train(
             optimizer.step()
         total_loss += loss.item() * batch.num_graphs
         press_total += press_l.item() * batch.num_graphs
-        cl_total += cl_l.item() * batch.num_graphs
         flow_total += flow_l.item() * batch.num_graphs
     denom = len(loader.dataset)
     return (
         total_loss / denom,
         press_total / denom,
-        cl_total / denom,
         flow_total / denom,
     )
 
@@ -839,10 +824,12 @@ def evaluate(
     loss_fn: str = "mae",
     node_mask: Optional[torch.Tensor] = None,
     progress: bool = True,
+    w_press: float = 3.0,
+    w_flow: float = 1.0,
 ):
     global interrupted
     model.eval()
-    total_loss = press_total = cl_total = flow_total = 0.0
+    total_loss = press_total = flow_total = 0.0
     data_iter = iter(tqdm(loader, disable=not progress))
     with torch.no_grad():
         while True:
@@ -863,25 +850,37 @@ def evaluate(
                     getattr(batch, "node_type", None),
                     getattr(batch, "edge_type", None),
                 )
-                if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
+                if isinstance(out, dict):
                     pred_nodes = out["node_outputs"].float()
-                    edge_pred = out["edge_outputs"].float()
+                    edge_pred = out.get("edge_outputs")
                     target_nodes = batch.y.float()
-                    edge_target = batch.edge_y.float()
+                    edge_target = getattr(batch, "edge_y", None)
                     if node_mask is not None:
                         repeat = pred_nodes.size(0) // node_mask.numel()
                         mask = node_mask.repeat(repeat)
                         pred_nodes = pred_nodes[mask]
                         target_nodes = target_nodes[mask]
-                    loss, press_l, cl_l, flow_l = weighted_mtl_loss(
-                        pred_nodes,
-                        target_nodes,
-                        edge_pred,
-                        edge_target,
-                        loss_fn=loss_fn,
-                    )
+                    use_flow_loss = edge_target is not None and w_flow != 0
+                    if use_flow_loss:
+                        edge_target = edge_target.float()
+                        loss, press_l, flow_l = weighted_mtl_loss(
+                            pred_nodes,
+                            target_nodes,
+                            edge_pred.float(),
+                            edge_target,
+                            loss_fn=loss_fn,
+                            w_press=w_press,
+                            w_flow=w_flow,
+                        )
+                    else:
+                        loss_press = _apply_loss(
+                            pred_nodes[..., 0], target_nodes[..., 0], loss_fn
+                        )
+                        loss = w_press * loss_press
+                        press_l = loss_press
+                        flow_l = torch.tensor(0.0, device=device)
                 else:
-                    out_t = out if not isinstance(out, dict) else out["node_outputs"]
+                    out_t = out
                     target = batch.y.float()
                     if node_mask is not None:
                         repeat = out_t.size(0) // node_mask.numel()
@@ -889,10 +888,9 @@ def evaluate(
                         out_t = out_t[mask]
                         target = target[mask]
                     loss = _apply_loss(out_t, target, loss_fn)
-                    press_l = cl_l = flow_l = torch.tensor(0.0, device=device)
+                    press_l = flow_l = torch.tensor(0.0, device=device)
             total_loss += loss.item() * batch.num_graphs
             press_total += press_l.item() * batch.num_graphs
-            cl_total += cl_l.item() * batch.num_graphs
             flow_total += flow_l.item() * batch.num_graphs
             if interrupted:
                 break
@@ -900,7 +898,6 @@ def evaluate(
     return (
         total_loss / denom,
         press_total / denom,
-        cl_total / denom,
         flow_total / denom,
     )
 
@@ -929,18 +926,19 @@ def train_sequence(
     w_head: float = 1.0,
     w_pump: float = 1.0,
     w_press: float = 3.0,
-    w_cl: float = 1.0,
     w_flow: float = 1.0,
+    flow_reg_weight: float = 0.0,
     amp: bool = False,
     progress: bool = True,
-) -> Tuple[float, float, float, float, float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float, float, float, float, float, float]:
     global interrupted
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = 0.0
-    press_total = cl_total = flow_total = 0.0
+    press_total = flow_total = 0.0
     mass_total = head_total = sym_total = pump_total = 0.0
     mass_imb_total = head_viol_total = 0.0
+    mass_raw_total = head_raw_total = pump_raw_total = 0.0
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device)
     edge_attr_phys = edge_attr_phys.to(device)
@@ -994,38 +992,51 @@ def train_sequence(
             if node_mask is not None:
                 pred_nodes = pred_nodes[:, :, node_mask, :]
                 target_nodes = target_nodes[:, :, node_mask, :]
-            edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
-            edge_preds = preds['edge_outputs'].float()
-            loss, loss_press, loss_cl, loss_edge = weighted_mtl_loss(
-                pred_nodes,
-                target_nodes.float(),
-                edge_preds,
-                edge_target.float(),
-                loss_fn=loss_fn,
-                w_press=w_press,
-                w_cl=w_cl,
-                w_flow=w_flow,
-            )
+            edge_preds = preds.get('edge_outputs')
+            edge_target = Y_seq.get('edge_outputs')
+            use_flow_loss = edge_target is not None and w_flow != 0
+            if use_flow_loss:
+                edge_target = edge_target.unsqueeze(-1).to(device)
+                loss, loss_press, loss_edge = weighted_mtl_loss(
+                    pred_nodes,
+                    target_nodes.float(),
+                    edge_preds.float(),
+                    edge_target.float(),
+                    loss_fn=loss_fn,
+                    w_press=w_press,
+                    w_flow=w_flow,
+                )
+            else:
+                loss_press = _apply_loss(
+                    pred_nodes[..., 0], target_nodes[..., 0], loss_fn
+                )
+                loss = w_press * loss_press
+                loss_edge = torch.tensor(0.0, device=device)
             for name, val in [
                 ("pressure", loss_press),
-                ("chlorine", loss_cl),
                 ("flow", loss_edge),
             ]:
                 if (not torch.isfinite(val)) or val.item() > 1e6:
                     raise AssertionError(f"{name} loss {val.item():.3e} invalid")
             if physics_loss:
                 flows_mb = edge_preds.squeeze(-1)
-                if hasattr(model, "y_mean") and model.y_mean is not None:
+                if getattr(model, "y_mean_edge", None) is not None:
+                    q_mean = model.y_mean_edge.to(device)
+                    q_std = model.y_std_edge.to(device)
+                    flows_mb = (
+                        flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                    )
+                elif isinstance(getattr(model, "y_mean", None), dict):
                     q_mean = model.y_mean["edge_outputs"].to(device)
                     q_std = model.y_std["edge_outputs"].to(device)
-                    flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                    flows_mb = (
+                        flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                    )
                 flows_mb = (
                     flows_mb.permute(2, 0, 1)
                     .reshape(edge_index.size(1), -1)
                 )
                 dem_seq = X_seq[..., 0]
-                if dem_seq.size(1) > 1:
-                    dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
                 demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
                 if hasattr(model, "x_mean") and model.x_mean is not None:
                     if model.x_mean.ndim == 2:
@@ -1041,6 +1052,7 @@ def train_sequence(
                     node_count,
                     demand=demand_mb,
                     node_type=nt,
+                    flow_reg_weight=flow_reg_weight,
                     return_imbalance=True,
                 )
                 sym_errors = []
@@ -1062,19 +1074,28 @@ def train_sequence(
             if pressure_loss:
                 press = preds['node_outputs'][..., 0].float()
                 flow = edge_preds.squeeze(-1)
-                if hasattr(model, 'y_mean') and model.y_mean is not None:
-                    if isinstance(model.y_mean, dict):
-                        p_mean = model.y_mean['node_outputs'].to(device)
-                        p_std = model.y_std['node_outputs'].to(device)
-                        if p_mean.ndim == 2:
-                            p_mean = p_mean[..., 0]
-                            p_std = p_std[..., 0]
-                        press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                if isinstance(getattr(model, 'y_mean', None), dict):
+                    p_mean = model.y_mean['node_outputs'].to(device)
+                    p_std = model.y_std['node_outputs'].to(device)
+                    if p_mean.ndim == 2:
+                        p_mean = p_mean[..., 0]
+                        p_std = p_std[..., 0]
+                    press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                    if 'edge_outputs' in model.y_mean:
                         q_mean = model.y_mean['edge_outputs'].to(device)
                         q_std = model.y_std['edge_outputs'].to(device)
                         flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
-                    else:
-                        press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                elif getattr(model, 'y_mean', None) is not None:
+                    p_mean = model.y_mean.to(device)
+                    p_std = model.y_std.to(device)
+                    if p_mean.ndim == 2:
+                        p_mean = p_mean[..., 0]
+                        p_std = p_std[..., 0]
+                    press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                    if getattr(model, 'y_mean_edge', None) is not None:
+                        q_mean = model.y_mean_edge.to(device)
+                        q_std = model.y_std_edge.to(device)
+                        flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                 head_loss, head_violation = pressure_headloss_consistency_loss(
                     press,
                     flow,
@@ -1088,13 +1109,14 @@ def train_sequence(
                 head_violation = torch.tensor(0.0, device=device)
             if pump_loss and pump_coeffs is not None:
                 flow_pc = edge_preds.squeeze(-1)
-                if hasattr(model, 'y_mean') and model.y_mean is not None:
-                    if isinstance(model.y_mean, dict):
-                        q_mean = model.y_mean['edge_outputs'].to(device)
-                        q_std = model.y_std['edge_outputs'].to(device)
-                        flow_pc = flow_pc * q_std + q_mean
-                    else:
-                        flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
+                if getattr(model, 'y_mean_edge', None) is not None:
+                    q_mean = model.y_mean_edge.to(device)
+                    q_std = model.y_std_edge.to(device)
+                    flow_pc = flow_pc * q_std + q_mean
+                elif isinstance(getattr(model, 'y_mean', None), dict):
+                    q_mean = model.y_mean['edge_outputs'].to(device)
+                    q_std = model.y_std['edge_outputs'].to(device)
+                    flow_pc = flow_pc * q_std + q_mean
                 pump_loss_val = pump_curve_loss(
                     flow_pc,
                     pump_coeffs,
@@ -1103,6 +1125,9 @@ def train_sequence(
                 )
             else:
                 pump_loss_val = torch.tensor(0.0, device=device)
+            mass_raw = mass_loss.detach()
+            head_raw = head_loss.detach()
+            pump_raw = pump_loss_val.detach()
             mass_loss, head_loss, pump_loss_val = scale_physics_losses(
                 mass_loss,
                 head_loss,
@@ -1121,9 +1146,10 @@ def train_sequence(
                 loss = loss + w_pump * pump_loss_val
         else:
             Y_seq = Y_seq.to(device)
-            loss_press = loss_cl = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
+            loss_press = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
             head_loss = pump_loss_val = torch.tensor(0.0, device=device)
             mass_imb = head_violation = torch.tensor(0.0, device=device)
+            mass_raw = head_raw = pump_raw = torch.tensor(0.0, device=device)
             with autocast(device_type=device.type, enabled=amp):
                 loss = _apply_loss(preds, Y_seq.float(), loss_fn)
         if amp:
@@ -1138,7 +1164,6 @@ def train_sequence(
             optimizer.step()
         total_loss += loss.item() * X_seq.size(0)
         press_total += loss_press.item() * X_seq.size(0)
-        cl_total += loss_cl.item() * X_seq.size(0)
         flow_total += loss_edge.item() * X_seq.size(0)
         mass_total += mass_loss.item() * X_seq.size(0)
         head_total += head_loss.item() * X_seq.size(0)
@@ -1146,13 +1171,15 @@ def train_sequence(
         pump_total += pump_loss_val.item() * X_seq.size(0)
         mass_imb_total += mass_imb.item() * X_seq.size(0)
         head_viol_total += head_violation.item() * X_seq.size(0)
+        mass_raw_total += mass_raw.item() * X_seq.size(0)
+        head_raw_total += head_raw.item() * X_seq.size(0)
+        pump_raw_total += pump_raw.item() * X_seq.size(0)
         if interrupted:
             break
     denom = len(loader.dataset)
     return (
         total_loss / denom,
         press_total / denom,
-        cl_total / denom,
         flow_total / denom,
         mass_total / denom,
         head_total / denom,
@@ -1160,6 +1187,9 @@ def train_sequence(
         pump_total / denom,
         mass_imb_total / denom,
         head_viol_total / denom,
+        mass_raw_total / denom,
+        head_raw_total / denom,
+        pump_raw_total / denom,
     )
 
 
@@ -1186,15 +1216,15 @@ def evaluate_sequence(
     w_head: float = 1.0,
     w_pump: float = 1.0,
     w_press: float = 3.0,
-    w_cl: float = 1.0,
     w_flow: float = 1.0,
+    flow_reg_weight: float = 0.0,
     amp: bool = False,
     progress: bool = True,
-) -> Tuple[float, float, float, float, float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float, float, float]:
     global interrupted
     model.eval()
     total_loss = 0.0
-    press_total = cl_total = flow_total = 0.0
+    press_total = flow_total = 0.0
     mass_total = head_total = sym_total = pump_total = 0.0
     mass_imb_total = head_viol_total = 0.0
     edge_index = edge_index.to(device)
@@ -1239,31 +1269,47 @@ def evaluate_sequence(
                     if node_mask is not None:
                         pred_nodes = pred_nodes[:, :, node_mask, :]
                         target_nodes = target_nodes[:, :, node_mask, :]
-                    edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
-                    edge_preds = preds['edge_outputs'].float()
-                    loss, loss_press, loss_cl, loss_edge = weighted_mtl_loss(
-                        pred_nodes,
-                        target_nodes.float(),
-                        edge_preds,
-                        edge_target.float(),
-                        loss_fn=loss_fn,
-                        w_press=w_press,
-                        w_cl=w_cl,
-                        w_flow=w_flow,
-                    )
+                    edge_preds = preds.get('edge_outputs')
+                    edge_target = Y_seq.get('edge_outputs')
+                    use_flow_loss = edge_target is not None and w_flow != 0
+                    if use_flow_loss:
+                        edge_target = edge_target.unsqueeze(-1).to(device)
+                        loss, loss_press, loss_edge = weighted_mtl_loss(
+                            pred_nodes,
+                            target_nodes.float(),
+                            edge_preds.float(),
+                            edge_target.float(),
+                            loss_fn=loss_fn,
+                            w_press=w_press,
+                            w_flow=w_flow,
+                        )
+                    else:
+                        loss_press = _apply_loss(
+                            pred_nodes[..., 0], target_nodes[..., 0], loss_fn
+                        )
+                        loss = w_press * loss_press
+                        loss_edge = torch.tensor(0.0, device=device)
                     if physics_loss:
                         flows_mb = edge_preds.squeeze(-1)
-                        if hasattr(model, "y_mean") and model.y_mean is not None:
+                        if getattr(model, "y_mean_edge", None) is not None:
+                            q_mean = model.y_mean_edge.to(device)
+                            q_std = model.y_std_edge.to(device)
+                            flows_mb = (
+                                flows_mb * q_std.view(1, 1, -1)
+                                + q_mean.view(1, 1, -1)
+                            )
+                        elif isinstance(getattr(model, "y_mean", None), dict):
                             q_mean = model.y_mean["edge_outputs"].to(device)
                             q_std = model.y_std["edge_outputs"].to(device)
-                            flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                            flows_mb = (
+                                flows_mb * q_std.view(1, 1, -1)
+                                + q_mean.view(1, 1, -1)
+                            )
                         flows_mb = (
                             flows_mb.permute(2, 0, 1)
                             .reshape(edge_index.size(1), -1)
                         )
                         dem_seq = X_seq[..., 0]
-                        if dem_seq.size(1) > 1:
-                            dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
                         demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
                         if hasattr(model, "x_mean") and model.x_mean is not None:
                             if model.x_mean.ndim == 2:
@@ -1279,6 +1325,7 @@ def evaluate_sequence(
                             node_count,
                             demand=demand_mb,
                             node_type=nt,
+                            flow_reg_weight=flow_reg_weight,
                             return_imbalance=True,
                         )
                         sym_errors = []
@@ -1300,19 +1347,28 @@ def evaluate_sequence(
                     if pressure_loss:
                         press = preds['node_outputs'][..., 0].float()
                         flow = edge_preds.squeeze(-1)
-                        if hasattr(model, 'y_mean') and model.y_mean is not None:
-                            if isinstance(model.y_mean, dict):
-                                p_mean = model.y_mean['node_outputs'].to(device)
-                                p_std = model.y_std['node_outputs'].to(device)
-                                if p_mean.ndim == 2:
-                                    p_mean = p_mean[..., 0]
-                                    p_std = p_std[..., 0]
-                                press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                        if isinstance(getattr(model, 'y_mean', None), dict):
+                            p_mean = model.y_mean['node_outputs'].to(device)
+                            p_std = model.y_std['node_outputs'].to(device)
+                            if p_mean.ndim == 2:
+                                p_mean = p_mean[..., 0]
+                                p_std = p_std[..., 0]
+                            press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                            if 'edge_outputs' in model.y_mean:
                                 q_mean = model.y_mean['edge_outputs'].to(device)
                                 q_std = model.y_std['edge_outputs'].to(device)
                                 flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
-                            else:
-                                press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                        elif getattr(model, 'y_mean', None) is not None:
+                            p_mean = model.y_mean.to(device)
+                            p_std = model.y_std.to(device)
+                            if p_mean.ndim == 2:
+                                p_mean = p_mean[..., 0]
+                                p_std = p_std[..., 0]
+                            press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                            if getattr(model, 'y_mean_edge', None) is not None:
+                                q_mean = model.y_mean_edge.to(device)
+                                q_std = model.y_std_edge.to(device)
+                                flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                         head_loss, head_violation = pressure_headloss_consistency_loss(
                             press,
                             flow,
@@ -1326,13 +1382,14 @@ def evaluate_sequence(
                         head_violation = torch.tensor(0.0, device=device)
                     if pump_loss and pump_coeffs is not None:
                         flow_pc = edge_preds.squeeze(-1)
-                        if hasattr(model, 'y_mean') and model.y_mean is not None:
-                            if isinstance(model.y_mean, dict):
-                                q_mean = model.y_mean['edge_outputs'].to(device)
-                                q_std = model.y_std['edge_outputs'].to(device)
-                                flow_pc = flow_pc * q_std + q_mean
-                            else:
-                                flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
+                        if getattr(model, 'y_mean_edge', None) is not None:
+                            q_mean = model.y_mean_edge.to(device)
+                            q_std = model.y_std_edge.to(device)
+                            flow_pc = flow_pc * q_std + q_mean
+                        elif isinstance(getattr(model, 'y_mean', None), dict):
+                            q_mean = model.y_mean['edge_outputs'].to(device)
+                            q_std = model.y_std['edge_outputs'].to(device)
+                            flow_pc = flow_pc * q_std + q_mean
                         pump_loss_val = pump_curve_loss(
                             flow_pc,
                             pump_coeffs,
@@ -1359,13 +1416,12 @@ def evaluate_sequence(
                         loss = loss + w_pump * pump_loss_val
                 else:
                     Y_seq = Y_seq.to(device)
-                    loss_press = loss_cl = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
+                    loss_press = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
                     head_loss = pump_loss_val = torch.tensor(0.0, device=device)
                     mass_imb = head_violation = torch.tensor(0.0, device=device)
                     loss = _apply_loss(preds, Y_seq.float(), loss_fn)
             total_loss += loss.item() * X_seq.size(0)
             press_total += loss_press.item() * X_seq.size(0)
-            cl_total += loss_cl.item() * X_seq.size(0)
             flow_total += loss_edge.item() * X_seq.size(0)
             mass_total += mass_loss.item() * X_seq.size(0)
             head_total += head_loss.item() * X_seq.size(0)
@@ -1379,7 +1435,6 @@ def evaluate_sequence(
     return (
         total_loss / denom,
         press_total / denom,
-        cl_total / denom,
         flow_total / denom,
         mass_total / denom,
         head_total / denom,
@@ -1399,6 +1454,13 @@ PLOTS_DIR = REPO_ROOT / "plots"
 
 def main(args: argparse.Namespace):
     configure_seeds(args.seed, args.deterministic)
+    if args.w_flow == 0 and (
+        args.physics_loss or args.pressure_loss or args.pump_loss
+    ):
+        warnings.warn(
+            "Flow loss weight is zero; physics losses will be applied without flow MAE regularization.",
+            RuntimeWarning,
+        )
     signal.signal(signal.SIGINT, _signal_handler)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     edge_index_np = np.load(args.edge_index_path)
@@ -1515,15 +1577,11 @@ def main(args: argparse.Namespace):
     else:
         sample_dim = data_list[0].num_node_features
     base_dim = sample_dim - pump_count
-    if base_dim == 4:
-        has_chlorine = True
-    elif base_dim == 3:
-        has_chlorine = False
-    else:
+    if base_dim != 3:
         raise ValueError(
             f"Dataset provides {sample_dim} features per node but the network has {pump_count} pumps."
         )
-    args.output_dim = 2 if has_chlorine else 1
+    args.output_dim = 1
 
     norm_md5 = None
     if args.normalize:
@@ -1578,12 +1636,8 @@ def main(args: argparse.Namespace):
                     per_node=args.per_node_norm,
                 )
         print("Target normalization stats:")
-        pressure_stats, chlorine_stats = summarize_target_norm_stats(
-            y_mean, y_std, has_chlorine
-        )
+        pressure_stats = summarize_target_norm_stats(y_mean, y_std)
         print("Pressure mean/std:", *pressure_stats)
-        if chlorine_stats is not None:
-            print("Chlorine mean/std:", *chlorine_stats)
 
         import hashlib
 
@@ -1613,15 +1667,56 @@ def main(args: argparse.Namespace):
             "edge_std": edge_std.to(torch.float32).cpu().numpy(),
         }
         if isinstance(y_mean, dict):
-            norm_stats["y_mean"] = {k: v.to(torch.float32).cpu().numpy() for k, v in y_mean.items()}
-            norm_stats["y_std"] = {k: y_std[k].to(torch.float32).cpu().numpy() for k in y_mean}
+            node_mean = y_mean.get("node_outputs")
+            node_std = y_std.get("node_outputs")
+            norm_stats["y_mean_node"] = node_mean.to(torch.float32).cpu().numpy()
+            norm_stats["y_std_node"] = node_std.to(torch.float32).cpu().numpy()
+            edge_mean_t = y_mean.get("edge_outputs")
+            edge_std_t = y_std.get("edge_outputs")
+            if edge_mean_t is not None and edge_std_t is not None:
+                norm_stats["y_mean_edge"] = edge_mean_t.to(torch.float32).cpu().numpy()
+                norm_stats["y_std_edge"] = edge_std_t.to(torch.float32).cpu().numpy()
+            # Backward compatibility for older checkpoints
+            norm_stats["y_mean"] = norm_stats["y_mean_node"]
+            norm_stats["y_std"] = norm_stats["y_std_node"]
         else:
-            norm_stats["y_mean"] = y_mean.to(torch.float32).cpu().numpy()
-            norm_stats["y_std"] = y_std.to(torch.float32).cpu().numpy()
+            norm_stats["y_mean_node"] = y_mean.to(torch.float32).cpu().numpy()
+            norm_stats["y_std_node"] = y_std.to(torch.float32).cpu().numpy()
+            norm_stats["y_mean"] = norm_stats["y_mean_node"]
+            norm_stats["y_std"] = norm_stats["y_std_node"]
         norm_stats["hash"] = norm_md5
     else:
         x_mean = x_std = y_mean = y_std = None
         norm_stats = None
+
+    if args.auto_w_flow:
+        if y_std is None:
+            if seq_mode:
+                _, _, _, y_std_tmp = compute_sequence_norm_stats(
+                    X_raw, Y_raw, per_node=args.per_node_norm
+                )
+            else:
+                _, _, _, y_std_tmp = compute_norm_stats(
+                    data_list, per_node=args.per_node_norm
+                )
+        else:
+            y_std_tmp = y_std
+        if isinstance(y_std_tmp, dict) and y_std_tmp.get("edge_outputs") is not None:
+            press_std = y_std_tmp["node_outputs"].mean().item()
+            flow_std = y_std_tmp["edge_outputs"].mean().item()
+            if flow_std > 0:
+                args.w_flow = args.w_press * (press_std / flow_std)
+                print(f"Auto-scaled w_flow to {args.w_flow:.4e}")
+            else:
+                warnings.warn(
+                    "Flow standard deviation is zero; cannot auto-scale w_flow.",
+                    UserWarning,
+                )
+        else:
+            warnings.warn(
+                "Edge flow statistics not available; cannot auto-scale w_flow.",
+                UserWarning,
+            )
 
     if not seq_mode:
         if args.neighbor_sampling:
@@ -1686,7 +1781,7 @@ def main(args: argparse.Namespace):
                     persistent_workers=args.workers > 0,
                 )
 
-    expected_in_dim = (4 if has_chlorine else 3) + len(wn.pump_name_list)
+    expected_in_dim = 3 + len(wn.pump_name_list)
 
     if seq_mode:
         sample_dim = data_ds.X.shape[-1]
@@ -1701,7 +1796,7 @@ def main(args: argparse.Namespace):
                 in_channels=sample_dim,
                 hidden_channels=args.hidden_dim,
                 edge_dim=edge_attr.shape[1],
-                node_output_dim=2 if has_chlorine else 1,
+                node_output_dim=1,
                 edge_output_dim=1,
                 num_layers=args.num_layers,
                 use_attention=args.use_attention,
@@ -1817,73 +1912,35 @@ def main(args: argparse.Namespace):
 
     # expose normalization stats on the model for later un-normalisation
     if args.normalize:
-        if seq_mode and getattr(data_ds, "multi", False):
-            # for multi-task sequence data retain separate stats for node and
-            # edge outputs so physics losses can un-normalize correctly
-            model.y_mean = y_mean
-            model.y_std = y_std
+        if isinstance(y_mean, dict):
+            model.y_mean = y_mean.get("node_outputs")
+            model.y_std = y_std.get("node_outputs")
+            model.y_mean_edge = y_mean.get("edge_outputs")
+            model.y_std_edge = y_std.get("edge_outputs")
         else:
             model.y_mean = y_mean
             model.y_std = y_std
+            model.y_mean_edge = model.y_std_edge = None
         model.x_mean = x_mean
         model.x_std = x_std
     else:
         model.x_mean = model.x_std = model.y_mean = model.y_std = None
+        model.y_mean_edge = model.y_std_edge = None
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=6)
 
-    mass_scale = args.mass_scale
-    head_scale = args.head_scale
-    pump_scale = args.pump_scale
-    if seq_mode and (
-        (args.physics_loss and mass_scale <= 0)
-        or (args.pressure_loss and head_scale <= 0)
-        or (args.pump_loss and pump_scale <= 0)
-    ):
-        base_eval = evaluate_sequence(
-            model,
-            loader,
-            data_ds.edge_index,
-            data_ds.edge_attr,
-            edge_attr_phys,
-            data_ds.node_type,
-            data_ds.edge_type,
-            edge_pairs,
-            device,
-            pump_coeffs_tensor,
-            loss_fn=args.loss_fn,
-            physics_loss=args.physics_loss,
-            pressure_loss=args.pressure_loss,
-            pump_loss=args.pump_loss,
-            node_mask=loss_mask,
-            mass_scale=1.0,
-            head_scale=1.0,
-            pump_scale=1.0,
-            w_mass=args.w_mass,
-            w_head=args.w_head,
-            w_pump=args.w_pump,
-            w_press=args.w_press,
-            w_cl=args.w_cl,
-            w_flow=args.w_flow,
-            amp=args.amp,
-            progress=False,
-        )
-        if args.physics_loss and mass_scale <= 0:
-            mass_scale = float(base_eval[4]) if base_eval[4] > 0 else 1.0
-        if args.pressure_loss and head_scale <= 0:
-            head_scale = float(base_eval[5]) if base_eval[5] > 0 else 1.0
-        if args.pump_loss and pump_scale <= 0:
-            pump_scale = float(base_eval[7]) if base_eval[7] > 0 else 1.0
-    MIN_SCALE = 1e-3
-    mass_scale = max(mass_scale, MIN_SCALE)
-    head_scale = max(head_scale, MIN_SCALE)
-    pump_scale = max(pump_scale, MIN_SCALE)
-    args.mass_scale = mass_scale
-    args.head_scale = head_scale
-    args.pump_scale = pump_scale
+    mass_scale, head_scale, pump_scale = compute_loss_scales(
+        X_raw,
+        Y_raw,
+        edge_attr_phys_np,
+        edge_types,
+        pump_coeffs_np,
+        args,
+        seq_mode,
+    )
     if seq_mode and (args.physics_loss or args.pressure_loss or args.pump_loss):
         print(
             f"Using physics loss scales: mass={mass_scale:.4e}, head={head_scale:.4e}, pump={pump_scale:.4e}"
@@ -1929,11 +1986,11 @@ def main(args: argparse.Namespace):
         )
         if seq_mode:
             f.write(
-                "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation,val_press_loss,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation,lr\n"
+                "epoch,train_loss,val_loss,press_loss,flow_loss,mass_imbalance,head_violation,val_press_loss,val_flow_loss,val_mass_imbalance,val_head_violation,lr\n"
             )
         else:
             f.write(
-                "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,val_press_loss,val_cl_loss,val_flow_loss,lr\n"
+                "epoch,train_loss,val_loss,press_loss,flow_loss,val_press_loss,val_flow_loss,lr\n"
             )
         best_val = float("inf")
         patience = 0
@@ -1963,14 +2020,26 @@ def main(args: argparse.Namespace):
                     w_head=args.w_head,
                     w_pump=args.w_pump,
                     w_press=args.w_press,
-                    w_cl=args.w_cl,
                     w_flow=args.w_flow,
+                    flow_reg_weight=args.flow_reg_weight,
                     amp=args.amp,
                     progress=args.progress,
                 )
                 loss = loss_tuple[0]
-                press_l, cl_l, flow_l, mass_l, head_l, sym_l, pump_l, mass_imb, head_viols = loss_tuple[1:]
-                comp = [press_l, cl_l, flow_l, mass_l, sym_l]
+                (
+                    press_l,
+                    flow_l,
+                    mass_l,
+                    head_l,
+                    sym_l,
+                    pump_l,
+                    mass_imb,
+                    head_viols,
+                    raw_mass,
+                    raw_head,
+                    raw_pump,
+                ) = loss_tuple[1:]
+                comp = [press_l, flow_l, mass_l, sym_l]
                 if args.pressure_loss:
                     comp.append(head_l)
                 if args.pump_loss:
@@ -2000,19 +2069,22 @@ def main(args: argparse.Namespace):
                         w_head=args.w_head,
                         w_pump=args.w_pump,
                         w_press=args.w_press,
-                        w_cl=args.w_cl,
                         w_flow=args.w_flow,
+                        flow_reg_weight=args.flow_reg_weight,
                         amp=args.amp,
                         progress=args.progress,
                     )
                     val_loss = val_tuple[0]
-                    val_press_l, val_cl_l, val_flow_l, val_mass_imb, val_head_viols = val_tuple[1:6]
+                    val_press_l = val_tuple[1]
+                    val_flow_l = val_tuple[2]
+                    val_mass_imb = val_tuple[7]
+                    val_head_viols = val_tuple[8]
                 else:
                     val_loss = loss
-                    val_press_l, val_cl_l, val_flow_l = press_l, cl_l, flow_l
+                    val_press_l, val_flow_l = press_l, flow_l
                     val_mass_imb, val_head_viols = mass_imb, head_viols
             else:
-                loss, press_l, cl_l, flow_l = train(
+                loss, press_l, flow_l = train(
                     model,
                     loader,
                     optimizer,
@@ -2022,10 +2094,12 @@ def main(args: argparse.Namespace):
                     loss_fn=args.loss_fn,
                     node_mask=loss_mask,
                     progress=args.progress,
+                    w_press=args.w_press,
+                    w_flow=args.w_flow,
                 )
-                loss_components.append((press_l, cl_l, flow_l))
+                loss_components.append((press_l, flow_l))
                 if val_loader is not None and not interrupted:
-                    val_loss, val_press_l, val_cl_l, val_flow_l = evaluate(
+                    val_loss, val_press_l, val_flow_l = evaluate(
                         model,
                         val_loader,
                         device,
@@ -2033,17 +2107,19 @@ def main(args: argparse.Namespace):
                         loss_fn=args.loss_fn,
                         node_mask=loss_mask,
                         progress=args.progress,
+                        w_press=args.w_press,
+                        w_flow=args.w_flow,
                     )
                 else:
                     val_loss = loss
-                    val_press_l, val_cl_l, val_flow_l = press_l, cl_l, flow_l
+                    val_press_l, val_flow_l = press_l, flow_l
             scheduler.step(val_loss)
             curr_lr = optimizer.param_groups[0]['lr']
             losses.append((loss, val_loss))
             if seq_mode:
                 f.write(
-                    f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},{mass_imb:.6f},{head_viols:.6f},"
-                    f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols:.6f},{curr_lr:.6e}\n"
+                    f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{flow_l:.6f},{mass_imb:.6f},{head_viols:.6f},"
+                    f"{val_press_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols:.6f},{curr_lr:.6e}\n"
                 )
                 if tb_writer is not None:
                     tb_writer.add_scalars(
@@ -2051,7 +2127,6 @@ def main(args: argparse.Namespace):
                         {
                             "total": loss,
                             "pressure": press_l,
-                            "chlorine": cl_l,
                             "flow": flow_l,
                         },
                         epoch,
@@ -2061,7 +2136,6 @@ def main(args: argparse.Namespace):
                         {
                             "total": val_loss,
                             "pressure": val_press_l,
-                            "chlorine": val_cl_l,
                             "flow": val_flow_l,
                         },
                         epoch,
@@ -2078,7 +2152,7 @@ def main(args: argparse.Namespace):
                     )
                 if args.physics_loss:
                     msg = (
-                        f"Epoch {epoch}: press={press_l:.3f}, cl={cl_l:.3f}, flow={flow_l:.3f}, "
+                        f"Epoch {epoch}: press={press_l:.3f}, flow={flow_l:.3f}, "
                         f"mass={mass_l:.3f}, sym={sym_l:.3f}, imb={mass_imb:.3f}"
                     )
                     if args.pressure_loss:
@@ -2095,8 +2169,8 @@ def main(args: argparse.Namespace):
                     print(f"Epoch {epoch}")
             else:
                 f.write(
-                    f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
-                    f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e}\n"
+                    f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{flow_l:.6f},"
+                    f"{val_press_l:.6f},{val_flow_l:.6f},{curr_lr:.6e}\n"
                 )
                 if tb_writer is not None:
                     tb_writer.add_scalars(
@@ -2104,7 +2178,6 @@ def main(args: argparse.Namespace):
                         {
                             "total": loss,
                             "pressure": press_l,
-                            "chlorine": cl_l,
                             "flow": flow_l,
                         },
                         epoch,
@@ -2114,14 +2187,37 @@ def main(args: argparse.Namespace):
                         {
                             "total": val_loss,
                             "pressure": val_press_l,
-                            "chlorine": val_cl_l,
                             "flow": val_flow_l,
                         },
                         epoch,
                     )
                 print(
-                    f"Epoch {epoch}: press={press_l:.3f}, cl={cl_l:.3f}, flow={flow_l:.3f}"
+                    f"Epoch {epoch}: press={press_l:.3f}, flow={flow_l:.3f}"
                 )
+            if args.auto_w_physics and epoch == start_epoch:
+                scaled = []
+                if args.physics_loss and raw_mass > 0:
+                    scaled.append(("w_mass", raw_mass / max(mass_scale, 1e-8)))
+                if args.pressure_loss and raw_head > 0:
+                    scaled.append(("w_head", raw_head / max(head_scale, 1e-8)))
+                if args.pump_loss and raw_pump > 0:
+                    scaled.append(("w_pump", raw_pump / max(pump_scale, 1e-8)))
+                if scaled:
+                    target = args.auto_w_physics
+                    if target <= 0:
+                        target = sum(v for _, v in scaled) / len(scaled)
+                    for name, val in scaled:
+                        setattr(args, name, target / max(val, 1e-8))
+                    weights_info = {
+                        "w_mass": args.w_mass,
+                        "w_head": args.w_head,
+                        "w_pump": args.w_pump,
+                    }
+                    f.write(f"auto_w_physics: {weights_info}\n")
+                    print(
+                        "Auto-scaled physics weights to "
+                        f"w_mass={args.w_mass:.3f}, w_head={args.w_head:.3f}, w_pump={args.w_pump:.3f}"
+                    )
             if val_loss < best_val - 1e-6:
                 best_val = val_loss
                 patience = 0
@@ -2140,26 +2236,34 @@ def main(args: argparse.Namespace):
                         {
                             "x_mean": norm_stats["x_mean"],
                             "x_std": norm_stats["x_std"],
-                            "y_mean": norm_stats["y_mean"],
-                            "y_std": norm_stats["y_std"],
+                            "y_mean_node": norm_stats["y_mean_node"],
+                            "y_std_node": norm_stats["y_std_node"],
                             "edge_mean": norm_stats["edge_mean"],
                             "edge_std": norm_stats["edge_std"],
                         }
                     )
+                    if "y_mean_edge" in norm_stats:
+                        meta.update(
+                            {
+                                "y_mean_edge": norm_stats["y_mean_edge"],
+                                "y_std_edge": norm_stats["y_std_edge"],
+                            }
+                        )
+                    # backward compatibility
+                    meta["y_mean"] = norm_stats["y_mean_node"]
+                    meta["y_std"] = norm_stats["y_std_node"]
                 ckpt["model_meta"] = meta
                 torch.save(ckpt, model_path)
                 if norm_stats is not None:
-                    y_mean_np = norm_stats["y_mean"]
-                    y_std_np = norm_stats["y_std"]
-                    if isinstance(y_mean_np, dict):
+                    if "y_mean_edge" in norm_stats:
                         np.savez(
                             norm_path,
                             x_mean=norm_stats["x_mean"],
                             x_std=norm_stats["x_std"],
-                            y_mean_node=y_mean_np["node_outputs"],
-                            y_std_node=y_std_np["node_outputs"],
-                            y_mean_edge=y_mean_np["edge_outputs"],
-                            y_std_edge=y_std_np["edge_outputs"],
+                            y_mean_node=norm_stats["y_mean_node"],
+                            y_std_node=norm_stats["y_std_node"],
+                            y_mean_edge=norm_stats["y_mean_edge"],
+                            y_std_edge=norm_stats["y_std_edge"],
                             edge_mean=norm_stats["edge_mean"],
                             edge_std=norm_stats["edge_std"],
                         )
@@ -2168,8 +2272,8 @@ def main(args: argparse.Namespace):
                             norm_path,
                             x_mean=norm_stats["x_mean"],
                             x_std=norm_stats["x_std"],
-                            y_mean=y_mean_np,
-                            y_std=y_std_np,
+                            y_mean=norm_stats["y_mean_node"],
+                            y_std=norm_stats["y_std_node"],
                             edge_mean=norm_stats["edge_mean"],
                             edge_std=norm_stats["edge_std"],
                         )
@@ -2270,16 +2374,83 @@ def main(args: argparse.Namespace):
             else checkpoint
         )
         model.load_state_dict(state)
+
+        norm_stats = checkpoint.get("norm_stats") if isinstance(checkpoint, dict) else None
+        if norm_stats is None:
+            norm_path = Path(str(Path(model_path).with_suffix("")) + "_norm.npz")
+            if norm_path.exists():
+                arr = np.load(norm_path)
+                if "y_mean_node" in arr:
+                    norm_stats = {
+                        "y_mean_node": arr["y_mean_node"],
+                        "y_std_node": arr["y_std_node"],
+                    }
+                    if "y_mean_edge" in arr:
+                        norm_stats["y_mean_edge"] = arr["y_mean_edge"]
+                        norm_stats["y_std_edge"] = arr["y_std_edge"]
+                elif "y_mean" in arr:
+                    norm_stats = {"y_mean": arr["y_mean"], "y_std": arr["y_std"]}
+        if norm_stats is not None:
+            if "y_mean_node" in norm_stats:
+                model.y_mean = torch.tensor(
+                    norm_stats["y_mean_node"], dtype=torch.float32, device=device
+                )
+                model.y_std = torch.tensor(
+                    norm_stats["y_std_node"], dtype=torch.float32, device=device
+                )
+                if "y_mean_edge" in norm_stats:
+                    model.y_mean_edge = torch.tensor(
+                        norm_stats["y_mean_edge"], dtype=torch.float32, device=device
+                    )
+                    model.y_std_edge = torch.tensor(
+                        norm_stats["y_std_edge"], dtype=torch.float32, device=device
+                    )
+                else:
+                    model.y_mean_edge = model.y_std_edge = None
+            else:
+                y_mean_np = norm_stats.get("y_mean")
+                y_std_np = norm_stats.get("y_std")
+                if isinstance(y_mean_np, dict):
+                    node_mean = y_mean_np.get("node_outputs")
+                    node_std = y_std_np.get("node_outputs")
+                    model.y_mean = torch.tensor(
+                        node_mean, dtype=torch.float32, device=device
+                    )
+                    model.y_std = torch.tensor(
+                        node_std, dtype=torch.float32, device=device
+                    )
+                    y_mean_edge_np = y_mean_np.get("edge_outputs")
+                    y_std_edge_np = y_std_np.get("edge_outputs")
+                    if y_mean_edge_np is not None:
+                        model.y_mean_edge = torch.tensor(
+                            y_mean_edge_np, dtype=torch.float32, device=device
+                        )
+                        model.y_std_edge = torch.tensor(
+                            y_std_edge_np, dtype=torch.float32, device=device
+                        )
+                    else:
+                        model.y_mean_edge = model.y_std_edge = None
+                elif y_mean_np is not None:
+                    model.y_mean = torch.tensor(
+                        y_mean_np, dtype=torch.float32, device=device
+                    )
+                    model.y_std = torch.tensor(
+                        y_std_np, dtype=torch.float32, device=device
+                    )
+                    model.y_mean_edge = model.y_std_edge = None
+                else:
+                    model.y_mean = model.y_std = None
+                    model.y_mean_edge = model.y_std_edge = None
+        else:
+            model.y_mean = model.y_std = None
+            model.y_mean_edge = model.y_std_edge = None
+        if args.normalize and model.y_mean is None:
+            raise RuntimeError("Normalization statistics not found for denormalization")
         model.eval()
 
         p_stats = RunningStats()
-        c_stats = RunningStats() if has_chlorine else None
-        f_stats = RunningStats()
-        sample_cap = int(max(args.eval_sample, 0))
-        sample_preds_p: List[float] = []
-        sample_true_p: List[float] = []
-        sample_preds_c: List[float] = []
-        sample_true_c: List[float] = []
+        pred_samples: List[float] = []
+        true_samples: List[float] = []
 
         exclude = set(wn.reservoir_name_list) | set(wn.tank_name_list)
         node_mask_np = np.array([n not in exclude for n in wn.node_name_list])
@@ -2311,48 +2482,35 @@ def main(args: argparse.Namespace):
                         Y_edge = None
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         if isinstance(model.y_mean, dict):
-                            y_mean_node = model.y_mean['node_outputs'].to(node_pred.device)
-                            y_std_node = model.y_std['node_outputs'].to(node_pred.device)
-                            node_pred = node_pred * y_std_node + y_mean_node
-                            Y_node = Y_node * y_std_node + y_mean_node
-                            if edge_pred is not None and Y_edge is not None:
-                                y_mean_edge = model.y_mean['edge_outputs'].to(node_pred.device)
-                                y_std_edge = model.y_std['edge_outputs'].to(node_pred.device)
-                                edge_pred = edge_pred.squeeze(-1)
-                                edge_pred = edge_pred * y_std_edge + y_mean_edge
-                                Y_edge = Y_edge * y_std_edge + y_mean_edge
+                            y_mean_node = model.y_mean["node_outputs"].to(node_pred.device)
+                            y_std_node = model.y_std["node_outputs"].to(node_pred.device)
                         else:
-                            y_std = model.y_std.to(node_pred.device)
-                            y_mean = model.y_mean.to(node_pred.device)
-                            node_pred = node_pred * y_std + y_mean
-                            Y_node = Y_node * y_std + y_mean
+                            y_mean_node = model.y_mean.to(node_pred.device)
+                            y_std_node = model.y_std.to(node_pred.device)
+                        node_pred = node_pred * y_std_node + y_mean_node
+                        Y_node = Y_node * y_std_node + y_mean_node
+                    if (
+                        edge_pred is not None
+                        and Y_edge is not None
+                        and getattr(model, "y_mean_edge", None) is not None
+                    ):
+                        y_mean_edge = model.y_mean_edge.to(node_pred.device)
+                        y_std_edge = model.y_std_edge.to(node_pred.device)
+                        edge_pred = edge_pred.squeeze(-1)
+                        edge_pred = edge_pred * y_std_edge + y_mean_edge
+                        Y_edge = Y_edge * y_std_edge + y_mean_edge
 
                     pred_p = node_pred[..., 0].reshape(-1, node_mask.numel())
                     true_p = Y_node[..., 0].reshape(-1, node_mask.numel())
                     pred_p = pred_p[:, node_mask].reshape(-1)
                     true_p = true_p[:, node_mask].reshape(-1)
-                    p_stats.update(pred_p.cpu().numpy(), true_p.cpu().numpy())
-                    if sample_cap and len(sample_preds_p) < sample_cap:
-                        take = min(sample_cap - len(sample_preds_p), pred_p.numel())
-                        sample_preds_p.extend(pred_p[:take].cpu().numpy())
-                        sample_true_p.extend(true_p[:take].cpu().numpy())
-
-                    if has_chlorine and node_pred.shape[-1] > 1:
-                        pred_c = node_pred[..., 1].reshape(-1, node_mask.numel())
-                        true_c = Y_node[..., 1].reshape(-1, node_mask.numel())
-                        pred_c = pred_c[:, node_mask].reshape(-1)
-                        true_c = true_c[:, node_mask].reshape(-1)
-                        if c_stats is not None:
-                            c_stats.update(pred_c.cpu().numpy(), true_c.cpu().numpy())
-                        if sample_cap and len(sample_preds_c) < sample_cap:
-                            take = min(sample_cap - len(sample_preds_c), pred_c.numel())
-                            sample_preds_c.extend(pred_c[:take].cpu().numpy())
-                            sample_true_c.extend(true_c[:take].cpu().numpy())
-
-                    if edge_pred is not None and Y_edge is not None:
-                        pred_f = edge_pred.reshape(-1)
-                        true_f = Y_edge.reshape(-1)
-                        f_stats.update(pred_f.cpu().numpy(), true_f.cpu().numpy())
+                    pred_np = pred_p.cpu().numpy()
+                    true_np = true_p.cpu().numpy()
+                    p_stats.update(pred_np, true_np)
+                    if args.eval_sample != 0 and len(pred_samples) < args.eval_sample:
+                        remain = args.eval_sample - len(pred_samples)
+                        pred_samples.extend(pred_np[:remain])
+                        true_samples.extend(true_np[:remain])
             else:
                 for batch in test_loader:
                     batch = batch.to(device, non_blocking=True)
@@ -2365,33 +2523,43 @@ def main(args: argparse.Namespace):
                             getattr(batch, "edge_type", None),
                         )
                     if hasattr(model, "y_mean") and model.y_mean is not None:
+                        node_out = out["node_outputs"] if isinstance(out, dict) else out
                         if isinstance(model.y_mean, dict):
-                            y_mean_node = model.y_mean['node_outputs'].to(out.device)
-                            y_std_node = model.y_std['node_outputs'].to(out.device)
-                            node_out = (
-                                out["node_outputs"] if isinstance(out, dict) else out
-                            )
-                            node_out = node_out * y_std_node + y_mean_node
-                            batch_y = batch.y * y_std_node + y_mean_node
-                            if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
-                                y_mean_edge = model.y_mean['edge_outputs'].to(out.device)
-                                y_std_edge = model.y_std['edge_outputs'].to(out.device)
-                                edge_out = out["edge_outputs"].squeeze(-1)
-                                edge_y = batch.edge_y.squeeze(-1)
-                                edge_out = edge_out * y_std_edge + y_mean_edge
-                                edge_y = edge_y * y_std_edge + y_mean_edge
-                            else:
-                                edge_out = edge_y = None
+                            y_mean_node = model.y_mean["node_outputs"].to(out.device)
+                            y_std_node = model.y_std["node_outputs"].to(out.device)
+                            num_nodes = y_mean_node.shape[0]
+                            node_out = node_out.view(batch.num_graphs, num_nodes, -1)
+                            batch_y = batch.y.view(batch.num_graphs, num_nodes, -1)
+                            node_out = node_out * y_std_node.view(1, num_nodes, -1) + y_mean_node.view(1, num_nodes, -1)
+                            batch_y = batch_y * y_std_node.view(1, num_nodes, -1) + y_mean_node.view(1, num_nodes, -1)
+                            node_out = node_out.view(-1, node_out.shape[-1])
+                            batch_y = batch_y.view(-1, batch_y.shape[-1])
                         else:
                             y_std = model.y_std.to(out.device)
                             y_mean = model.y_mean.to(out.device)
-                            node_out = (
-                                out["node_outputs"] if isinstance(out, dict) else out
-                            )
                             node_out = node_out * y_std + y_mean
                             batch_y = batch.y * y_std + y_mean
-                            edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
-                            edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
+                        edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
+                        edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
+                        if (
+                            edge_out is not None
+                            and edge_y is not None
+                            and getattr(model, "y_mean_edge", None) is not None
+                        ):
+                            y_mean_edge = model.y_mean_edge.to(out.device)
+                            y_std_edge = model.y_std_edge.to(out.device)
+                            num_edges = y_mean_edge.shape[0]
+                            edge_out = edge_out.view(batch.num_graphs, num_edges, -1)
+                            edge_y = edge_y.view(batch.num_graphs, num_edges, -1)
+                            edge_out = edge_out * y_std_edge.view(1, num_edges, -1) + y_mean_edge.view(1, num_edges, -1)
+                            edge_y = edge_y * y_std_edge.view(1, num_edges, -1) + y_mean_edge.view(1, num_edges, -1)
+                            edge_out = edge_out.view(-1, edge_out.shape[-1])
+                            edge_y = edge_y.view(-1, edge_y.shape[-1])
+                        else:
+                            if edge_out is not None:
+                                edge_out = edge_out.squeeze(-1)
+                            if edge_y is not None:
+                                edge_y = edge_y.squeeze(-1)
                     else:
                         node_out = out["node_outputs"] if isinstance(out, dict) else out
                         batch_y = batch.y
@@ -2405,64 +2573,22 @@ def main(args: argparse.Namespace):
                     mask_batch = node_mask.repeat(batch.num_graphs)
                     pred_p = node_out[:, 0][mask_batch]
                     true_p = batch_y[:, 0][mask_batch]
-                    p_stats.update(pred_p.cpu().numpy(), true_p.cpu().numpy())
-                    if sample_cap and len(sample_preds_p) < sample_cap:
-                        take = min(sample_cap - len(sample_preds_p), pred_p.numel())
-                        sample_preds_p.extend(pred_p[:take].cpu().numpy())
-                        sample_true_p.extend(true_p[:take].cpu().numpy())
+                    pred_np = pred_p.cpu().numpy()
+                    true_np = true_p.cpu().numpy()
+                    p_stats.update(pred_np, true_np)
+                    if args.eval_sample != 0 and len(pred_samples) < args.eval_sample:
+                        remain = args.eval_sample - len(pred_samples)
+                        pred_samples.extend(pred_np[:remain])
+                        true_samples.extend(true_np[:remain])
 
-                    if has_chlorine and node_out.shape[1] > 1:
-                        pred_c = node_out[:, 1][mask_batch]
-                        true_c = batch_y[:, 1][mask_batch]
-                        if c_stats is not None:
-                            c_stats.update(pred_c.cpu().numpy(), true_c.cpu().numpy())
-                        if sample_cap and len(sample_preds_c) < sample_cap:
-                            take = min(sample_cap - len(sample_preds_c), pred_c.numel())
-                            sample_preds_c.extend(pred_c[:take].cpu().numpy())
-                            sample_true_c.extend(true_c[:take].cpu().numpy())
-
-                    if edge_out is not None and edge_y is not None:
-                        pred_f = edge_out.reshape(-1)
-                        true_f = edge_y.reshape(-1)
-                        f_stats.update(pred_f.cpu().numpy(), true_f.cpu().numpy())
-
-        save_accuracy_metrics(
-            p_stats,
-            run_name,
-            chlorine_stats=c_stats,
-            flow_stats=f_stats if f_stats.count > 0 else None,
-        )
-
-        if sample_preds_p:
-            preds_p = np.asarray(sample_preds_p)
-            true_p = np.asarray(sample_true_p)
-            if sample_preds_c:
-                preds_c = np.asarray(sample_preds_c)
-                true_c = np.asarray(sample_true_c)
-                err_c = preds_c - true_c
-            else:
-                preds_c = true_c = err_c = None
-            err_p = preds_p - true_p
-
-            save_scatter_plots(
-                true_p,
-                preds_p,
-                true_c,
-                preds_c,
-                run_name,
-            )
-            if seq_mode:
-                plot_sequence_prediction(model, test_ds, run_name)
-            plot_error_histograms(err_p, err_c, run_name)
-            labels = ["demand", "pressure"]
-            if has_chlorine:
-                labels.append("chlorine")
-            labels.append("elevation")
-            labels += [f"pump_{i}" for i in range(len(wn.pump_name_list))]
-            X_flat = X_raw.reshape(-1, X_raw.shape[-1])
-            sample_size = min(sample_cap if sample_cap else X_flat.shape[0], X_flat.shape[0])
-            if sample_size > 0:
-                correlation_heatmap(X_flat[:sample_size], labels, run_name)
+        if args.normalize and getattr(model, "y_mean", None) is None:
+            raise RuntimeError("Denormalized metrics requested but normalization stats are missing")
+        save_accuracy_metrics(p_stats, run_name)
+        if args.eval_sample != 0 and pred_samples:
+            pred_arr = np.array(pred_samples, dtype=float)
+            true_arr = np.array(true_samples, dtype=float)
+            pred_vs_actual_scatter(pred_arr, true_arr, run_name)
+            plot_error_histogram(pred_arr - true_arr, run_name)
 
     cfg_extra = {
         "norm_stats_md5": norm_md5,
@@ -2543,12 +2669,6 @@ if __name__ == "__main__":
         help="Number of DataLoader workers",
     )
     parser.add_argument(
-        "--eval-sample",
-        type=int,
-        default=1000,
-        help="Number of predictions to retain for evaluation plots (0 disables)",
-    )
-    parser.add_argument(
         "--hidden-dim",
         type=int,
         choices=[128, 256],
@@ -2589,7 +2709,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-dim",
         type=int,
-        default=2,
+        default=1,
         help="Dimension of the regression target",
     )
     parser.add_argument(
@@ -2660,11 +2780,14 @@ if __name__ == "__main__":
     parser.set_defaults(pressure_loss=True)
     parser.add_argument(
         "--pump-loss",
+        "--pump_loss",
+        dest="pump_loss",
         action="store_true",
         help="Add pump curve consistency penalty",
     )
     parser.add_argument(
         "--no-pump-loss",
+        "--no-pump_loss",
         dest="pump_loss",
         action="store_false",
         help="Disable pump curve consistency penalty",
@@ -2695,34 +2818,54 @@ if __name__ == "__main__":
         help="Weight of the node pressure loss term",
     )
     parser.add_argument(
-        "--w-cl",
-        type=float,
-        default=0.0,
-        help="Weight of the node chlorine loss term",
-    )
-    parser.add_argument(
         "--w-flow",
         type=float,
         default=3.0,
         help="Weight of the edge (flow) loss term",
     )
     parser.add_argument(
+        "--auto-w-flow",
+        "--auto_w_flow",
+        dest="auto_w_flow",
+        action="store_true",
+        help="Scale w_flow based on dataset flow variance so its gradient magnitude matches pressure",
+    )
+    parser.add_argument(
+        "--auto-w-physics",
+        type=float,
+        nargs="?",
+        const=1.0,
+        default=0.0,
+        metavar="TARGET",
+        help=(
+            "Rescale w_mass, w_head and w_pump after the first epoch so each scaled "
+            "physics loss is roughly TARGET (default 1.0 when flag is used). "
+            "A value around 7 balances the C-Town dataset."
+        ),
+    )
+    parser.add_argument(
+        "--flow-reg-weight",
+        type=float,
+        default=0.0,
+        help="Weight of L2 regularization on predicted edge flows in the mass balance loss",
+    )
+    parser.add_argument(
         "--mass-scale",
         type=float,
         default=0.0,
-        help="Baseline magnitude for mass conservation loss (0 = auto-compute; clamped to ≥1e-3)",
+        help="Baseline magnitude for mass conservation loss (0 = auto-compute; clamped to ≥1.0)",
     )
     parser.add_argument(
         "--head-scale",
         type=float,
         default=0.0,
-        help="Baseline magnitude for head loss consistency (0 = auto-compute; clamped to ≥1e-3)",
+        help="Baseline magnitude for head loss consistency (0 = auto-compute; clamped to ≥1.0)",
     )
     parser.add_argument(
         "--pump-scale",
         type=float,
         default=0.0,
-        help="Baseline magnitude for pump curve loss (0 = auto-compute; clamped to ≥1e-3)",
+        help="Baseline magnitude for pump curve loss (0 = auto-compute; clamped to ≥1.0)",
     )
     parser.add_argument(
         "--cluster-batch-size",
@@ -2734,6 +2877,12 @@ if __name__ == "__main__":
         "--neighbor-sampling",
         action="store_true",
         help="Use random neighbor sampling instead of clustering",
+    )
+    parser.add_argument(
+        "--eval-sample",
+        type=int,
+        default=1000,
+        help="Number of predictions to retain for evaluation plots (0 disables)",
     )
     parser.add_argument(
         "--checkpoint",

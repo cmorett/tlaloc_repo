@@ -22,8 +22,7 @@ def test_summarize_target_norm_stats_per_node():
         y=torch.tensor([[5.0, 6.0], [7.0, 8.0]]),
     )
     _, _, y_mean, y_std = compute_norm_stats([d1, d2], per_node=True)
-    pressure, chlorine = summarize_target_norm_stats(y_mean, y_std, True)
+    pressure = summarize_target_norm_stats(y_mean, y_std)
     expected_std = 2.8284271
     assert pressure == pytest.approx((4.0, expected_std))
-    assert chlorine == pytest.approx((5.0, expected_std))
 

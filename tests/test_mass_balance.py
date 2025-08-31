@@ -48,3 +48,12 @@ def test_mass_balance_ignore_reservoir_nodes():
         flows, edge_index, 2, node_type=node_type
     )
     assert torch.allclose(loss, torch.tensor(0.5))
+
+
+def test_zero_flow_with_demand_positive_loss():
+    """Zero edge flows with demand should incur a positive loss."""
+    edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
+    flows = torch.zeros(2)
+    demand = torch.tensor([1.0, 0.0])
+    loss = compute_mass_balance_loss(flows, edge_index, 2, demand=demand)
+    assert loss > 0

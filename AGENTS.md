@@ -23,6 +23,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `train_gnn.py` – train a graph neural network surrogate on generated data. Pass `--checkpoint` to enable gradient checkpointing when GPU memory is limited.
   - `sweep_training.py` – run hyperparameter sweeps over loss weights and architecture.
   - `plot_sweep.py` – visualise pressure MAE across sweep configurations.
+  - `forecast_uncertainty.py` – compute hourly forecast errors and plot forecast vs actual demand with confidence intervals.
   - `reproducibility.py` – helper utilities for seeding and config logging.
 - `notebooks/` – quickstart notebooks visualising common analyses.
   - `00_validate_surrogate_rollout.ipynb` – compare 1-step and multi-step surrogate errors.
@@ -54,6 +55,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `test_output_clamp.py`
   - `test_physics_training.py`
   - `test_pump_controls.py`
+  - `test_pressure_stats_csv.py`
   - `test_recurrent_forward.py`
   - `test_reservoir_feature.py`
   - `test_reservoir_mask.py`
@@ -75,7 +77,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
 
 ## Architecture Overview
 
-1. **Data Generation** – `scripts/data_generation.py` executes multiple EPANET simulations with randomized pump states and scaled base demands. It writes node feature matrices, labels for the next hour pressure and chlorine, and the graph `edge_index` to the `data/` directory.
+1. **Data Generation** – `scripts/data_generation.py` executes multiple EPANET simulations with randomized pump states and scaled base demands. It writes node feature matrices and labels for the next hour pressure along with the graph `edge_index` to the `data/` directory. Water quality is not modelled.
 2. **Surrogate Training** – `scripts/train_gnn.py` loads the generated data and trains a configurable GNN encoder. The model supports heterogeneous node and edge types, optional attention and residual connections. NaNs in the features are replaced with zero to avoid invalid losses. Gradients are clipped to keep the training stable. Scatter plots comparing predictions to EPANET are saved under `plots/`.
 3. **MPC Controller** – `scripts/mpc_control.py` loads the trained surrogate (`GNNSurrogate`) and repeatedly optimizes pump speeds via gradient descent. The controller can either propagate the network state entirely through the surrogate or periodically synchronize with EPANET for ground truth. Simulation history is written to `data/mpc_history.csv` and a summary JSON file to `logs/`.
 4. **Experiment Validation** – `scripts/experiments_validation.py` evaluates the surrogate on prerecorded EPANET scenarios and compares the MPC controller against two baselines. Results are aggregated into CSV files under `data/` and plots under `plots/`. Validation metrics are stored in `logs/surrogate_metrics.json`.

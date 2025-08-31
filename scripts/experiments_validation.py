@@ -145,12 +145,7 @@ def animate_mpc_network(
     inp_path: Optional[str] = None,
     plots_dir: Optional[Path] = None,
 ) -> Tuple[Path, Path]:
-    """Create GIF and HTML animations of MPC network states.
-
-    Each frame shows network pressures and chlorine concentrations with pump
-    speeds overlaid on links.  Frames are combined into an animated GIF and a
-    small HTML viewer referencing the GIF.
-    """
+    """Create GIF and HTML animations of MPC network pressures and pump speeds."""
     from epyt import epanet as _epanet  # local import to keep startup fast
 
     if plots_dir is None:
@@ -169,31 +164,26 @@ def animate_mpc_network(
     frames = []
     for _, row in mpc_df.iterrows():
         pressures = row.get("pressures", {})
-        chlorine = row.get("chlorine", {})
         speeds = row.get("controls", [])
         pump_controls = {pump_names[i]: speeds[i] for i in range(len(pump_names))}
 
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-        for ax, values, cmap, label in [
-            (axes[0], pressures, "coolwarm", "Pressure (m)"),
-            (axes[1], chlorine, "viridis", "Chlorine (mg/L)"),
-        ]:
-            vals = [values.get(n, 0.0) for n in node_names]
-            sc = ax.scatter(xs, ys, c=vals, cmap=cmap, s=25)
-            plt.colorbar(sc, ax=ax, label=label)
-            for lname in link_names:
-                s_idx, e_idx = net.getLinkNodesIndex(lname)
-                x1, y1 = coords["x"][s_idx], coords["y"][s_idx]
-                x2, y2 = coords["x"][e_idx], coords["y"][e_idx]
-                width = 1.0
-                color = "lightgray"
-                if lname in pump_controls:
-                    width = 0.5 + pump_controls[lname]
-                    color = "tab:green"
-                ax.plot([x1, x2], [y1, y2], linewidth=width, color=color)
-            ax.set_aspect("equal")
-            ax.axis("off")
-            ax.set_title(label)
+        fig, ax = plt.subplots(figsize=(5, 5))
+        vals = [pressures.get(n, 0.0) for n in node_names]
+        sc = ax.scatter(xs, ys, c=vals, cmap="coolwarm", s=25)
+        plt.colorbar(sc, ax=ax, label="Pressure (m)")
+        for lname in link_names:
+            s_idx, e_idx = net.getLinkNodesIndex(lname)
+            x1, y1 = coords["x"][s_idx], coords["y"][s_idx]
+            x2, y2 = coords["x"][e_idx], coords["y"][e_idx]
+            width = 1.0
+            color = "lightgray"
+            if lname in pump_controls:
+                width = 0.5 + pump_controls[lname]
+                color = "tab:green"
+            ax.plot([x1, x2], [y1, y2], linewidth=width, color=color)
+        ax.set_aspect("equal")
+        ax.axis("off")
+        ax.set_title("Pressure (m)")
         fig.suptitle(f"Hour {int(row['time'])}")
         frame_path = plots_dir / f"mpc_frame_{run_name}_t{int(row['time'])}.png"
         fig.tight_layout()
@@ -229,7 +219,6 @@ except ImportError:  # pragma: no cover
 def _prepare_features(
     wn: wntr.network.WaterNetworkModel,
     pressures: Dict[str, float],
-    chlorine: Dict[str, float],
     pump_controls: np.ndarray,
     model: torch.nn.Module,
     demands: Optional[Dict[str, float]] = None,
@@ -249,9 +238,6 @@ def _prepare_features(
         ],
         dtype=torch.float32,
     )
-    chlorine_t = torch.tensor(
-        [chlorine.get(n, 0.0) for n in wn.node_name_list], dtype=torch.float32
-    )
     pump_t = torch.tensor(pump_controls, dtype=torch.float32)
     demands_t = None
     if demands is not None:
@@ -261,7 +247,6 @@ def _prepare_features(
     return prepare_node_features(
         template,
         pressures_t,
-        chlorine_t,
         pump_t,
         model,
         demands_t,
@@ -297,21 +282,15 @@ def validate_surrogate(
             )
 
     rmse_p = 0.0
-    rmse_c = 0.0
     mae_p = 0.0
-    mae_c = 0.0
     rmse_p_all = 0.0
     mae_p_all = 0.0
-    rmse_c_all = 0.0
-    mae_c_all = 0.0
     max_err_p = 0.0
-    max_err_c = 0.0
     mass_total = 0.0
     mass_count = 0
     count = 0
     count_all = 0
     err_p_all: List[float] = []
-    err_c_all: List[float] = []
     err_matrix: List[np.ndarray] = []
     err_times: List[int] = []
     if debug and debug_info is None:
@@ -325,7 +304,6 @@ def validate_surrogate(
         for n in wn.node_name_list
     }
     err_p_by_type = {t: [] for t in set(node_types.values())}
-    err_c_by_type = {t: [] for t in set(node_types.values())}
     model.eval()
     edge_index = edge_index.to(device)
     if edge_attr is not None:
@@ -352,7 +330,6 @@ def validate_surrogate(
             pressures_df = (
                 res.node["pressure"].clip(lower=MIN_PRESSURE).reindex(columns=wn.node_name_list)
             )
-            chlorine_df = res.node["quality"].reindex(columns=wn.node_name_list)
             demand_df = res.node.get("demand")
             if demand_df is not None:
                 demand_df = demand_df.reindex(columns=wn.node_name_list)
@@ -367,12 +344,13 @@ def validate_surrogate(
                 disable=__name__ != "__main__",
             ):
                 p = pressures_df.iloc[i].to_dict()
-                c = chlorine_df.iloc[i].to_dict()
                 dem = demand_df.iloc[i].to_dict() if demand_df is not None else None
                 controls = pump_array[i]
-                feats = _prepare_features(wn, p, c, controls, model, dem)
+                feats = _prepare_features(wn, p, controls, model, dem)
                 if debug and first and i == 0:
-                    pre = _prepare_features(wn, p, c, controls, model, dem, skip_normalization=True)
+                    pre = _prepare_features(
+                        wn, p, controls, model, dem, skip_normalization=True
+                    )
                     feats_np = pre.cpu().numpy()
                     debug_info["node_pre_norm_stats"] = {
                         "min": feats_np.min(axis=0).tolist(),
@@ -428,46 +406,30 @@ def validate_surrogate(
                     node_pred = node_pred[:, :target_dim]
                     node_pred = node_pred * y_std + y_mean
                 pred_p = node_pred[:, 0].cpu().numpy()
-                pred_c = node_pred[:, 1].cpu().numpy()
                 y_true_p = pressures_df.iloc[i + 1].to_numpy()
                 for j, name in enumerate(wn.node_name_list):
                     if name in wn.reservoir_name_list:
                         y_true_p[j] = wn.get_node(name).base_head
-                y_true_c = chlorine_df.iloc[i + 1].to_numpy()
-                # chlorine predictions were trained in log space so convert
-                # predictions back to mg/L before computing errors
-                pred_c = np.expm1(pred_c) * 1000.0
 
                 diff_p = pred_p - y_true_p
-                diff_c = pred_c - y_true_c
                 if node_types_tensor is not None:
                     mask = (node_types_tensor == 0).cpu().numpy()
                     diff_p_masked = diff_p[mask]
-                    diff_c_masked = diff_c[mask]
                 else:
                     diff_p_masked = diff_p
-                    diff_c_masked = diff_c
                 err_p_all.extend(diff_p.tolist())
-                err_c_all.extend(diff_c.tolist())
                 for idx, name in enumerate(wn.node_name_list):
                     t = node_types[name]
                     err_p_by_type[t].append(float(diff_p[idx]))
-                    err_c_by_type[t].append(float(diff_c[idx]))
                 if first:
                     err_matrix.append(diff_p)
                     err_times.append(int(times[i + 1]))
                 rmse_p += float((diff_p_masked ** 2).sum())
-                rmse_c += float((diff_c_masked ** 2).sum())
                 mae_p += float(np.abs(diff_p_masked).sum())
-                mae_c += float(np.abs(diff_c_masked).sum())
                 rmse_p_all += float((diff_p ** 2).sum())
-                rmse_c_all += float((diff_c ** 2).sum())
                 mae_p_all += float(np.abs(diff_p).sum())
-                mae_c_all += float(np.abs(diff_c).sum())
                 if diff_p_masked.size > 0:
                     max_err_p = max(max_err_p, float(np.max(np.abs(diff_p_masked))))
-                if diff_c_masked.size > 0:
-                    max_err_c = max(max_err_c, float(np.max(np.abs(diff_c_masked))))
                 count += len(diff_p_masked)
                 count_all += len(diff_p)
                 if flow_pred is not None:
@@ -500,9 +462,7 @@ def validate_surrogate(
                 first = False
 
     rmse_p = (rmse_p / count) ** 0.5
-    rmse_c = (rmse_c / count) ** 0.5
     mae_p = mae_p / count
-    mae_c = mae_c / count
     if count_all > 0:
         rmse_p_all = (rmse_p_all / count_all) ** 0.5
         mae_p_all = mae_p_all / count_all
@@ -518,17 +478,11 @@ def validate_surrogate(
     print(
         f"[Metrics] RMSE (Pressure): {rmse_p:.4f} | MAE: {mae_p:.4f} | Max Err: {max_err_p:.4f}"
     )
-    print(
-        f"[Metrics] RMSE (Chlorine): {rmse_c:.4f} | MAE: {mae_c:.4f} | Max Err: {max_err_c:.4f}"
-    )
 
     metrics = {
         "pressure_rmse": rmse_p,
-        "chlorine_rmse": rmse_c,
         "pressure_mae": mae_p,
-        "chlorine_mae": mae_c,
         "pressure_max_error": max_err_p,
-        "chlorine_max_error": max_err_c,
     }
     if mass_count > 0:
         avg_mass = mass_total / mass_count
@@ -541,17 +495,13 @@ def validate_surrogate(
 
     if err_p_all:
         os.makedirs(PLOTS_DIR, exist_ok=True)
-        fig, axes = plt.subplots(2, 2, figsize=(10, 8))
-        axes[0, 0].hist(err_p_all, bins=50, color="tab:blue", alpha=0.7)
-        axes[0, 0].set_title("Pressure Error")
-        axes[0, 1].hist(err_c_all, bins=50, color="tab:orange", alpha=0.7)
-        axes[0, 1].set_title("Chlorine Error")
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        axes[0].hist(err_p_all, bins=50, color="tab:blue", alpha=0.7)
+        axes[0].set_title("Pressure Error")
         types = list(err_p_by_type.keys())
-        axes[1, 0].boxplot([err_p_by_type[t] for t in types], labels=types)
-        axes[1, 0].set_title("Pressure Error by Node Type")
-        axes[1, 1].boxplot([err_c_by_type[t] for t in types], labels=types)
-        axes[1, 1].set_title("Chlorine Error by Node Type")
-        for ax in axes.ravel():
+        axes[1].boxplot([err_p_by_type[t] for t in types], labels=types)
+        axes[1].set_title("Pressure Error by Node Type")
+        for ax in axes:
             ax.tick_params(labelsize=8)
         plt.tight_layout()
         plt.savefig(os.path.join(PLOTS_DIR, f"error_histograms_{run_name}.png"))
@@ -573,10 +523,10 @@ def rollout_surrogate(
     steps: int,
     node_types_tensor: Optional[torch.Tensor] = None,
     edge_types_tensor: Optional[torch.Tensor] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> np.ndarray:
     """Roll out surrogate predictions for multiple steps without EPANET feedback.
 
-    Returns per-step RMSE for pressure and chlorine averaged across scenarios.
+    Returns per-step RMSE for pressure averaged across scenarios.
     """
 
     if steps <= 0:
@@ -590,7 +540,6 @@ def rollout_surrogate(
             edge_attr = (edge_attr - model.edge_mean) / (model.edge_std + 1e-8)
 
     sq_p = np.zeros(steps, dtype=float)
-    sq_c = np.zeros(steps, dtype=float)
     counts = np.zeros(steps, dtype=int)
 
     with torch.no_grad():
@@ -598,19 +547,17 @@ def rollout_surrogate(
             if isinstance(res, tuple):
                 res = res[0]
             pressures_df = res.node["pressure"].clip(lower=MIN_PRESSURE)
-            chlorine_df = res.node["quality"]
             demand_df = res.node.get("demand")
             pump_df = res.link["setting"][wn.pump_name_list]
             pump_array = np.clip(pump_df.values, 0.0, 1.0)
 
             current_p = {n: float(v) for n, v in pressures_df.iloc[0].to_dict().items()}
-            current_c = {n: float(v) for n, v in chlorine_df.iloc[0].to_dict().items()}
 
             max_steps = min(steps, len(pressures_df.index) - 1)
             for t in range(max_steps):
                 dem = demand_df.iloc[t].to_dict() if demand_df is not None else None
                 controls = pump_array[t]
-                feats = _prepare_features(wn, current_p, current_c, controls, model, dem)
+                feats = _prepare_features(wn, current_p, controls, model, dem)
                 x = feats.to(device, non_blocking=True)
                 if hasattr(model, "rnn"):
                     seq_in = x.unsqueeze(0).unsqueeze(0)
@@ -659,28 +606,21 @@ def rollout_surrogate(
                         node_pred = node_pred[:, :num_targets]
                         node_pred = node_pred * y_std + y_mean
                 pred_p = node_pred[:, 0].cpu().numpy()
-                pred_c = np.expm1(node_pred[:, 1].cpu().numpy()) * 1000.0
                 true_p = pressures_df.iloc[t + 1].to_numpy()
                 for j, name in enumerate(wn.node_name_list):
                     if name in wn.reservoir_name_list:
                         true_p[j] = wn.get_node(name).base_head
-                true_c = chlorine_df.iloc[t + 1].to_numpy()
                 diff_p = pred_p - true_p
-                diff_c = pred_c - true_c
                 if node_types_tensor is not None:
                     mask = (node_types_tensor == 0).cpu().numpy()
                     diff_p = diff_p[mask]
-                    diff_c = diff_c[mask]
                 sq_p[t] += float((diff_p ** 2).sum())
-                sq_c[t] += float((diff_c ** 2).sum())
                 counts[t] += len(diff_p)
 
                 current_p = {n: float(pred_p[i]) for i, n in enumerate(wn.node_name_list)}
-                current_c = {n: float(pred_c[i]) for i, n in enumerate(wn.node_name_list)}
 
     rmse_p = np.sqrt(np.divide(sq_p, counts, out=np.zeros_like(sq_p), where=counts > 0))
-    rmse_c = np.sqrt(np.divide(sq_c, counts, out=np.zeros_like(sq_c), where=counts > 0))
-    return rmse_p, rmse_c
+    return rmse_p
 
 
 def run_all_pumps_on(
@@ -705,7 +645,6 @@ def run_all_pumps_on(
         sim = wntr.sim.EpanetSimulator(wn)
         results = sim.run_sim(str(TEMP_DIR / "temp"))
         pressures = results.node["pressure"].iloc[-1].to_dict()
-        chlorine = results.node["quality"].iloc[-1].to_dict()
         energy_df = pump_energy(
             results.link["flowrate"][pump_names], results.node["head"], wn
         )
@@ -715,10 +654,6 @@ def run_all_pumps_on(
                 "time": hour,
                 "min_pressure": max(
                     min(pressures[n] for n in wn.junction_name_list),
-                    0.0,
-                ),
-                "min_chlorine": max(
-                    min(chlorine[n] for n in wn.junction_name_list),
                     0.0,
                 ),
                 "energy": float(energy),
@@ -735,9 +670,8 @@ def run_heuristic_baseline(
     wn: wntr.network.WaterNetworkModel,
     pump_names: List[str],
     threshold_p: float = 20.0,
-    threshold_c: float = 0.2,
 ) -> pd.DataFrame:
-    """Simple rule-based control using pressure/quality thresholds."""
+    """Simple rule-based control using a pressure threshold."""
 
     log = []
     wn.options.time.start_clocktime = 0
@@ -746,16 +680,13 @@ def run_heuristic_baseline(
     sim = wntr.sim.EpanetSimulator(wn)
     results = sim.run_sim(str(TEMP_DIR / "temp"))
     pressures = results.node["pressure"].iloc[-1].to_dict()
-    chlorine = results.node["quality"].iloc[-1].to_dict()
 
     for hour in tqdm(
         range(24),
         desc="Baseline: heuristic",
         disable=__name__ != "__main__",
     ):
-        if min(pressures[n] for n in wn.junction_name_list) < threshold_p or min(
-            chlorine[n] for n in wn.junction_name_list
-        ) < threshold_c:
+        if min(pressures[n] for n in wn.junction_name_list) < threshold_p:
             status = wntr.network.base.LinkStatus.Open
         else:
             status = wntr.network.base.LinkStatus.Closed
@@ -769,7 +700,6 @@ def run_heuristic_baseline(
         sim = wntr.sim.EpanetSimulator(wn)
         results = sim.run_sim(str(TEMP_DIR / "temp"))
         pressures = results.node["pressure"].iloc[-1].to_dict()
-        chlorine = results.node["quality"].iloc[-1].to_dict()
         energy_df = pump_energy(
             results.link["flowrate"][pump_names], results.node["head"], wn
         )
@@ -779,10 +709,6 @@ def run_heuristic_baseline(
                 "time": hour,
                 "min_pressure": max(
                     min(pressures[n] for n in wn.junction_name_list),
-                    0.0,
-                ),
-                "min_chlorine": max(
-                    min(chlorine[n] for n in wn.junction_name_list),
                     0.0,
                 ),
                 "energy": float(energy),
@@ -817,16 +743,6 @@ def aggregate_and_plot(results: Dict[str, pd.DataFrame], run_name: str, Pmin: fl
     energies = [df["energy"].sum() for df in results.values()]
     violations = [int((df["min_pressure"] < Pmin).sum()) for df in results.values()]
     energy_pressure_tradeoff(strategies, energies, violations, run_name)
-
-    plt.figure(figsize=(10, 4))
-    for name, df in results.items():
-        plt.plot(df["time"], df["min_chlorine"], label=name)
-    plt.xlabel("Hour")
-    plt.ylabel("Minimum Chlorine")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(PLOTS_DIR, f"mpc_chlorine_{run_name}.png"))
-    plt.close()
 
     plt.figure(figsize=(10, 4))
     for name, df in results.items():
@@ -873,7 +789,6 @@ def main() -> None:
     parser.add_argument("--horizon", type=int, default=6, help="MPC horizon")
     parser.add_argument("--iterations", type=int, default=50, help="GD iterations")
     parser.add_argument("--Pmin", type=float, default=20.0, help="Pressure threshold")
-    parser.add_argument("--Cmin", type=float, default=0.2, help="Chlorine threshold")
     parser.add_argument(
         "--feedback-interval",
         type=int,
@@ -914,7 +829,6 @@ def main() -> None:
         help="Enable deterministic PyTorch ops",
     )
     parser.add_argument("--w_p", type=float, default=100.0, help="Weight on pressure violations")
-    parser.add_argument("--w_c", type=float, default=100.0, help="Weight on chlorine violations")
     parser.add_argument("--w_e", type=float, default=1.0, help="Weight on energy usage")
     args = parser.parse_args()
     configure_seeds(args.seed, args.deterministic)
@@ -1059,7 +973,7 @@ def main() -> None:
             run_name,
         )
         if args.rollout_eval:
-            rmse_p, rmse_c = rollout_surrogate(
+            rmse_p = rollout_surrogate(
                 model,
                 edge_index,
                 edge_attr,
@@ -1076,13 +990,11 @@ def main() -> None:
                 {
                     "t": np.arange(1, len(rmse_p) + 1),
                     "pressure_rmse": rmse_p,
-                    "chlorine_rmse": rmse_c,
                 }
             )
             rollout_df.to_csv(run_dir / "rollout_rmse.csv", index=False)
             plt.figure()
             plt.plot(rollout_df["t"], rollout_df["pressure_rmse"], label="pressure_rmse")
-            plt.plot(rollout_df["t"], rollout_df["chlorine_rmse"], label="chlorine_rmse")
             plt.xlabel("t")
             plt.ylabel("RMSE")
             plt.legend()
@@ -1108,14 +1020,12 @@ def main() -> None:
         pump_names,
         device,
         args.Pmin,
-        args.Cmin,
         args.feedback_interval,
         w_p=args.w_p,
-        w_c=args.w_c,
         w_e=args.w_e,
     )
 
-    # Export an animated view of network pressures, chlorine and pump speeds
+    # Export an animated view of network pressures and pump speeds
     try:
         animate_mpc_network(mpc_df, pump_names, run_name, inp_path=args.inp)
     except Exception as exc:

@@ -3,47 +3,16 @@ import numpy as np
 import torch
 
 from scripts.train_gnn import (
-    predicted_vs_actual_scatter,
     plot_loss_components,
-    plot_error_histograms,
     SequenceDataset,
     plot_sequence_prediction,
     correlation_heatmap,
+    pred_vs_actual_scatter,
+    plot_error_histogram,
 )
 from scripts.mpc_control import plot_convergence_curve
 
 
-def test_predicted_vs_actual_scatter(tmp_path: Path):
-    fig = predicted_vs_actual_scatter(
-        [1.0, 2.0, 3.0],
-        [1.1, 2.1, 2.9],
-        [0.1, 0.2, 0.3],
-        [0.1, 0.19, 0.31],
-        "unit",
-        plots_dir=tmp_path,
-        return_fig=True,
-    )
-    assert (tmp_path / "pred_vs_actual_unit.png").exists()
-    # verify axis labels
-    ax0 = fig.axes[0]
-    assert ax0.get_xlabel() == "Actual Pressure (m)"
-    plt = None
-
-
-def test_predicted_vs_actual_scatter_mask(tmp_path: Path):
-    fig = predicted_vs_actual_scatter(
-        [1.0, 2.0, 3.0, 4.0],
-        [1.0, 2.1, 2.9, 4.1],
-        [0.1, 0.2, 0.3, 0.4],
-        [0.1, 0.21, 0.29, 0.39],
-        "unit",
-        plots_dir=tmp_path,
-        return_fig=True,
-        mask=[True, False, True, False],
-    )
-    assert (tmp_path / "pred_vs_actual_unit.png").exists()
-    ax0 = fig.axes[0]
-    assert ax0.collections[0].get_offsets().shape[0] == 2
 
 
 def test_convergence_curve(tmp_path: Path):
@@ -62,19 +31,6 @@ def test_plot_loss_components(tmp_path: Path):
     assert (tmp_path / "loss_components_unit.png").exists()
 
 
-def test_plot_error_histograms(tmp_path: Path):
-    fig = plot_error_histograms(
-        [0.1, -0.2, 0.0, 0.3],
-        [0.05, -0.05, 0.1, -0.1],
-        "unit",
-        plots_dir=tmp_path,
-        return_fig=True,
-        mask=[True, False, True, False],
-    )
-    assert (tmp_path / "error_histograms_unit.png").exists()
-    # number of histogram bars should match masked data length
-    assert fig.axes[0].patches[0].get_height() > 0
-    plt = None
 
 
 def test_plot_sequence_prediction(tmp_path: Path):
@@ -139,6 +95,15 @@ def test_plot_sequence_prediction_single_step(tmp_path: Path):
 
     plot_sequence_prediction(model, ds, "unit1", plots_dir=tmp_path)
     assert (tmp_path / "time_series_example_unit1.png").exists()
+
+
+def test_pred_vs_actual_scatter(tmp_path: Path):
+    pred = np.linspace(0, 1, 10)
+    true = np.linspace(0, 1, 10)
+    pred_vs_actual_scatter(pred, true, "unit", plots_dir=tmp_path)
+    assert (tmp_path / "pred_vs_actual_pressure_unit.png").exists()
+    plot_error_histogram(pred - true, "unit", plots_dir=tmp_path)
+    assert (tmp_path / "error_histograms_unit.png").exists()
 
 
 def test_correlation_heatmap(tmp_path: Path):

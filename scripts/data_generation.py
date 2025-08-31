@@ -73,6 +73,7 @@ from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
 import networkx as nx
 import json
+import csv
 
 
 def simulate_extreme_event(
@@ -94,19 +95,6 @@ def simulate_extreme_event(
             pump_controls[pump_id][h] = 0.0
         link = wn.get_link(pump_id)
         link.initial_status = LinkStatus.Closed
-    elif event_type == "quality_variation":
-        for source in wn.source_name_list:
-            # Some INP files might register a "source" that isn't actually
-            # present in the node registry (WNTR returns the file name with an
-            # added index like ``INP1``).  Only modify nodes that truly exist.
-            if source in wn.node_name_list:
-                n = wn.get_node(source)
-                if hasattr(n, "initial_quality"):
-                    factor = random.uniform(0.5, 1.5)
-                    n.initial_quality *= factor
-                    src = wn.get_source(source, None)
-                    if src is not None:
-                        src.strength *= factor
 
 
 
@@ -118,7 +106,9 @@ def _build_randomized_network(
     local_surge: bool = False,
     pipe_closure: bool = False,
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
+    demand_scale_range: Tuple[float, float] = (0.8, 1.2),
     stress_test: bool = False,
+    fixed_pump_speed: Optional[float] = None,
 ) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Create a network with randomized demand patterns and pump controls.
 
@@ -128,15 +118,17 @@ def _build_randomized_network(
     Gaussian noise (a truncated random walk).  A short dwell time around
     zero prevents unrealistic rapid cycling and at least one pump remains
     active every hour.  Additional modifications such as local demand
-    surges, pump outages and pipe closures can be injected via flags.
+    surges, pump outages and pipe closures can be injected via flags. When
+    ``fixed_pump_speed`` is provided the random-walk logic is skipped and all
+    pumps run at the given constant speed.
     """
 
     wn = wntr.network.WaterNetworkModel(inp_file)
     wn.options.time.duration = 24 * 3600
     wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    wn.options.quality.parameter = "CHEMICAL"
+    # Water quality is not modeled; leave defaults untouched
+    # wn.options.quality.parameter = "NONE"
 
     # Randomize initial tank levels uniformly across the provided range
     for tname in wn.tank_name_list:
@@ -157,9 +149,11 @@ def _build_randomized_network(
             base_mult = np.ones(hours, dtype=float)
         else:
             base_mult = np.array(ts.pattern.multipliers, dtype=float)
-        multipliers = base_mult.copy()
-        scale_factors = np.random.uniform(0.8, 1.2, size=len(multipliers))
-        multipliers = multipliers * scale_factors
+        base_mult /= max(base_mult.mean(), 1e-6)  # avoid divide-by-zero
+        scale_factors = np.random.uniform(
+            demand_scale_range[0], demand_scale_range[1], size=len(base_mult)
+        )
+        multipliers = base_mult * scale_factors
         multipliers = np.clip(multipliers, a_min=0.0, a_max=None)
         pat_name = f"{jname}_pat_{idx}"
         pat = wntr.network.elements.Pattern(pat_name, multipliers)
@@ -184,55 +178,61 @@ def _build_randomized_network(
             scale_dict[n] = arr
             pattern_dict[n].multipliers = arr
 
-    pump_controls: Dict[str, List[float]] = {pn: [] for pn in wn.pump_name_list}
+    pump_controls: Dict[str, List[float]]
+    if fixed_pump_speed is not None:
+        pump_controls = {
+            pn: [float(fixed_pump_speed)] * hours for pn in wn.pump_name_list
+        }
+    else:
+        pump_controls = {pn: [] for pn in wn.pump_name_list}
 
-    # Pump speeds now follow a continuous, temporally correlated process. Each
-    # pump starts from a random speed in ``[0.3, 0.9 * MAX_PUMP_SPEED]`` and
-    # evolves through a truncated Gaussian random walk that limits hourly
-    # changes.  The ``is_on`` state is tracked with a small dwell time to avoid
-    # unrealistic rapid cycling near zero.
-    max_step = 0.1 * MAX_PUMP_SPEED  # maximum absolute change per hour
-    min_dwell = 2   # minimum hours before switching on/off
+        # Pump speeds follow a continuous, temporally correlated process. Each
+        # pump starts from a random speed in ``[0.3, 0.9 * MAX_PUMP_SPEED]`` and
+        # evolves through a truncated Gaussian random walk that limits hourly
+        # changes.  The ``is_on`` state is tracked with a small dwell time to avoid
+        # unrealistic rapid cycling near zero.
+        max_step = 0.1 * MAX_PUMP_SPEED  # maximum absolute change per hour
+        min_dwell = 2  # minimum hours before switching on/off
 
-    current_speed: Dict[str, float] = {}
-    dwell_time: Dict[str, int] = {}
-    is_on: Dict[str, bool] = {}
+        current_speed: Dict[str, float] = {}
+        dwell_time: Dict[str, int] = {}
+        is_on: Dict[str, bool] = {}
 
-    on_threshold = 0.05 * MAX_PUMP_SPEED
+        on_threshold = 0.05 * MAX_PUMP_SPEED
 
-    for pn in wn.pump_name_list:
-        spd = random.uniform(0.3, 0.9 * MAX_PUMP_SPEED)
-        current_speed[pn] = spd
-        pump_controls[pn].append(spd)
-        is_on[pn] = spd > on_threshold
-        dwell_time[pn] = 1
-
-    for _h in range(1, hours):
         for pn in wn.pump_name_list:
-            prev = current_speed[pn]
-            step = random.gauss(0.0, 0.05 * MAX_PUMP_SPEED)
-            step = float(np.clip(step, -max_step, max_step))
-            cand = prev + step
-            if is_on[pn] and cand <= on_threshold and dwell_time[pn] < min_dwell:
-                cand = max(cand, 0.1)
-            if not is_on[pn] and cand > on_threshold and dwell_time[pn] < min_dwell:
-                cand = min(cand, on_threshold)
-            cand = float(np.clip(cand, 0.0, MAX_PUMP_SPEED))
-            pump_controls[pn].append(cand)
-            current_speed[pn] = cand
-            if (cand > on_threshold) == is_on[pn]:
-                dwell_time[pn] += 1
-            else:
-                is_on[pn] = cand > on_threshold
-                dwell_time[pn] = 1
+            spd = random.uniform(0.3, 0.9 * MAX_PUMP_SPEED)
+            current_speed[pn] = spd
+            pump_controls[pn].append(spd)
+            is_on[pn] = spd > on_threshold
+            dwell_time[pn] = 1
 
-        if wn.pump_name_list and all(pump_controls[pn][-1] <= on_threshold for pn in wn.pump_name_list):
-            keep_on = random.choice(wn.pump_name_list)
-            forced = random.uniform(0.3, 0.9 * MAX_PUMP_SPEED)
-            pump_controls[keep_on][-1] = forced
-            current_speed[keep_on] = forced
-            is_on[keep_on] = True
-            dwell_time[keep_on] = 1
+        for _h in range(1, hours):
+            for pn in wn.pump_name_list:
+                prev = current_speed[pn]
+                step = random.gauss(0.0, 0.05 * MAX_PUMP_SPEED)
+                step = float(np.clip(step, -max_step, max_step))
+                cand = prev + step
+                if is_on[pn] and cand <= on_threshold and dwell_time[pn] < min_dwell:
+                    cand = max(cand, 0.1)
+                if not is_on[pn] and cand > on_threshold and dwell_time[pn] < min_dwell:
+                    cand = min(cand, on_threshold)
+                cand = float(np.clip(cand, 0.0, MAX_PUMP_SPEED))
+                pump_controls[pn].append(cand)
+                current_speed[pn] = cand
+                if (cand > on_threshold) == is_on[pn]:
+                    dwell_time[pn] += 1
+                else:
+                    is_on[pn] = cand > on_threshold
+                    dwell_time[pn] = 1
+
+            if wn.pump_name_list and all(pump_controls[pn][-1] <= on_threshold for pn in wn.pump_name_list):
+                keep_on = random.choice(wn.pump_name_list)
+                forced = random.uniform(0.3, 0.9 * MAX_PUMP_SPEED)
+                pump_controls[keep_on][-1] = forced
+                current_speed[keep_on] = forced
+                is_on[keep_on] = True
+                dwell_time[keep_on] = 1
 
     # Inject pump outage by forcing a pump off for a short period
     if pump_outage and wn.pump_name_list:
@@ -281,6 +281,8 @@ def _run_single_scenario(
     pump_outage_rate: float = 0.0,
     local_surge_rate: float = 0.0,
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
+    demand_scale_range: Tuple[float, float] = (0.8, 1.2),
+    fixed_pump_speed: Optional[float] = None,
     extreme_event_prob: Optional[float] = None,
 ) -> Optional[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
@@ -314,7 +316,9 @@ def _run_single_scenario(
             local_surge=surge,
             pipe_closure=pump_out or stress,
             tank_level_range=tank_level_range,
+            demand_scale_range=demand_scale_range,
             stress_test=stress,
+            fixed_pump_speed=fixed_pump_speed,
         )
 
         events = []
@@ -347,7 +351,7 @@ def _run_single_scenario(
     if energy[wn.pump_name_list].isna().any().any():
         raise ValueError("pump energy contains NaN")
 
-    for df in [flows, heads, sim_results.node["pressure"], sim_results.node["quality"]]:
+    for df in [flows, heads, sim_results.node["pressure"]]:
         if df.isna().any().any() or np.isinf(df.values).any():
             raise ValueError("invalid values detected in simulation results")
 
@@ -382,6 +386,8 @@ def run_scenarios(
     pump_outage_rate: float = 0.0,
     local_surge_rate: float = 0.0,
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
+    demand_scale_range: Tuple[float, float] = (0.8, 1.2),
+    fixed_pump_speed: Optional[float] = None,
     num_workers: Optional[int] = None,
     show_progress: bool = False,
 ) -> List[
@@ -406,6 +412,8 @@ def run_scenarios(
             pump_outage_rate=pump_outage_rate,
             local_surge_rate=local_surge_rate,
             tank_level_range=tank_level_range,
+            demand_scale_range=demand_scale_range,
+            fixed_pump_speed=fixed_pump_speed,
         )
         if show_progress and tqdm is not None:
             raw_results = [
@@ -519,14 +527,8 @@ def build_sequence_dataset(
     ],
     wn_template: wntr.network.WaterNetworkModel,
     seq_len: int,
-    *,
-    include_chlorine: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Construct a dataset of sequences from simulation results.
-
-    When ``include_chlorine`` is ``False`` the node feature vectors exclude
-    chlorine concentrations and the targets only contain next-step pressure.
-    """
+    """Construct a dataset of sequences from simulation results."""
 
     X_list: List[np.ndarray] = []
     Y_list: List[dict] = []
@@ -541,16 +543,6 @@ def build_sequence_dataset(
         # range otherwise.  Enforce a 5 m lower bound to match downstream
         # validation logic.
         pressures = sim_results.node["pressure"].clip(lower=MIN_PRESSURE)
-        if include_chlorine:
-            quality_df = sim_results.node["quality"].clip(lower=0.0, upper=4.0)
-            param = str(wn_template.options.quality.parameter).upper()
-            if "CHEMICAL" in param or "CHLORINE" in param:
-                # convert mg/L to g/L used by CHEMICAL or CHLORINE models before
-                # taking the logarithm so the surrogate sees reasonable scales
-                quality_df = quality_df / 1000.0
-            quality = np.log1p(quality_df)
-        else:
-            quality = None
         demands = sim_results.node.get("demand")
         if demands is not None:
             max_d = float(demands.max().max())
@@ -568,7 +560,6 @@ def build_sequence_dataset(
         # Precompute arrays and mappings for faster indexing
         node_idx = {n: pressures.columns.get_loc(n) for n in node_names}
         p_arr = pressures.to_numpy(dtype=np.float64)
-        q_arr = quality.to_numpy(dtype=np.float64) if quality is not None else None
         d_arr = demands.to_numpy(dtype=np.float64) if demands is not None else None
         pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
 
@@ -588,10 +579,6 @@ def build_sequence_dataset(
                     p_t = float(wn_template.get_node(node).base_head)
                 else:
                     p_t = float(p_arr[t, idx])
-                if include_chlorine:
-                    c_t = float(q_arr[t, idx])
-                else:
-                    c_t = None
                 if d_arr is not None and node in wn_template.junction_name_list:
                     d_t = float(d_arr[t, idx])
                 else:
@@ -608,10 +595,7 @@ def build_sequence_dataset(
                         elev = getattr(n, "base_head", 0.0)
                 if elev is None:
                     elev = 0.0
-                feat = [d_t, p_t]
-                if include_chlorine:
-                    feat.append(c_t)
-                feat.append(elev)
+                feat = [d_t, p_t, elev]
                 feat.extend(pump_vector.tolist())
                 feat_nodes.append(feat)
             X_seq.append(np.array(feat_nodes, dtype=np.float64))
@@ -623,11 +607,7 @@ def build_sequence_dataset(
                     p_next = float(wn_template.get_node(node).base_head)
                 else:
                     p_next = float(p_arr[t + 1, idx])
-                if include_chlorine:
-                    c_next = float(q_arr[t + 1, idx])
-                    out_nodes.append([max(p_next, MIN_PRESSURE), max(c_next, 0.0)])
-                else:
-                    out_nodes.append([max(p_next, MIN_PRESSURE)])
+                out_nodes.append([max(p_next, MIN_PRESSURE)])
             node_out_seq.append(np.array(out_nodes, dtype=np.float64))
 
             edge_out_seq.append(flows_arr[t + 1].astype(np.float64))
@@ -658,8 +638,6 @@ def build_dataset(
         ]
     ],
     wn_template: wntr.network.WaterNetworkModel,
-    *,
-    include_chlorine: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
     X_list: List[np.ndarray] = []
     Y_list: List[dict] = []
@@ -671,16 +649,6 @@ def build_dataset(
         # Enforce a 5 m lower bound while keeping the upper range unrestricted
         # to capture extreme pressure values.
         pressures = sim_results.node["pressure"].clip(lower=MIN_PRESSURE)
-        if include_chlorine:
-            quality_df = sim_results.node["quality"].clip(lower=0.0, upper=4.0)
-            param = str(wn_template.options.quality.parameter).upper()
-            if "CHEMICAL" in param or "CHLORINE" in param:
-                # CHEMICAL or CHLORINE quality models return mg/L, scale to g/L
-                # before applying the log transform
-                quality_df = quality_df / 1000.0
-            quality = np.log1p(quality_df)
-        else:
-            quality = None
         demands = sim_results.node.get("demand")
         times = pressures.index
         flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
@@ -692,7 +660,6 @@ def build_dataset(
         # Precompute arrays and index mappings for faster lookup
         node_idx = {n: pressures.columns.get_loc(n) for n in node_names}
         p_arr = pressures.to_numpy(dtype=np.float64)
-        q_arr = quality.to_numpy(dtype=np.float64) if quality is not None else None
         d_arr = demands.to_numpy(dtype=np.float64) if demands is not None else None
         pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
 
@@ -707,8 +674,6 @@ def build_dataset(
                     p_t = float(wn_template.get_node(node).base_head)
                 else:
                     p_t = max(p_arr[i, idx], MIN_PRESSURE)
-                if include_chlorine:
-                    c_t = max(q_arr[i, idx], 0.0)
                 if d_arr is not None and node in wn_template.junction_name_list:
                     d_t = d_arr[i, idx]
                 else:
@@ -727,10 +692,7 @@ def build_dataset(
                 if elev is None:
                     elev = 0.0
 
-                feat = [d_t, p_t]
-                if include_chlorine:
-                    feat.append(c_t)
-                feat.append(elev)
+                feat = [d_t, p_t, elev]
                 feat.extend(pump_vector.tolist())
                 feat_nodes.append(feat)
             X_list.append(np.array(feat_nodes, dtype=np.float64))
@@ -742,11 +704,7 @@ def build_dataset(
                     p_next = float(wn_template.get_node(node).base_head)
                 else:
                     p_next = max(p_arr[i + 1, idx], MIN_PRESSURE)
-                if include_chlorine:
-                    c_next = max(q_arr[i + 1, idx], 0.0)
-                    out_nodes.append([p_next, c_next])
-                else:
-                    out_nodes.append([p_next])
+                out_nodes.append([p_next])
             Y_list.append({
                 "node_outputs": np.array(out_nodes, dtype=np.float32),
                 "edge_outputs": flows_arr[i + 1].astype(np.float32),
@@ -844,12 +802,31 @@ def main() -> None:
         help="Probability of applying a localized demand surge",
     )
     parser.add_argument(
+        "--fixed-pump-speed",
+        type=float,
+        default=None,
+        help="Run all pumps at a constant relative speed and disable random walks",
+    )
+    parser.add_argument(
         "--tank-level-range",
         type=float,
         nargs=2,
         metavar=("MIN", "MAX"),
         default=(0.0, 1.0),
         help="Fractional range for initial tank levels (0=minimum, 1=maximum)",
+    )
+    parser.add_argument(
+        "--demand-scale-range",
+        type=float,
+        nargs=2,
+        metavar=("MIN", "MAX"),
+        default=(0.8, 1.2),
+        help="Uniform range for randomized demand scaling multipliers",
+    )
+    parser.add_argument(
+        "--no-demand-scaling",
+        action="store_true",
+        help="Disable randomized demand scaling and use base demands",
     )
     parser.add_argument(
         "--output-dir",
@@ -873,13 +850,10 @@ def main() -> None:
         action="store_true",
         help="Display a progress bar during scenario simulation",
     )
-    parser.add_argument(
-        "--include-chlorine",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Include chlorine concentration features and targets",
-    )
     args = parser.parse_args()
+
+    if args.no_demand_scaling:
+        args.demand_scale_range = (1.0, 1.0)
 
     if args.seed is not None:
         configure_seeds(args.seed, args.deterministic)
@@ -896,6 +870,8 @@ def main() -> None:
         pump_outage_rate=args.pump_outage_rate,
         local_surge_rate=args.local_surge_rate,
         tank_level_range=tuple(args.tank_level_range),
+        demand_scale_range=tuple(args.demand_scale_range),
+        fixed_pump_speed=args.fixed_pump_speed,
         num_workers=args.num_workers,
         show_progress=args.show_progress,
     )
@@ -906,7 +882,14 @@ def main() -> None:
     all_pressures: List[float] = []
     base_pressures: List[float] = []
     manifest_records: List[Dict[str, float]] = []
-    for i, (sim, scale_dict, pump_ctrl) in enumerate(results):
+    # Optional progress bar for post-processing
+    iterator = enumerate(results)
+    if args.show_progress and tqdm is not None:
+        iterator = tqdm(iterator, total=len(results), desc="Post-processing")
+    elif args.show_progress and tqdm is None:
+        warnings.warn("tqdm is not installed; post-processing progress disabled.")
+
+    for i, (sim, scale_dict, pump_ctrl) in iterator:
         p_vals = sim.node["pressure"].values.astype(float).ravel()
         all_pressures.extend(p_vals.tolist())
         if getattr(sim, "scenario_type", "normal") == "normal":
@@ -933,18 +916,18 @@ def main() -> None:
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
     if args.sequence_length > 1:
         X_train, Y_train, train_labels = build_sequence_dataset(
-            train_res, wn_template, args.sequence_length, include_chlorine=args.include_chlorine
+            train_res, wn_template, args.sequence_length
         )
         X_val, Y_val, val_labels = build_sequence_dataset(
-            val_res, wn_template, args.sequence_length, include_chlorine=args.include_chlorine
+            val_res, wn_template, args.sequence_length
         )
         X_test, Y_test, test_labels = build_sequence_dataset(
-            test_res, wn_template, args.sequence_length, include_chlorine=args.include_chlorine
+            test_res, wn_template, args.sequence_length
         )
     else:
-        X_train, Y_train = build_dataset(train_res, wn_template, include_chlorine=args.include_chlorine)
-        X_val, Y_val = build_dataset(val_res, wn_template, include_chlorine=args.include_chlorine)
-        X_test, Y_test = build_dataset(test_res, wn_template, include_chlorine=args.include_chlorine)
+        X_train, Y_train = build_dataset(train_res, wn_template)
+        X_val, Y_val = build_dataset(val_res, wn_template)
+        X_test, Y_test = build_dataset(test_res, wn_template)
 
     edge_index, edge_attr, edge_type, pump_coeffs = build_edge_index(wn_template)
 
@@ -969,8 +952,7 @@ def main() -> None:
     manifest = {
         "num_extreme": int(extreme_count),
         "total_scenarios": len(manifest_records),
-        "include_chlorine": bool(args.include_chlorine),
-        "node_target_dim": 2 if args.include_chlorine else 1,
+        "node_target_dim": 1,
         "scenarios": manifest_records,
     }
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
@@ -983,6 +965,95 @@ def main() -> None:
     with open(os.path.join(out_dir, "test_results_list.pkl"), "wb") as f:
         pickle.dump(test_res, f)
 
+    print("Post-processing complete")
+
+    mean_pressure = float(np.mean(all_pressures))
+    std_pressure = float(np.std(all_pressures))
+    print(f"Mean pressure: {mean_pressure:.2f} m")
+    print(f"Std pressure: {std_pressure:.2f} m")
+
+    stats_path = out_dir / "pressure_stats.csv"
+    append_pressure_stats(
+        stats_path,
+        args,
+        N,
+        mean_pressure,
+        std_pressure,
+        run_ts,
+    )
+
+
+def append_pressure_stats(
+    stats_path: Path,
+    args: argparse.Namespace,
+    num_scenarios: int,
+    mean_pressure: float,
+    std_pressure: float,
+    timestamp: str,
+) -> None:
+    """Append a row of run parameters and pressure statistics to ``stats_path``."""
+
+    write_header = not stats_path.exists()
+    header = [
+        "timestamp",
+        "num_scenarios",
+        "seed",
+        "deterministic",
+        "num_workers",
+        "sequence_length",
+        "fixed_pump_speed",
+        "demand_min",
+        "demand_max",
+        "extreme_rate",
+        "pump_outage_rate",
+        "local_surge_rate",
+        "tank_min",
+        "tank_max",
+        "no_demand_scaling",
+        "show_progress",
+        "output_dir",
+        "mean_pressure",
+        "std_pressure",
+    ]
+    row = [
+        timestamp,
+        num_scenarios,
+        args.seed if args.seed is not None else "",
+        bool(args.deterministic),
+        args.num_workers if args.num_workers is not None else "",
+        args.sequence_length,
+        args.fixed_pump_speed if args.fixed_pump_speed is not None else "",
+        args.demand_scale_range[0],
+        args.demand_scale_range[1],
+        args.extreme_rate,
+        args.pump_outage_rate,
+        args.local_surge_rate,
+        args.tank_level_range[0],
+        args.tank_level_range[1],
+        getattr(args, "no_demand_scaling", False),
+        bool(getattr(args, "show_progress", False)),
+        str(args.output_dir),
+        mean_pressure,
+        std_pressure,
+    ]
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    stats_path.touch(exist_ok=True)
+
+    def _write() -> None:
+        with open(stats_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(header)
+            writer.writerow(row)
+
+    try:
+        _write()
+    except (PermissionError, OSError) as e:
+        try:
+            stats_path.chmod(0o666)
+            _write()
+        except Exception:
+            raise RuntimeError(f"Could not write to {stats_path}") from e
 
 if __name__ == "__main__":
     main()
