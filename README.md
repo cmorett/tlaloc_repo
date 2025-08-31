@@ -202,6 +202,8 @@ sequentially to keep memory usage low.
 Mixed precision training is enabled by default via the ``--amp`` flag which
 wraps model evaluations in ``torch.cuda.amp.autocast`` and scales the loss for
 improved GPU throughput. Use ``--no-amp`` to run exclusively in full precision.
+When CUDA is unavailable the script automatically disables mixed precision and
+emits a warning so computations remain in ``float32``.
 
 A physics-informed mass balance penalty is applied by default to encourage
 conservation of predicted flows.  Because each pipe appears twice in the graph

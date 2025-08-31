@@ -612,6 +612,18 @@ def _signal_handler(signum, frame):
     print("Received interrupt signal. Stopping after current epoch...")
 
 
+def _get_device(args: argparse.Namespace) -> torch.device:
+    """Return the available compute device and disable AMP on CPU."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cpu" and getattr(args, "amp", False):
+        warnings.warn(
+            "AMP is not supported on CPU; disabling mixed precision.",
+            RuntimeWarning,
+        )
+        args.amp = False
+    return device
+
+
 def handle_keyboard_interrupt(
     model_path: str,
     model: nn.Module,
@@ -1540,7 +1552,7 @@ def main(args: argparse.Namespace):
             RuntimeWarning,
         )
     signal.signal(signal.SIGINT, _signal_handler)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = _get_device(args)
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     # Always compute the physical edge attributes from the network
