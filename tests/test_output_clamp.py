@@ -110,3 +110,30 @@ def test_recurrent_output_clamp_with_per_node_norm():
     assert torch.allclose(out, expected)
     denorm = out * model.y_std["node_outputs"] + model.y_mean["node_outputs"]
     assert torch.all(denorm >= 0)
+
+
+def test_recurrent_output_clamp_with_per_node_stats_tensor():
+    edge_index = torch.tensor([[0], [1]], dtype=torch.long)
+    edge_attr = torch.ones(1, 3)
+    model = RecurrentGNNSurrogate(
+        in_channels=2,
+        hidden_channels=4,
+        edge_dim=3,
+        output_dim=1,
+        num_layers=1,
+        use_attention=False,
+        gat_heads=1,
+        dropout=0.0,
+        residual=False,
+        rnn_hidden_dim=4,
+    )
+    model.decoder.weight.data.zero_()
+    model.decoder.bias.data.fill_(-3.0)
+    model.y_mean = torch.tensor([[0.0], [2.0]])
+    model.y_std = torch.ones(2, 1)
+    X = torch.zeros(1, 1, 2, 2)
+    out = model(X, edge_index, edge_attr)
+    expected = torch.tensor([[[[0.0], [-2.0]]]])
+    assert torch.allclose(out, expected)
+    denorm = out * model.y_std + model.y_mean
+    assert torch.all(denorm >= 0)

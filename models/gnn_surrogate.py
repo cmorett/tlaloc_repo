@@ -291,15 +291,28 @@ class RecurrentGNNSurrogate(nn.Module):
                 else:
                     min_c = torch.zeros_like(min_p)
             else:
-                p_mean = self.y_mean[0].to(node_pred.device)
-                p_std = self.y_std[0].to(node_pred.device)
-                min_p = -p_mean / p_std
-                if self.y_mean.numel() > 1:
-                    c_mean = self.y_mean[1].to(node_pred.device)
-                    c_std = self.y_std[1].to(node_pred.device)
-                    min_c = -c_mean / c_std
+                if self.y_mean.ndim == 2:
+                    node_mean = self.y_mean.to(node_pred.device)
+                    node_std = self.y_std.to(node_pred.device)
+                    p_mean = node_mean[:, 0]
+                    p_std = node_std[:, 0]
+                    min_p = -p_mean / p_std
+                    if node_mean.shape[1] > 1:
+                        c_mean = node_mean[:, 1]
+                        c_std = node_std[:, 1]
+                        min_c = -c_mean / c_std
+                    else:
+                        min_c = torch.zeros_like(min_p)
                 else:
-                    min_c = torch.zeros_like(min_p)
+                    p_mean = self.y_mean[0].to(node_pred.device)
+                    p_std = self.y_std[0].to(node_pred.device)
+                    min_p = -p_mean / p_std
+                    if self.y_mean.numel() > 1:
+                        c_mean = self.y_mean[1].to(node_pred.device)
+                        c_std = self.y_std[1].to(node_pred.device)
+                        min_c = -c_mean / c_std
+                    else:
+                        min_c = torch.zeros_like(min_p)
 
         if node_pred.size(-1) >= 1:
             comps = [torch.clamp(node_pred[..., 0], min=min_p).unsqueeze(-1)]
