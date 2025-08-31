@@ -105,6 +105,14 @@ def summarize_target_norm_stats(y_mean, y_std):
     return pressure
 
 
+def _trim_norm_stats(mean: torch.Tensor, std: torch.Tensor, size: int):
+    """Slice normalization stats to match ``size`` nodes/edges."""
+    if mean.shape[0] != size:
+        mean = mean[:size]
+        std = std[:size]
+    return mean, std
+
+
 def load_dataset(
     x_path: str,
     y_path: str,
@@ -1019,24 +1027,18 @@ def train_sequence(
                 if p_mean.ndim == 2:
                     p_mean = p_mean[..., 0]
                     p_std = p_std[..., 0]
-                press_pred = (
-                    press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
-                )
-                press_true = (
-                    press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
-                )
+                p_mean, p_std = _trim_norm_stats(p_mean, p_std, press_pred.size(-1))
+                press_pred = press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                press_true = press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
             elif getattr(model, "y_mean", None) is not None:
                 p_mean = model.y_mean.to(device)
                 p_std = model.y_std.to(device)
                 if p_mean.ndim == 2:
                     p_mean = p_mean[..., 0]
                     p_std = p_std[..., 0]
-                press_pred = (
-                    press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
-                )
-                press_true = (
-                    press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
-                )
+                p_mean, p_std = _trim_norm_stats(p_mean, p_std, press_pred.size(-1))
+                press_pred = press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                press_true = press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
             press_mae = torch.mean(torch.abs(press_pred - press_true))
             for name, val in [
                 ("pressure", loss_press),
@@ -1049,15 +1051,17 @@ def train_sequence(
                 if getattr(model, "y_mean_edge", None) is not None:
                     q_mean = model.y_mean_edge.to(device)
                     q_std = model.y_std_edge.to(device)
-                    flows_mb = (
-                        flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                    q_mean, q_std = _trim_norm_stats(
+                        q_mean, q_std, flows_mb.size(-1)
                     )
+                    flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                 elif isinstance(getattr(model, "y_mean", None), dict):
                     q_mean = model.y_mean["edge_outputs"].to(device)
                     q_std = model.y_std["edge_outputs"].to(device)
-                    flows_mb = (
-                        flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                    q_mean, q_std = _trim_norm_stats(
+                        q_mean, q_std, flows_mb.size(-1)
                     )
+                    flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                 flows_mb = (
                     flows_mb.permute(2, 0, 1)
                     .reshape(edge_index.size(1), -1)
@@ -1106,10 +1110,12 @@ def train_sequence(
                     if p_mean.ndim == 2:
                         p_mean = p_mean[..., 0]
                         p_std = p_std[..., 0]
+                    p_mean, p_std = _trim_norm_stats(p_mean, p_std, press.size(-1))
                     press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                     if 'edge_outputs' in model.y_mean:
                         q_mean = model.y_mean['edge_outputs'].to(device)
                         q_std = model.y_std['edge_outputs'].to(device)
+                        q_mean, q_std = _trim_norm_stats(q_mean, q_std, flow.size(-1))
                         flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                 elif getattr(model, 'y_mean', None) is not None:
                     p_mean = model.y_mean.to(device)
@@ -1117,10 +1123,12 @@ def train_sequence(
                     if p_mean.ndim == 2:
                         p_mean = p_mean[..., 0]
                         p_std = p_std[..., 0]
+                    p_mean, p_std = _trim_norm_stats(p_mean, p_std, press.size(-1))
                     press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                     if getattr(model, 'y_mean_edge', None) is not None:
                         q_mean = model.y_mean_edge.to(device)
                         q_std = model.y_std_edge.to(device)
+                        q_mean, q_std = _trim_norm_stats(q_mean, q_std, flow.size(-1))
                         flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                 head_loss, head_violation = pressure_headloss_consistency_loss(
                     press,
@@ -1138,10 +1146,16 @@ def train_sequence(
                 if getattr(model, 'y_mean_edge', None) is not None:
                     q_mean = model.y_mean_edge.to(device)
                     q_std = model.y_std_edge.to(device)
+                    q_mean, q_std = _trim_norm_stats(
+                        q_mean, q_std, flow_pc.size(-1)
+                    )
                     flow_pc = flow_pc * q_std + q_mean
                 elif isinstance(getattr(model, 'y_mean', None), dict):
                     q_mean = model.y_mean['edge_outputs'].to(device)
                     q_std = model.y_std['edge_outputs'].to(device)
+                    q_mean, q_std = _trim_norm_stats(
+                        q_mean, q_std, flow_pc.size(-1)
+                    )
                     flow_pc = flow_pc * q_std + q_mean
                 pump_loss_val = pump_curve_loss(
                     flow_pc,
@@ -1318,45 +1332,35 @@ def evaluate_sequence(
                         if p_mean.ndim == 2:
                             p_mean = p_mean[..., 0]
                             p_std = p_std[..., 0]
-                        press_pred = (
-                            press_pred * p_std.view(1, 1, -1)
-                            + p_mean.view(1, 1, -1)
-                        )
-                        press_true = (
-                            press_true * p_std.view(1, 1, -1)
-                            + p_mean.view(1, 1, -1)
-                        )
+                        p_mean, p_std = _trim_norm_stats(p_mean, p_std, press_pred.size(-1))
+                        press_pred = press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                        press_true = press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                     elif getattr(model, "y_mean", None) is not None:
                         p_mean = model.y_mean.to(device)
                         p_std = model.y_std.to(device)
                         if p_mean.ndim == 2:
                             p_mean = p_mean[..., 0]
                             p_std = p_std[..., 0]
-                        press_pred = (
-                            press_pred * p_std.view(1, 1, -1)
-                            + p_mean.view(1, 1, -1)
-                        )
-                        press_true = (
-                            press_true * p_std.view(1, 1, -1)
-                            + p_mean.view(1, 1, -1)
-                        )
+                        p_mean, p_std = _trim_norm_stats(p_mean, p_std, press_pred.size(-1))
+                        press_pred = press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                        press_true = press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                     press_mae = torch.mean(torch.abs(press_pred - press_true))
                     if physics_loss:
                         flows_mb = edge_preds.squeeze(-1)
                         if getattr(model, "y_mean_edge", None) is not None:
                             q_mean = model.y_mean_edge.to(device)
                             q_std = model.y_std_edge.to(device)
-                            flows_mb = (
-                                flows_mb * q_std.view(1, 1, -1)
-                                + q_mean.view(1, 1, -1)
+                            q_mean, q_std = _trim_norm_stats(
+                                q_mean, q_std, flows_mb.size(-1)
                             )
+                            flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                         elif isinstance(getattr(model, "y_mean", None), dict):
                             q_mean = model.y_mean["edge_outputs"].to(device)
                             q_std = model.y_std["edge_outputs"].to(device)
-                            flows_mb = (
-                                flows_mb * q_std.view(1, 1, -1)
-                                + q_mean.view(1, 1, -1)
+                            q_mean, q_std = _trim_norm_stats(
+                                q_mean, q_std, flows_mb.size(-1)
                             )
+                            flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                         flows_mb = (
                             flows_mb.permute(2, 0, 1)
                             .reshape(edge_index.size(1), -1)
@@ -1405,10 +1409,12 @@ def evaluate_sequence(
                             if p_mean.ndim == 2:
                                 p_mean = p_mean[..., 0]
                                 p_std = p_std[..., 0]
+                            p_mean, p_std = _trim_norm_stats(p_mean, p_std, press.size(-1))
                             press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                             if 'edge_outputs' in model.y_mean:
                                 q_mean = model.y_mean['edge_outputs'].to(device)
                                 q_std = model.y_std['edge_outputs'].to(device)
+                                q_mean, q_std = _trim_norm_stats(q_mean, q_std, flow.size(-1))
                                 flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                         elif getattr(model, 'y_mean', None) is not None:
                             p_mean = model.y_mean.to(device)
@@ -1416,10 +1422,12 @@ def evaluate_sequence(
                             if p_mean.ndim == 2:
                                 p_mean = p_mean[..., 0]
                                 p_std = p_std[..., 0]
+                            p_mean, p_std = _trim_norm_stats(p_mean, p_std, press.size(-1))
                             press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                             if getattr(model, 'y_mean_edge', None) is not None:
                                 q_mean = model.y_mean_edge.to(device)
                                 q_std = model.y_std_edge.to(device)
+                                q_mean, q_std = _trim_norm_stats(q_mean, q_std, flow.size(-1))
                                 flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                         head_loss, head_violation = pressure_headloss_consistency_loss(
                             press,
@@ -1437,10 +1445,16 @@ def evaluate_sequence(
                         if getattr(model, 'y_mean_edge', None) is not None:
                             q_mean = model.y_mean_edge.to(device)
                             q_std = model.y_std_edge.to(device)
+                            q_mean, q_std = _trim_norm_stats(
+                                q_mean, q_std, flow_pc.size(-1)
+                            )
                             flow_pc = flow_pc * q_std + q_mean
                         elif isinstance(getattr(model, 'y_mean', None), dict):
                             q_mean = model.y_mean['edge_outputs'].to(device)
                             q_std = model.y_std['edge_outputs'].to(device)
+                            q_mean, q_std = _trim_norm_stats(
+                                q_mean, q_std, flow_pc.size(-1)
+                            )
                             flow_pc = flow_pc * q_std + q_mean
                         pump_loss_val = pump_curve_loss(
                             flow_pc,
@@ -2517,6 +2531,9 @@ def main(args: argparse.Namespace):
                         else:
                             y_mean_node = model.y_mean.to(node_pred.device)
                             y_std_node = model.y_std.to(node_pred.device)
+                        y_mean_node, y_std_node = _trim_norm_stats(
+                            y_mean_node, y_std_node, node_pred.size(-2)
+                        )
                         node_pred = node_pred * y_std_node + y_mean_node
                         Y_node = Y_node * y_std_node + y_mean_node
                     if (
@@ -2526,6 +2543,9 @@ def main(args: argparse.Namespace):
                     ):
                         y_mean_edge = model.y_mean_edge.to(node_pred.device)
                         y_std_edge = model.y_std_edge.to(node_pred.device)
+                        y_mean_edge, y_std_edge = _trim_norm_stats(
+                            y_mean_edge, y_std_edge, edge_pred.size(-1)
+                        )
                         edge_pred = edge_pred.squeeze(-1)
                         edge_pred = edge_pred * y_std_edge + y_mean_edge
                         Y_edge = Y_edge * y_std_edge + y_mean_edge
@@ -2557,7 +2577,10 @@ def main(args: argparse.Namespace):
                         if isinstance(model.y_mean, dict):
                             y_mean_node = model.y_mean["node_outputs"].to(out.device)
                             y_std_node = model.y_std["node_outputs"].to(out.device)
-                            num_nodes = y_mean_node.shape[0]
+                            num_nodes = node_out.shape[-2]
+                            y_mean_node, y_std_node = _trim_norm_stats(
+                                y_mean_node, y_std_node, num_nodes
+                            )
                             node_out = node_out.view(batch.num_graphs, num_nodes, -1)
                             batch_y = batch.y.view(batch.num_graphs, num_nodes, -1)
                             node_out = node_out * y_std_node.view(1, num_nodes, -1) + y_mean_node.view(1, num_nodes, -1)
