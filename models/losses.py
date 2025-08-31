@@ -87,13 +87,16 @@ def compute_mass_balance_loss(
     else:
         flows = pred_flows.reshape(pred_flows.shape[0], -1)
 
-    node_balance = pred_flows.new_zeros((node_count, flows.shape[1]))
-    for i in range(edge_index.shape[1]):
-        u = edge_index[0, i]
-        v = edge_index[1, i]
-        f = flows[i]
-        node_balance[u] -= f
-        node_balance[v] += f
+    src, tgt = edge_index[0], edge_index[1]
+    src_expand = src.unsqueeze(-1).expand(-1, flows.shape[1])
+    tgt_expand = tgt.unsqueeze(-1).expand(-1, flows.shape[1])
+    node_balance = torch.scatter_add(
+        torch.zeros(node_count, flows.shape[1], device=flows.device),
+        0,
+        src_expand,
+        -flows,
+    )
+    node_balance = torch.scatter_add(node_balance, 0, tgt_expand, flows)
 
     # Each physical link appears twice (forward and reverse). Without
     # compensation this double-counts the contribution of every pipe which
