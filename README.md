@@ -158,8 +158,7 @@ Physics-based losses (mass conservation, pressure–headloss consistency and pum
 Use `--auto-w-flow` to automatically scale the flow loss weight based on dataset flow variance so that its gradient magnitude matches that of the pressure loss.
 
 GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8}) and ``--hidden-dim`` ({128,256}).
-Use ``--residual`` to enable skip connections and ``--use-attention`` for graph attention on node updates. Set
-``--attention-after-hydro`` to apply self-attention after the mass-conserving ``HydroConv`` layers instead of replacing them.
+Use ``--residual`` to enable skip connections and ``--use-attention`` to apply self-attention after the mass-conserving ``HydroConv`` layers. Pass ``--no-hydro`` to replace ``HydroConv`` with standard GCN/GAT convolutions when attention is enabled.
 The LSTM hidden size can be set with ``--lstm-hidden`` (64 or 128).
 When training larger models that exceed GPU memory, pass ``--checkpoint`` to
 enable gradient checkpointing which recomputes intermediate activations during
