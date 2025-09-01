@@ -384,7 +384,7 @@ Once the surrogate model is trained you can run gradient-based MPC using
 ```bash
 python scripts/mpc_control.py \
     --horizon 6 --iterations 50 --feedback-interval 24 \
-    --Pmin 20.0 --Cmin 0.2 --energy-scale 1e-9 \
+    --Pmin 20.0 --Cmin 0.2 --auto-energy-scale \
     --w_p 100 --w_c 100 --w_e 1.0 --bias-correction --bias-window 24 --profile
 ```
 
@@ -411,6 +411,8 @@ logged each hour.
 megawatt-hours via ``--energy-scale 1e-9`` before applying the cost.  This keeps
 energy magnitudes comparable to pressure penalties and lets ``w_e`` remain near
 unity while ``w_p``/``w_c`` default to 100 so constraint violations dominate.
+Alternatively, pass ``--auto-energy-scale`` to normalise by the average hourly
+energy when all pumps operate at their base speed.
 ``--barrier`` selects how violations are penalised: ``softplus``
 applies a smooth barrier (default), ``exp`` uses an exponential barrier and
 ``cubic`` reverts to the previous hinge. Gradients on the control variables are
