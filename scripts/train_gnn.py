@@ -2622,7 +2622,7 @@ if __name__ == "__main__":
         "--rnn-hidden-dim", "--lstm-hidden",
         dest="rnn_hidden_dim",
         type=int,
-        choices=[64, 128],
+        choices=[64, 128, 256],
         default=64,
         help="Hidden dimension of the recurrent LSTM layer",
     )

@@ -153,7 +153,7 @@ Chlorine supervision is disabled by default. Pass a positive weight such as
 
 GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8}) and ``--hidden-dim`` ({128,256}).
 Use ``--residual`` to enable skip connections and ``--use-attention`` for graph attention on node updates.
-The LSTM hidden size can be set with ``--lstm-hidden`` (64 or 128).
+The LSTM hidden size can be set with ``--lstm-hidden`` (choices: 64, 128, 256).
 When training larger models that exceed GPU memory, pass ``--checkpoint`` to
 enable gradient checkpointing which recomputes intermediate activations during
 backpropagation to lower peak memory usage at the cost of additional compute.
@@ -306,7 +306,7 @@ Scenarios that do not contain at least ``sequence_length + 1`` time steps are
 skipped with a warning so the actual dataset may be smaller than requested.
 
 The training script automatically detects such sequence files and will use the recurrent
-model. Adjust the recurrent hidden size via ``--lstm-hidden`` (alias ``--rnn-hidden-dim``) choosing 64 or 128.
+model. Adjust the recurrent hidden size via ``--lstm-hidden`` (alias ``--rnn-hidden-dim``) choosing 64, 128, or 256.
 
 Validate the resulting model with `scripts/experiments_validation.py` before
 running the MPC controller.  Both this script and `scripts/mpc_control.py`
