@@ -967,6 +967,7 @@ def compute_mpc_cost(
     w_e: float = 1.0,
     energy_scale: float = 1e-9,
     barrier: str = "softplus",
+    auto_energy_scale: bool = False,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """Return the MPC cost for a sequence of pump speeds.
 
@@ -980,8 +981,45 @@ def compute_mpc_cost(
     which softly enforces ``Pmin``. ``barrier`` selects how chlorine
     violations are penalised: ``"softplus"`` (default) applies a smooth
     softplus barrier, ``"exp"`` uses an exponential barrier and
-    ``"cubic"`` falls back to the previous cubic hinge.
+    ``"cubic"`` falls back to the previous cubic hinge.  When
+    ``auto_energy_scale`` is ``True`` the average hourly energy with all pumps
+    operating at base speed is estimated and its reciprocal is used as the
+    scaling factor so that energy penalties are on a comparable scale across
+    networks.
     """
+    if auto_energy_scale:
+        with torch.no_grad():
+            base_speeds = torch.ones_like(pump_speeds)
+            base_cost, _ = compute_mpc_cost(
+                base_speeds,
+                wn,
+                model,
+                edge_index,
+                edge_attr,
+                node_types,
+                edge_types,
+                feature_template,
+                pressures,
+                chlorine,
+                horizon,
+                device,
+                Pmin,
+                Cmin,
+                demands,
+                pump_info,
+                False,
+                init_tank_levels,
+                skip_normalization,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                barrier,
+                False,
+            )
+        avg_energy = base_cost.item() / horizon
+        energy_scale = 1.0 / (avg_energy + EPS)
+
     cur_p = pressures.to(device)
     cur_c = chlorine.to(device)
 
@@ -1167,6 +1205,7 @@ def run_mpc_step(
     energy_scale: float = 1e-9,
     barrier: str = "softplus",
     gmax: float = 1.0,
+    auto_energy_scale: bool = False,
 ) -> Tuple[torch.Tensor, List[float], float]:
     """Optimize pump speeds for one hour using gradient-based MPC.
 
@@ -1241,6 +1280,7 @@ def run_mpc_step(
             w_e,
             energy_scale,
             barrier,
+            auto_energy_scale,
         )
         cost.backward()
         if gmax is not None:
@@ -1282,6 +1322,7 @@ def run_mpc_step(
             w_e,
             energy_scale,
             barrier,
+            auto_energy_scale,
         )
         c.backward()
         if gmax is not None:
@@ -1315,6 +1356,7 @@ def run_mpc_step(
         w_e,
         energy_scale,
         barrier,
+        auto_energy_scale,
     )
     with torch.no_grad():
         pump_speeds.copy_(pump_speeds.clamp(0.0, MAX_PUMP_SPEED))
@@ -1503,6 +1545,7 @@ def simulate_closed_loop(
     gmax: float = 1.0,
     bias_correction: bool = False,
     bias_window: int = 1,
+    auto_energy_scale: bool = False,
 ) -> pd.DataFrame:
     """Run 24-hour closed-loop MPC using the surrogate for fast updates.
 
@@ -1617,6 +1660,7 @@ def simulate_closed_loop(
             energy_scale,
             barrier,
             gmax,
+            auto_energy_scale,
         )
         all_costs.extend(costs)
         prev_speed = speed_opt.detach()
@@ -1820,6 +1864,11 @@ def main():
         default=1e-9,
         help="Scale factor applied to pump energy (e.g., 1e-9 converts J to MWh)",
     )
+    parser.add_argument(
+        "--auto-energy-scale",
+        action="store_true",
+        help="Estimate typical hourly energy at base speed to normalise energy cost",
+    )
     parser.add_argument("--w_p", type=float, default=100.0, help="Weight on pressure violations")
     parser.add_argument("--w_c", type=float, default=100.0, help="Weight on chlorine violations")
     parser.add_argument("--w_e", type=float, default=1.0, help="Weight on energy usage")
@@ -1926,6 +1975,7 @@ def main():
         args.gmax,
         args.bias_correction,
         args.bias_window,
+        args.auto_energy_scale,
     )
 
     cfg_extra = {
