@@ -114,6 +114,7 @@ def pressure_headloss_consistency_loss(
     *,
     return_violation: bool = False,
     epsilon: float = 1e-6,
+    sign_weight: float = 0.5,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """Return MSE between predicted and Hazen--Williams head losses.
 
@@ -156,11 +157,25 @@ def pressure_headloss_consistency_loss(
     denom = (rough.pow(1.852) * diam.pow(4.87)).clamp(min=epsilon)
     hw_hl = const * length * q_m3.abs().pow(1.852) / denom
 
-    loss = (
+    base = (
         torch.mean((pred_hl - flow_sign * hw_hl) ** 2)
         if pred_hl.numel() > 0
         else torch.tensor(0.0, device=pred_pressures.device)
     )
+
+    # Encourage correct sign of head loss relative to flow direction.
+    # For positive flow the head should drop (p_src > p_tgt) and the opposite
+    # for negative flow. Wrong sign contributes a positive hinge penalty.
+    if sign_weight > 0 and pred_hl.numel() > 0:
+        valid = q_pipe.abs() > epsilon
+        if valid.any():
+            sign_term = torch.relu(-(pred_hl * flow_sign))[..., valid]
+            sign_pen = sign_term.mean()
+        else:
+            sign_pen = torch.tensor(0.0, device=pred_pressures.device)
+        loss = base + sign_weight * sign_pen
+    else:
+        loss = base
 
     if return_violation:
         with torch.no_grad():

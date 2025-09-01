@@ -936,6 +936,7 @@ def train_sequence(
     w_flow: float = 1.0,
     amp: bool = False,
     progress: bool = True,
+    head_sign_weight: float = 0.5,
 ) -> Tuple[float, float, float, float, float, float, float, float, float, float]:
     global interrupted
     model.train()
@@ -1085,6 +1086,7 @@ def train_sequence(
                     edge_attr_phys,
                     edge_type=et,
                     return_violation=True,
+                    sign_weight=head_sign_weight,
                 )
             else:
                 head_loss = torch.tensor(0.0, device=device)
@@ -1199,6 +1201,7 @@ def evaluate_sequence(
     w_flow: float = 1.0,
     amp: bool = False,
     progress: bool = True,
+    head_sign_weight: float = 0.5,
 ) -> Tuple[float, float, float, float, float, float, float, float, float, float]:
     global interrupted
     model.eval()
@@ -1322,14 +1325,15 @@ def evaluate_sequence(
                                 flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                             else:
                                 press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                        head_loss, head_violation = pressure_headloss_consistency_loss(
-                            press,
-                            flow,
-                            edge_index,
-                            edge_attr_phys,
-                            edge_type=et,
-                            return_violation=True,
-                        )
+                head_loss, head_violation = pressure_headloss_consistency_loss(
+                    press,
+                    flow,
+                    edge_index,
+                    edge_attr_phys,
+                    edge_type=et,
+                    return_violation=True,
+                    sign_weight=head_sign_weight,
+                )
                     else:
                         head_loss = torch.tensor(0.0, device=device)
                         head_violation = torch.tensor(0.0, device=device)
@@ -1885,6 +1889,7 @@ def main(args: argparse.Namespace):
             w_flow=args.w_flow,
             amp=args.amp,
             progress=False,
+            head_sign_weight=getattr(args, "head_sign_weight", 0.5),
         )
         press_base = float(base_eval[1]) if base_eval[1] > 0 else 1.0
         if args.physics_loss and mass_scale <= 0:
@@ -1965,6 +1970,8 @@ def main(args: argparse.Namespace):
         best_val = float("inf")
         patience = 0
         for epoch in range(start_epoch, args.epochs):
+            # Optional curriculum: delay head-consistency loss
+            w_head_curr = 0.0 if epoch < getattr(args, "head_warmup", 0) else args.w_head
             if seq_mode:
                 loss_tuple = train_sequence(
                     model,
@@ -1987,13 +1994,14 @@ def main(args: argparse.Namespace):
                     head_scale=head_scale,
                     pump_scale=pump_scale,
                     w_mass=args.w_mass,
-                    w_head=args.w_head,
+                    w_head=w_head_curr,
                     w_pump=args.w_pump,
                     w_press=args.w_press,
                     w_cl=args.w_cl,
                     w_flow=args.w_flow,
                     amp=args.amp,
                     progress=args.progress,
+                    head_sign_weight=getattr(args, "head_sign_weight", 0.5),
                 )
                 loss = loss_tuple[0]
                 press_l, cl_l, flow_l, mass_l, head_l, sym_l, pump_l, mass_imb, head_viols = loss_tuple[1:]
@@ -2024,13 +2032,14 @@ def main(args: argparse.Namespace):
                         head_scale=head_scale,
                         pump_scale=pump_scale,
                         w_mass=args.w_mass,
-                        w_head=args.w_head,
+                        w_head=w_head_curr,
                         w_pump=args.w_pump,
                         w_press=args.w_press,
                         w_cl=args.w_cl,
                         w_flow=args.w_flow,
                         amp=args.amp,
                         progress=args.progress,
+                        head_sign_weight=getattr(args, "head_sign_weight", 0.5),
                     )
                     val_loss = val_tuple[0]
                     val_press_l, val_cl_l, val_flow_l, val_mass_imb, val_head_viols = val_tuple[1:6]
@@ -2721,6 +2730,18 @@ if __name__ == "__main__":
         type=float,
         default=1.0,
         help="Weight of the head loss consistency term",
+    )
+    parser.add_argument(
+        "--head-sign-weight",
+        type=float,
+        default=0.5,
+        help="Additional weight for wrong-sign head-loss hinge penalty (0 disables)",
+    )
+    parser.add_argument(
+        "--head-warmup",
+        type=int,
+        default=0,
+        help="Number of initial epochs to disable head loss (curriculum)",
     )
     parser.add_argument(
         "--w_pump",

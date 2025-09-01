@@ -211,7 +211,11 @@ the headloss term uses ``1.0``. Node pressure, chlorine and flow terms use
 weights ``--w-press`` (default ``5.0``), ``--w-cl`` (``0.0``) and ``--w-flow``
 (``3.0``). Chlorine is thus ignored unless a positive weight is provided. The
 relative importance can still be tuned via these flags together with
-``--w_mass`` and ``--w_head``.  To keep the physics penalties on a comparable
+``--w_mass`` and ``--w_head``.  To further encourage physically correct flow–pressure
+direction, a hinge penalty on the head‑loss sign is applied with configurable weight
+``--head-sign-weight`` (default ``0.5``). You can delay introducing the head‑loss term
+for a short supervised warm‑up via ``--head-warmup <epochs>``.
+To keep the physics penalties on a comparable
 scale the script estimates baseline magnitudes for the mass, headloss and pump
 curve terms relative to the pressure loss during a calibration pass over the
 training data. These ratios are used to normalise the respective losses before
