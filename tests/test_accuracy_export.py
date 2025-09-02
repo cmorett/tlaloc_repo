@@ -24,3 +24,5 @@ def test_save_accuracy_metrics(tmp_path):
     df = pd.read_csv(f, index_col=0)
     assert "Pressure (m)" in df.columns
     assert "Chlorine (mg/L)" in df.columns
+    assert "R^2" in df.index
+    assert not np.isnan(df.loc["R^2", "Pressure (m)"])

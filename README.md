@@ -70,7 +70,7 @@ EPANET results: ``pred_vs_actual_pressure_<run>.png`` and
 ``pred_vs_actual_chlorine_<run>.png``. Reservoirs and tanks are excluded from
 these plots since their pressures are fixed. ``error_histograms_<run>.png``
 contains histograms and box plots of the prediction errors and the CSV
-``logs/accuracy_<run>.csv`` records MAE, RMSE, MAPE and maximum error for
+``logs/accuracy_<run>.csv`` records MAE, RMSE, MAPE, maximum error and R^2 for
 pressure and chlorine. Reservoir and tank nodes are excluded from these metrics
 so outliers from fixed heads do not skew the results. Metrics are accumulated
 using running statistics so the full prediction arrays are never stored in
@@ -499,6 +499,7 @@ from metrics import (
 
 # arrays of ground truth and predictions
 acc_df = accuracy_metrics(true_p, pred_p, true_c, pred_c)
+# ``acc_df`` contains MAE, RMSE, MAPE, maximum error and R^2 for each quantity
 control_df = control_metrics(min_p, min_c, energy, p_min=20.0, c_min=0.2)
 comp_df = computational_metrics(inference_times, optimisation_times)
 

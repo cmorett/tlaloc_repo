@@ -30,8 +30,8 @@ def accuracy_metrics(
     Returns
     -------
     pd.DataFrame
-        Table with MAE, RMSE, MAPE and maximum error for pressure and, when
-        provided, chlorine.
+        Table with MAE, RMSE, MAPE, maximum error and :math:`R^2` for pressure
+        and, when provided, chlorine.
     """
     tp = _to_numpy(true_pressure)
     pp = _to_numpy(pred_pressure)
@@ -41,10 +41,11 @@ def accuracy_metrics(
     rmse_p = np.sqrt(((tp - pp) ** 2).mean())
     mape_p = (abs_p / np.maximum(np.abs(tp), 1e-8)).mean() * 100.0
     max_err_p = abs_p.max()
+    ss_tot_p = np.square(tp - tp.mean()).sum()
+    ss_res_p = np.square(tp - pp).sum()
+    r2_p = float("nan") if ss_tot_p <= 1e-8 else 1.0 - (ss_res_p / ss_tot_p)
 
-    data = {
-        "Pressure (m)": [mae_p, rmse_p, mape_p, max_err_p]
-    }
+    data = {"Pressure (m)": [mae_p, rmse_p, mape_p, max_err_p, r2_p]}
 
     if true_chlorine is not None and pred_chlorine is not None:
         tc = _to_numpy(true_chlorine)
@@ -54,13 +55,17 @@ def accuracy_metrics(
         rmse_c = np.sqrt(((tc - pc) ** 2).mean())
         mape_c = (abs_c / np.maximum(np.abs(tc), 1e-8)).mean() * 100.0
         max_err_c = abs_c.max()
-        data["Chlorine (mg/L)"] = [mae_c, rmse_c, mape_c, max_err_c]
+        ss_tot_c = np.square(tc - tc.mean()).sum()
+        ss_res_c = np.square(tc - pc).sum()
+        r2_c = float("nan") if ss_tot_c <= 1e-8 else 1.0 - (ss_res_c / ss_tot_c)
+        data["Chlorine (mg/L)"] = [mae_c, rmse_c, mape_c, max_err_c, r2_c]
 
     index = [
         "Mean Absolute Error (MAE)",
         "Root Mean Squared Error (RMSE)",
         "Mean Absolute Percentage Error",
         "Maximum Error",
+        "R^2",
     ]
     return pd.DataFrame(data, index=index)
 
