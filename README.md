@@ -167,6 +167,8 @@ The LSTM hidden size can be set with ``--lstm-hidden`` (choices: 64, 128, 256).
 When training larger models that exceed GPU memory, pass ``--checkpoint`` to
 enable gradient checkpointing which recomputes intermediate activations during
 backpropagation to lower peak memory usage at the cost of additional compute.
+If a CUDA out-of-memory error is encountered, the training script now
+automatically retries with gradient checkpointing enabled.
 If training is interrupted with ``Ctrl+C`` a final checkpoint containing the
 model, optimizer, scheduler state and epoch is saved so progress is not lost.
 To continue a previous run pass the checkpoint path via ``--resume``.  All

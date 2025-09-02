@@ -90,6 +90,37 @@ except ImportError:  # pragma: no cover
 PUMP_LOSS_WARN_THRESHOLD = 1.0
 
 
+def _forward_with_auto_checkpoint(model: nn.Module, fn):
+    """Execute ``fn`` and enable gradient checkpointing on CUDA OOM.
+
+    Parameters
+    ----------
+    model:
+        Model which may support the ``use_checkpoint`` flag.
+    fn:
+        Zero-argument callable performing the forward pass.
+
+    Returns
+    -------
+    Any
+        The output of ``fn``.
+    """
+
+    try:
+        return fn()
+    except RuntimeError as e:  # pragma: no cover - retry path
+        msg = str(e).lower()
+        if "out of memory" in msg and not getattr(model, "use_checkpoint", False):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            setattr(model, "use_checkpoint", True)
+            logger.warning(
+                "CUDA OOM encountered - enabling gradient checkpointing and retrying"
+            )
+            return fn()
+        raise
+
+
 def summarize_target_norm_stats(y_mean, y_std, has_chlorine: bool):
     """Return scalar normalization stats for logging.
 
@@ -676,7 +707,9 @@ def plot_sequence_prediction(
     et = dataset.edge_type.to(device) if dataset.edge_type is not None else None
 
     with torch.no_grad():
-        out = model(X_seq, ei, ea, nt, et)
+        def _model_forward():
+            return model(X_seq, ei, ea, nt, et)
+        out = _forward_with_auto_checkpoint(model, _model_forward)
 
     if isinstance(out, dict):
         pred = out["node_outputs"]
@@ -901,14 +934,16 @@ def train(
         if check_negative and ((batch.x[:, 1] < 0).any() or (batch.y[:, 0] < 0).any()):
             raise ValueError("Negative pressures encountered in training batch")
         optimizer.zero_grad()
-        with autocast(device_type=device.type, enabled=amp):
-            out = model(
+        def _model_forward():
+            return model(
                 batch.x,
                 batch.edge_index,
                 getattr(batch, "edge_attr", None),
                 getattr(batch, "node_type", None),
                 getattr(batch, "edge_type", None),
             )
+        with autocast(device_type=device.type, enabled=amp):
+            out = _forward_with_auto_checkpoint(model, _model_forward)
             if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
                 pred_nodes = out["node_outputs"].float()
                 edge_pred = out["edge_outputs"].float()
@@ -993,19 +1028,21 @@ def evaluate(
                     break
                 raise
             batch = batch.to(device, non_blocking=True)
-            with autocast(device_type=device.type, enabled=amp):
-                out = model(
+            def _model_forward():
+                return model(
                     batch.x,
                     batch.edge_index,
                     getattr(batch, "edge_attr", None),
                     getattr(batch, "node_type", None),
                     getattr(batch, "edge_type", None),
                 )
-                if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
-                    pred_nodes = out["node_outputs"].float()
-                    edge_pred = out["edge_outputs"].float()
-                    target_nodes = batch.y.float()
-                    edge_target = batch.edge_y.float()
+            with autocast(device_type=device.type, enabled=amp):
+                out = _forward_with_auto_checkpoint(model, _model_forward)
+            if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
+                pred_nodes = out["node_outputs"].float()
+                edge_pred = out["edge_outputs"].float()
+                target_nodes = batch.y.float()
+                edge_target = batch.edge_y.float()
                     # Preserve full predictions for per-node metrics
                     node_count = pred_nodes.size(0) // batch.num_graphs
                     pred_nodes_b = pred_nodes.view(batch.num_graphs, node_count, -1)
@@ -1231,14 +1268,16 @@ def train_sequence(
             init_levels = init_press * model.tank_areas
             model.reset_tank_levels(init_levels)
         optimizer.zero_grad()
-        with autocast(device_type=device.type, enabled=amp):
-            preds = model(
+        def _model_forward():
+            return model(
                 X_seq,
                 edge_index,
                 edge_attr,
                 nt,
                 et,
             )
+        with autocast(device_type=device.type, enabled=amp):
+            preds = _forward_with_auto_checkpoint(model, _model_forward)
         if isinstance(Y_seq, dict):
             target_nodes = Y_seq['node_outputs'].to(device)
             pred_nodes = preds['node_outputs'].float()
@@ -1614,19 +1653,21 @@ def evaluate_sequence(
                 init_press = X_seq[:, 0, model.tank_indices, 1]
                 init_levels = init_press * model.tank_areas
                 model.reset_tank_levels(init_levels)
-            with autocast(device_type=device.type, enabled=amp):
-                preds = model(
+            def _model_forward():
+                return model(
                     X_seq,
                     edge_index,
                     edge_attr,
                     nt,
                     et,
                 )
-                if isinstance(Y_seq, dict):
-                    target_nodes_full = Y_seq['node_outputs'].to(device)
-                    pred_nodes_full = preds['node_outputs'].float()
-                    press_pred_full = pred_nodes_full[..., 0]
-                    press_true_full = target_nodes_full[..., 0]
+            with autocast(device_type=device.type, enabled=amp):
+                preds = _forward_with_auto_checkpoint(model, _model_forward)
+            if isinstance(Y_seq, dict):
+                target_nodes_full = Y_seq['node_outputs'].to(device)
+                pred_nodes_full = preds['node_outputs'].float()
+                press_pred_full = pred_nodes_full[..., 0]
+                press_true_full = target_nodes_full[..., 0]
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
                             p_mean_full = model.y_mean["node_outputs"].to(device)
@@ -2868,8 +2909,10 @@ def main(args: argparse.Namespace):
                 et = test_ds.edge_type.to(device) if test_ds.edge_type is not None else None
                 for X_seq, Y_seq in test_loader:
                     X_seq = X_seq.to(device)
+                    def _model_forward():
+                        return model(X_seq, ei, ea, nt, et)
                     with autocast(device_type=device.type, enabled=args.amp):
-                        out = model(X_seq, ei, ea, nt, et)
+                        out = _forward_with_auto_checkpoint(model, _model_forward)
                     if isinstance(out, dict):
                         node_pred = out["node_outputs"]
                         edge_pred = out.get("edge_outputs")
@@ -2931,14 +2974,16 @@ def main(args: argparse.Namespace):
             else:
                 for batch in test_loader:
                     batch = batch.to(device, non_blocking=True)
-                    with autocast(device_type=device.type, enabled=args.amp):
-                        out = model(
+                    def _model_forward():
+                        return model(
                             batch.x,
                             batch.edge_index,
                             getattr(batch, "edge_attr", None),
                             getattr(batch, "node_type", None),
                             getattr(batch, "edge_type", None),
                         )
+                    with autocast(device_type=device.type, enabled=args.amp):
+                        out = _forward_with_auto_checkpoint(model, _model_forward)
                     if hasattr(model, "y_mean") and model.y_mean is not None:
                         if isinstance(model.y_mean, dict):
                             y_mean_node = model.y_mean['node_outputs'].to(out.device)
