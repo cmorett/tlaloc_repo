@@ -269,7 +269,9 @@ pressure. The training script automatically detects this layout and adjusts
 its output dimension accordingly.
 The script logs to stdout and ``logs/data_generation.log`` by default. Use
 ``--log-level`` to control verbosity and ``--log-file`` to change the log
-destination.
+destination. After generation completes global min/mean/max statistics for
+pressures, demand multipliers and pump speeds are printed and saved to
+``logs/data_generation_summary.json`` for later inspection.
 If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.

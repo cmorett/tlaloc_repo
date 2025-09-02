@@ -991,6 +991,47 @@ def main() -> None:
     plot_dataset_distributions(demand_mults, pump_speeds, run_ts)
     plot_pressure_histogram(all_pressures, base_pressures, run_ts)
     extreme_count = sum(m["min_pressure"] < 10.0 for m in manifest_records)
+
+    def _stats(seq: List[float]) -> Dict[str, float]:
+        if len(seq) == 0:
+            return {"min": float("nan"), "mean": float("nan"), "max": float("nan")}
+        arr = np.asarray(seq, dtype=float)
+        return {
+            "min": float(np.min(arr)),
+            "mean": float(np.mean(arr)),
+            "max": float(np.max(arr)),
+        }
+
+    pressure_stats = _stats(all_pressures)
+    demand_stats = _stats(demand_mults)
+    pump_stats = _stats(pump_speeds)
+    summary = {
+        "pressures": pressure_stats,
+        "demand_multipliers": demand_stats,
+        "pump_speeds": pump_stats,
+        "num_extreme": int(extreme_count),
+        "total_scenarios": len(manifest_records),
+    }
+    logger.info(
+        "Pressure min/mean/max: %.2f/%.2f/%.2f; Demand multiplier min/mean/max: %.2f/%.2f/%.2f; "
+        "Pump speed min/mean/max: %.2f/%.2f/%.2f; Extreme scenarios: %d/%d",
+        pressure_stats["min"],
+        pressure_stats["mean"],
+        pressure_stats["max"],
+        demand_stats["min"],
+        demand_stats["mean"],
+        demand_stats["max"],
+        pump_stats["min"],
+        pump_stats["mean"],
+        pump_stats["max"],
+        summary["num_extreme"],
+        summary["total_scenarios"],
+    )
+    summary_path = REPO_ROOT / "logs" / "data_generation_summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
     train_res, val_res, test_res = split_results(results, seed=args.seed)
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
