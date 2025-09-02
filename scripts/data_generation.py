@@ -537,7 +537,7 @@ def split_results(
         ]
     ],
     seed: Optional[int] = None,
-) -> Tuple[List, List, List]:
+) -> Tuple[List, List, List, Dict[str, int]]:
     num_total = len(results)
     rng = np.random.default_rng(seed)
     indices = rng.permutation(num_total)
@@ -550,7 +550,19 @@ def split_results(
     train_results = [results[i] for i in train_idx]
     val_results = [results[i] for i in val_idx]
     test_results = [results[i] for i in test_idx]
-    return train_results, val_results, test_results
+    counts = {
+        "train": len(train_results),
+        "val": len(val_results),
+        "test": len(test_results),
+    }
+    logger.info(
+        "Split %d results into %d train, %d val, %d test scenarios",
+        num_total,
+        counts["train"],
+        counts["val"],
+        counts["test"],
+    )
+    return train_results, val_results, test_results, counts
 
 
 def build_sequence_dataset(
@@ -999,6 +1011,14 @@ def main() -> None:
     if args.exclude_stress:
         results = [r for r in results if "stress" not in getattr(r[0], "scenario_type", "")]
 
+    train_res, val_res, test_res, split_counts = split_results(results, seed=args.seed)
+    logger.info(
+        "Scenario counts - train: %d, val: %d, test: %d",
+        split_counts["train"],
+        split_counts["val"],
+        split_counts["test"],
+    )
+
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     demand_mults: List[float] = []
     pump_speeds: List[float] = []
@@ -1047,6 +1067,7 @@ def main() -> None:
         "pump_speeds": pump_stats,
         "num_extreme": int(extreme_count),
         "total_scenarios": len(manifest_records),
+        "split_counts": split_counts,
     }
     logger.info(
         "Pressure min/mean/max: %.2f/%.2f/%.2f; Demand multiplier min/mean/max: %.2f/%.2f/%.2f; "
@@ -1067,8 +1088,6 @@ def main() -> None:
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
-
-    train_res, val_res, test_res = split_results(results, seed=args.seed)
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
     if args.sequence_length > 1:
