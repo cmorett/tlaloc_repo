@@ -89,11 +89,11 @@ def compute_mass_balance_loss(
     node_balance = node_balance / 2.0
 
     if demand is not None:
-        dem = demand.reshape(node_count, -1)
+        dem = demand.reshape(node_count, -1).to(node_balance.device)
         node_balance[:, : dem.shape[1]] -= dem
 
     if node_type is not None:
-        node_type = node_type.reshape(node_count)
+        node_type = node_type.reshape(node_count).to(node_balance.device)
         mask = (node_type == 1) | (node_type == 2)
         node_balance[mask] = 0
 
