@@ -83,6 +83,42 @@ import networkx as nx
 import json
 
 
+def log_array_stats(name: str, arr: np.ndarray) -> None:
+    """Log basic statistics for ``arr`` and ensure it has no invalid values.
+
+    Parameters
+    ----------
+    name: str
+        Human readable name for the array.
+    arr: np.ndarray
+        Array to inspect.
+
+    Raises
+    ------
+    ValueError
+        If ``arr`` contains NaN or infinite values.
+    """
+
+    nan_count = int(np.count_nonzero(np.isnan(arr)))
+    inf_count = int(np.count_nonzero(np.isinf(arr)))
+    logger.info(
+        "%s: shape=%s dtype=%s nan=%d inf=%d",
+        name,
+        arr.shape,
+        arr.dtype,
+        nan_count,
+        inf_count,
+    )
+    if nan_count or inf_count:
+        logger.error(
+            "%s contains invalid values: %d NaNs, %d Infs",
+            name,
+            nan_count,
+            inf_count,
+        )
+        raise ValueError(f"{name} contains invalid values")
+
+
 def simulate_extreme_event(
     wn: wntr.network.WaterNetworkModel,
     pump_controls: Dict[str, List[float]],
@@ -1055,19 +1091,32 @@ def main() -> None:
     out_dir = Path(args.output_dir)
     os.makedirs(out_dir, exist_ok=True)
 
+    log_array_stats("X_train", X_train)
     np.save(os.path.join(out_dir, "X_train.npy"), X_train)
+    log_array_stats("Y_train", Y_train)
     np.save(os.path.join(out_dir, "Y_train.npy"), Y_train)
+    log_array_stats("X_val", X_val)
     np.save(os.path.join(out_dir, "X_val.npy"), X_val)
+    log_array_stats("Y_val", Y_val)
     np.save(os.path.join(out_dir, "Y_val.npy"), Y_val)
+    log_array_stats("X_test", X_test)
     np.save(os.path.join(out_dir, "X_test.npy"), X_test)
+    log_array_stats("Y_test", Y_test)
     np.save(os.path.join(out_dir, "Y_test.npy"), Y_test)
     if args.sequence_length > 1:
+        log_array_stats("scenario_train", train_labels)
         np.save(os.path.join(out_dir, "scenario_train.npy"), train_labels)
+        log_array_stats("scenario_val", val_labels)
         np.save(os.path.join(out_dir, "scenario_val.npy"), val_labels)
+        log_array_stats("scenario_test", test_labels)
         np.save(os.path.join(out_dir, "scenario_test.npy"), test_labels)
+    log_array_stats("edge_index", edge_index)
     np.save(os.path.join(out_dir, "edge_index.npy"), edge_index)
+    log_array_stats("edge_attr", edge_attr)
     np.save(os.path.join(out_dir, "edge_attr.npy"), edge_attr)
+    log_array_stats("edge_type", edge_type)
     np.save(os.path.join(out_dir, "edge_type.npy"), edge_type)
+    log_array_stats("pump_coeffs", pump_coeffs)
     np.save(os.path.join(out_dir, "pump_coeffs.npy"), pump_coeffs)
 
     manifest = {
