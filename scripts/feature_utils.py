@@ -118,8 +118,21 @@ class SequenceDataset(torch.utils.data.Dataset):
             self.multi = False
             self.Y = torch.tensor(Y, dtype=torch.float32)
 
+        # Truncate to the shortest target length to avoid out-of-bounds access
+        self.length = self.X.shape[0]
+        if self.multi:
+            for v in self.Y.values():
+                self.length = min(self.length, v.shape[0])
+            self.X = self.X[: self.length]
+            for k in list(self.Y.keys()):
+                self.Y[k] = self.Y[k][: self.length]
+        else:
+            self.length = min(self.length, self.Y.shape[0])
+            self.X = self.X[: self.length]
+            self.Y = self.Y[: self.length]
+
     def __len__(self) -> int:  # type: ignore[override]
-        return self.X.shape[0]
+        return self.length
 
     def __getitem__(self, idx: int):  # type: ignore[override]
         if self.multi:
