@@ -2337,6 +2337,43 @@ def main(args: argparse.Namespace):
                 model_path, model, optimizer, scheduler, epoch, norm_stats, model_meta
             )
 
+    # Ensure a checkpoint exists even if validation never improved
+    if not os.path.exists(model_path):
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        ckpt = {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "epoch": epoch,
+        }
+        if norm_stats is not None:
+            ckpt["norm_stats"] = norm_stats
+            y_mean_np = norm_stats["y_mean"]
+            y_std_np = norm_stats["y_std"]
+            if isinstance(y_mean_np, dict):
+                np.savez(
+                    norm_path,
+                    x_mean=norm_stats["x_mean"],
+                    x_std=norm_stats["x_std"],
+                    y_mean_node=y_mean_np["node_outputs"],
+                    y_std_node=y_std_np["node_outputs"],
+                    y_mean_edge=y_mean_np["edge_outputs"],
+                    y_std_edge=y_std_np["edge_outputs"],
+                    edge_mean=norm_stats["edge_mean"],
+                    edge_std=norm_stats["edge_std"],
+                )
+            else:
+                np.savez(
+                    norm_path,
+                    x_mean=norm_stats["x_mean"],
+                    x_std=norm_stats["x_std"],
+                    y_mean=y_mean_np,
+                    y_std=y_std_np,
+                    edge_mean=norm_stats["edge_mean"],
+                    edge_std=norm_stats["edge_std"],
+                )
+        torch.save(ckpt, model_path)
+
     os.makedirs(PLOTS_DIR, exist_ok=True)
     # plot loss curve
     if losses:
