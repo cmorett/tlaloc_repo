@@ -117,8 +117,13 @@ def log_array_stats(name: str, arr: np.ndarray) -> None:
                 values = [item]
             for v in values:
                 v_arr = np.asarray(v)
-                nan_count += int(np.count_nonzero(np.isnan(v_arr)))
-                inf_count += int(np.count_nonzero(np.isinf(v_arr)))
+                # ``np.isnan``/``np.isinf`` error on non-numeric dtypes such as
+                # strings.  Guard the checks so scenario label arrays with
+                # object dtype (e.g. ``["normal", "fire_flow"]``) don't
+                # trigger a ``TypeError``.
+                if np.issubdtype(v_arr.dtype, np.number):
+                    nan_count += int(np.count_nonzero(np.isnan(v_arr)))
+                    inf_count += int(np.count_nonzero(np.isinf(v_arr)))
     else:
         nan_count = int(np.count_nonzero(np.isnan(arr_np)))
         inf_count = int(np.count_nonzero(np.isinf(arr_np)))

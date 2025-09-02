@@ -29,6 +29,7 @@ def test_evaluate_sequence_per_node_denorm():
         {
             "node_outputs": np.zeros((1, 2, 2), dtype=np.float32),
             "edge_outputs": np.zeros((1, 2), dtype=np.float32),
+            "demand": np.zeros((1, 2), dtype=np.float32),
         }
     ], dtype=object)
     edge_index = np.array([[0, 1], [1, 0]])
