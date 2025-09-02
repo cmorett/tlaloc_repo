@@ -329,6 +329,32 @@ class RunningStats:
         return [mae, rmse, mape, self.max_err]
 
 
+@dataclass
+class PhysicsWeightScheduler:
+    """Linearly ramp physics loss weights from 0 to target values."""
+
+    w_mass: float
+    w_head: float
+    w_pump: float
+    mass_warmup: int = 0
+    head_warmup: int = 0
+    pump_warmup: int = 0
+
+    def _scale(self, epoch: int, target: float, warmup: int) -> float:
+        if warmup <= 0:
+            return target
+        if epoch >= warmup:
+            return target
+        return target * (epoch / warmup)
+
+    def get(self, epoch: int) -> Tuple[float, float, float]:
+        """Return current (w_mass, w_head, w_pump) for ``epoch``."""
+        return (
+            self._scale(epoch, self.w_mass, self.mass_warmup),
+            self._scale(epoch, self.w_head, self.head_warmup),
+            self._scale(epoch, self.w_pump, self.pump_warmup),
+        )
+
 def save_scatter_plots(
     true_p,
     preds_p,
@@ -1972,7 +1998,7 @@ def main(args: argparse.Namespace):
         if args.pressure_loss and head_scale <= 0:
             head_scale = float(base_eval[5]) / press_base if base_eval[5] > 0 else 1.0
         if args.pump_loss and pump_scale <= 0:
-            pump_scale = float(base_eval[7]) / press_base if base_eval[7] > 0 else 1.0
+        pump_scale = float(base_eval[7]) / press_base if base_eval[7] > 0 else 1.0
     MIN_SCALE = 1e-3
     mass_scale = max(mass_scale, MIN_SCALE)
     head_scale = max(head_scale, MIN_SCALE)
@@ -1980,6 +2006,15 @@ def main(args: argparse.Namespace):
     args.mass_scale = mass_scale
     args.head_scale = head_scale
     args.pump_scale = pump_scale
+
+    weight_scheduler = PhysicsWeightScheduler(
+        w_mass=args.w_mass,
+        w_head=args.w_head,
+        w_pump=args.w_pump,
+        mass_warmup=getattr(args, "mass_warmup", 0),
+        head_warmup=getattr(args, "head_warmup", 0),
+        pump_warmup=getattr(args, "pump_warmup", 0),
+    )
     if seq_mode and (args.physics_loss or args.pressure_loss or args.pump_loss):
         print(
             f"Using physics loss scales: mass={mass_scale:.4e}, head={head_scale:.4e}, pump={pump_scale:.4e}"
@@ -2045,8 +2080,7 @@ def main(args: argparse.Namespace):
         best_val = float("inf")
         patience = 0
         for epoch in range(start_epoch, args.epochs):
-            # Optional curriculum: delay head-consistency loss
-            w_head_curr = 0.0 if epoch < getattr(args, "head_warmup", 0) else args.w_head
+            w_mass_curr, w_head_curr, w_pump_curr = weight_scheduler.get(epoch)
             if seq_mode:
                 loss_tuple = train_sequence(
                     model,
@@ -2068,9 +2102,9 @@ def main(args: argparse.Namespace):
                     mass_scale=mass_scale,
                     head_scale=head_scale,
                     pump_scale=pump_scale,
-                    w_mass=args.w_mass,
+                    w_mass=w_mass_curr,
                     w_head=w_head_curr,
-                    w_pump=args.w_pump,
+                    w_pump=w_pump_curr,
                     w_press=args.w_press,
                     w_cl=args.w_cl,
                     w_flow=args.w_flow,
@@ -2117,9 +2151,9 @@ def main(args: argparse.Namespace):
                         mass_scale=mass_scale,
                         head_scale=head_scale,
                         pump_scale=pump_scale,
-                        w_mass=args.w_mass,
+                        w_mass=w_mass_curr,
                         w_head=w_head_curr,
-                        w_pump=args.w_pump,
+                        w_pump=w_pump_curr,
                         w_press=args.w_press,
                         w_cl=args.w_cl,
                         w_flow=args.w_flow,
@@ -2882,7 +2916,19 @@ if __name__ == "__main__":
         "--head-warmup",
         type=int,
         default=0,
-        help="Number of initial epochs to disable head loss (curriculum)",
+        help="Warm-up epochs for w_head (linearly ramps from 0)",
+    )
+    parser.add_argument(
+        "--mass-warmup",
+        type=int,
+        default=0,
+        help="Warm-up epochs for w_mass (linearly ramps from 0)",
+    )
+    parser.add_argument(
+        "--pump-warmup",
+        type=int,
+        default=0,
+        help="Warm-up epochs for w_pump (linearly ramps from 0)",
     )
     parser.add_argument(
         "--w_pump",
