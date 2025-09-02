@@ -264,6 +264,10 @@ The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.np
 ``--num-workers`` to override the number of parallel workers if needed.
 Pass ``--show-progress`` to display a live progress bar during simulation
 when ``tqdm`` is installed.
+The pump speed random walk can be adjusted using ``--pump-speed-min``,
+``--pump-speed-max`` and ``--pump-step`` to set the minimum/maximum
+relative speeds and the maximum hourly change (defaults 0.6, 1.2 and
+0.05).
 Use ``--no-include-chlorine`` to omit chlorine concentration from the
 generated node features and targets. The resulting node features become
 ``[d_t, p_t, elev, pump_speeds...]`` and the targets only contain next-step
