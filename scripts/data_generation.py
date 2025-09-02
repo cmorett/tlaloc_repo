@@ -86,8 +86,8 @@ def log_array_stats(name: str, arr: np.ndarray) -> None:
     ``arr`` is typically a numeric ``numpy.ndarray`` but some callers pass an
     object array containing dictionaries of arrays (e.g. the training targets).
     ``numpy.isnan`` does not support such object dtypes and raises a
-    ``TypeError``.  To keep the logging utility broadly applicable we detect
-    object arrays and manually inspect the contained values.
+    ``TypeError``.  To keep the logging utility broadly applicable we convert
+    ``arr`` to ``numpy.ndarray`` and manually inspect object arrays.
 
     Parameters
     ----------
@@ -106,9 +106,11 @@ def log_array_stats(name: str, arr: np.ndarray) -> None:
     nan_count = 0
     inf_count = 0
 
-    if isinstance(arr, np.ndarray) and arr.dtype == object:
+    arr_np = np.asarray(arr)
+
+    if arr_np.dtype == object:
         # Iterate over contained objects and accumulate counts
-        for item in arr.ravel():
+        for item in arr_np.ravel():
             if isinstance(item, dict):
                 values = item.values()
             else:
@@ -118,15 +120,14 @@ def log_array_stats(name: str, arr: np.ndarray) -> None:
                 nan_count += int(np.count_nonzero(np.isnan(v_arr)))
                 inf_count += int(np.count_nonzero(np.isinf(v_arr)))
     else:
-        arr_np = np.asarray(arr)
         nan_count = int(np.count_nonzero(np.isnan(arr_np)))
         inf_count = int(np.count_nonzero(np.isinf(arr_np)))
 
     logger.info(
         "%s: shape=%s dtype=%s nan=%d inf=%d",
         name,
-        getattr(arr, "shape", "n/a"),
-        getattr(arr, "dtype", type(arr)),
+        getattr(arr_np, "shape", "n/a"),
+        arr_np.dtype,
         nan_count,
         inf_count,
     )
