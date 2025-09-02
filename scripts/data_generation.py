@@ -644,9 +644,10 @@ def build_sequence_dataset(
         else:
             quality = None
         demands = sim_results.node.get("demand")
-        if demands is not None:
-            max_d = float(demands.max().max())
-            demands = demands.clip(lower=0.0, upper=max_d * 1.5)
+        if demands is None:
+            raise KeyError("Simulation results missing 'demand' node output")
+        max_d = float(demands.max().max())
+        demands = demands.clip(lower=0.0, upper=max_d * 1.5)
         times = pressures.index
         flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
 
@@ -661,7 +662,7 @@ def build_sequence_dataset(
         node_idx = {n: pressures.columns.get_loc(n) for n in node_names}
         p_arr = pressures.to_numpy(dtype=np.float64)
         q_arr = quality.to_numpy(dtype=np.float64) if quality is not None else None
-        d_arr = demands.to_numpy(dtype=np.float64) if demands is not None else None
+        d_arr = demands.to_numpy(dtype=np.float64)
         pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
 
         X_seq: List[np.ndarray] = []
@@ -685,7 +686,7 @@ def build_sequence_dataset(
                     c_t = float(q_arr[t, idx])
                 else:
                     c_t = None
-                if d_arr is not None and node in wn_template.junction_name_list:
+                if node in wn_template.junction_name_list:
                     d_t = float(d_arr[t, idx])
                 else:
                     d_t = 0.0
@@ -725,18 +726,15 @@ def build_sequence_dataset(
 
             edge_out_seq.append(flows_arr[t + 1].astype(np.float64))
             energy_seq.append(energy_arr[t + 1].astype(np.float64))
-            if d_arr is not None:
-                demand_next = []
-                for node in node_names:
-                    if node in wn_template.junction_name_list:
-                        idx = node_idx[node]
-                        # Demand aligned to the next timestep ``t+1``
-                        demand_next.append(float(d_arr[t + 1, idx]))
-                    else:
-                        demand_next.append(0.0)
-                demand_seq.append(np.array(demand_next, dtype=np.float64))
-            else:
-                demand_seq.append(np.zeros(len(node_names), dtype=np.float64))
+            demand_next = []
+            for node in node_names:
+                if node in wn_template.junction_name_list:
+                    idx = node_idx[node]
+                    # Demand aligned to the next timestep ``t+1``
+                    demand_next.append(float(d_arr[t + 1, idx]))
+                else:
+                    demand_next.append(0.0)
+            demand_seq.append(np.array(demand_next, dtype=np.float64))
 
         X_list.append(np.stack(X_seq))
         Y_list.append({
@@ -788,18 +786,19 @@ def build_dataset(
         else:
             quality = None
         demands = sim_results.node.get("demand")
+        if demands is None:
+            raise KeyError("Simulation results missing 'demand' node output")
         times = pressures.index
         flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
 
-        if demands is not None:
-            max_d = float(demands.max().max())
-            demands = demands.clip(lower=0.0, upper=max_d * 1.5)
+        max_d = float(demands.max().max())
+        demands = demands.clip(lower=0.0, upper=max_d * 1.5)
 
         # Precompute arrays and index mappings for faster lookup
         node_idx = {n: pressures.columns.get_loc(n) for n in node_names}
         p_arr = pressures.to_numpy(dtype=np.float64)
         q_arr = quality.to_numpy(dtype=np.float64) if quality is not None else None
-        d_arr = demands.to_numpy(dtype=np.float64) if demands is not None else None
+        d_arr = demands.to_numpy(dtype=np.float64)
         pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
 
         for i in range(len(times) - 1):
@@ -815,7 +814,7 @@ def build_dataset(
                     p_t = max(p_arr[i, idx], MIN_PRESSURE)
                 if include_chlorine:
                     c_t = max(q_arr[i, idx], 0.0)
-                if d_arr is not None and node in wn_template.junction_name_list:
+                if node in wn_template.junction_name_list:
                     d_t = d_arr[i, idx]
                 else:
                     d_t = 0.0
@@ -854,7 +853,7 @@ def build_dataset(
                     out_nodes.append([p_next, c_next])
                 else:
                     out_nodes.append([p_next])
-                if d_arr is not None and node in wn_template.junction_name_list:
+                if node in wn_template.junction_name_list:
                     demand_next.append(float(d_arr[i + 1, idx]))
                 else:
                     demand_next.append(0.0)

@@ -57,6 +57,11 @@ supported:
 2. **Matrix format** – ``X`` is an array of node feature matrices and a shared
    ``edge_index`` array is stored separately.
 
+The accompanying label arrays always include the next-hour node demands under
+the ``"demand"`` key.  ``train_gnn.py`` relies on this field for mass balance
+checks and will error out if it is missing.  Ensure datasets are generated with
+the current ``data_generation.py`` so demands are recorded.
+
 All plots generated during training, validation and MPC experiments are
 saved under the top-level ``plots/`` directory.  The scripts automatically
 create this folder if it does not yet exist. After each training run
