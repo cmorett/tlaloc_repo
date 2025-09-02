@@ -68,7 +68,10 @@ create this folder if it does not yet exist. After each training run
 ``train_gnn.py`` saves two scatter plots comparing model predictions to
 EPANET results: ``pred_vs_actual_pressure_<run>.png`` and
 ``pred_vs_actual_chlorine_<run>.png``. Reservoirs and tanks are excluded from
-these plots since their pressures are fixed. ``error_histograms_<run>.png``
+these plots since their pressures are fixed. In addition,
+``residual_scatter_pressure_<run>.png`` and
+``residual_scatter_chlorine_<run>.png`` show the prediction residuals versus
+both the ground truth and the predictions. ``error_histograms_<run>.png``
 contains histograms and box plots of the prediction errors and the CSV
 ``logs/accuracy_<run>.csv`` records MAE, RMSE, MAPE, maximum error and R^2 for
 pressure and chlorine. Reservoir and tank nodes are excluded from these metrics

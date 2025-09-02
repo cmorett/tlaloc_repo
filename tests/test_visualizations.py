@@ -4,6 +4,7 @@ import torch
 
 from scripts.train_gnn import (
     predicted_vs_actual_scatter,
+    plot_residual_scatter,
     plot_loss_components,
     plot_error_histograms,
     SequenceDataset,
@@ -44,6 +45,22 @@ def test_predicted_vs_actual_scatter_mask(tmp_path: Path):
     assert (tmp_path / "pred_vs_actual_unit.png").exists()
     ax0 = fig.axes[0]
     assert ax0.collections[0].get_offsets().shape[0] == 2
+
+
+def test_plot_residual_scatter(tmp_path: Path):
+    fig = plot_residual_scatter(
+        [1.0, 2.0, 3.0],
+        [1.1, 2.1, 2.9],
+        "unit",
+        "pressure",
+        plots_dir=tmp_path,
+        return_fig=True,
+        density="hex",
+    )
+    assert (tmp_path / "residual_scatter_pressure_unit.png").exists()
+    ax0 = fig.axes[0]
+    assert ax0.get_ylabel() == "Residual"
+    plt = None
 
 
 def test_convergence_curve(tmp_path: Path):

@@ -314,6 +314,79 @@ def predicted_vs_actual_scatter(
     return fig if return_fig else None
 
 
+def plot_residual_scatter(
+    true_vals: Sequence[float],
+    pred_vals: Sequence[float],
+    run_name: str,
+    label: str,
+    plots_dir: Optional[Path] = None,
+    return_fig: bool = False,
+    mask: Optional[Sequence[bool]] = None,
+    density: Optional[str] = None,
+) -> Optional[plt.Figure]:
+    """Plot residuals (prediction - truth) against true and predicted values.
+
+    ``label`` determines axis titles and units (e.g. ``"pressure"`` or ``"chlorine"``).
+    Set ``density`` to ``"kde"`` or ``"hex"`` to overlay a KDE or hexbin density
+    highlighting point clusters.
+    """
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    t = _to_numpy(true_vals)
+    p = _to_numpy(pred_vals)
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        t = t[m]
+        p = p[m]
+
+    unit = "m"
+    if label.lower().startswith("chlor"):
+        t = np.expm1(t) * 1000.0
+        p = np.expm1(p) * 1000.0
+        unit = "mg/L"
+
+    residual = p - t
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+    def _scatter(ax, x, y):
+        if density == "kde":
+            try:
+                from scipy.stats import gaussian_kde
+
+                xy = np.vstack([x, y])
+                z = gaussian_kde(xy)(xy)
+                sc = ax.scatter(x, y, c=z, s=10, cmap="viridis")
+                fig.colorbar(sc, ax=ax)
+            except Exception:
+                ax.scatter(x, y, color="tab:blue", alpha=0.7, s=10)
+        else:
+            ax.scatter(x, y, color="tab:blue", alpha=0.7, s=10)
+            if density == "hex":
+                hb = ax.hexbin(x, y, gridsize=40, cmap="Blues", mincnt=1, alpha=0.6)
+                fig.colorbar(hb, ax=ax)
+
+    _scatter(axes[0], t, residual)
+    axes[0].axhline(0.0, color="k", lw=1)
+    axes[0].set_xlabel(f"Actual {label.title()} ({unit})")
+    axes[0].set_ylabel("Residual")
+    axes[0].set_title("Residual vs Actual")
+
+    _scatter(axes[1], p, residual)
+    axes[1].axhline(0.0, color="k", lw=1)
+    axes[1].set_xlabel(f"Predicted {label.title()} ({unit})")
+    axes[1].set_ylabel("Residual")
+    axes[1].set_title("Residual vs Predicted")
+
+    fig.suptitle(f"{label.title()} Residuals")
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"residual_scatter_{label}_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
 def compute_edge_attr_stats(edge_attr: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
     """Return mean and std for edge attribute matrix."""
     attr_mean = torch.tensor(edge_attr.mean(axis=0), dtype=torch.float32)
@@ -370,7 +443,7 @@ def save_scatter_plots(
     plots_dir: Optional[Path] = None,
     mask: Optional[Sequence[bool]] = None,
 ) -> None:
-    """Save enhanced scatter plots for surrogate predictions."""
+    """Save enhanced scatter and residual plots for surrogate predictions."""
     if plots_dir is None:
         plots_dir = PLOTS_DIR
 
@@ -392,6 +465,26 @@ def save_scatter_plots(
             plots_dir / f"pred_vs_actual_chlorine_{run_name}.png"
         )
     plt.close(fig)
+
+    plot_residual_scatter(
+        true_p,
+        preds_p,
+        run_name,
+        "pressure",
+        plots_dir=plots_dir,
+        mask=mask,
+        density="hex",
+    )
+    if true_c is not None and preds_c is not None:
+        plot_residual_scatter(
+            true_c,
+            preds_c,
+            run_name,
+            "chlorine",
+            plots_dir=plots_dir,
+            mask=mask,
+            density="hex",
+        )
 
 
 def save_accuracy_metrics(

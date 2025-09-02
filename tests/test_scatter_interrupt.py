@@ -16,5 +16,7 @@ def test_scatter_plots_generated_when_interrupted(tmp_path):
         train_gnn.save_scatter_plots(p_true, p_pred, c_true, c_pred, "unit", plots_dir=tmp_path)
         assert (tmp_path / "pred_vs_actual_pressure_unit.png").exists()
         assert (tmp_path / "pred_vs_actual_chlorine_unit.png").exists()
+        assert (tmp_path / "residual_scatter_pressure_unit.png").exists()
+        assert (tmp_path / "residual_scatter_chlorine_unit.png").exists()
     finally:
         train_gnn.interrupted = False
