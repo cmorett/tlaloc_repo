@@ -908,6 +908,38 @@ def evaluate(
     )
 
 
+def _extract_next_demand(
+    X_seq: torch.Tensor,
+    Y_seq,
+    node_count: int,
+    model: nn.Module,
+    device: torch.device,
+) -> torch.Tensor:
+    """Return demand at ``t+1`` for mass balance checks.
+
+    ``Y_seq`` may provide the next-step demand directly.  When absent, the
+    demand channel from ``X_seq`` is shifted forward by one step and
+    de-normalised to approximate the same quantity.
+    """
+
+    if isinstance(Y_seq, dict) and "demand" in Y_seq:
+        return Y_seq["demand"].permute(2, 0, 1).reshape(node_count, -1)
+
+    dem_seq = X_seq[..., 0]
+    if dem_seq.size(1) > 1:
+        dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
+    demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
+    if hasattr(model, "x_mean") and model.x_mean is not None:
+        if model.x_mean.ndim == 2:
+            dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
+            dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
+        else:
+            dem_mean = model.x_mean[0].to(device)
+            dem_std = model.x_std[0].to(device)
+        demand_mb = demand_mb * dem_std + dem_mean
+    return demand_mb
+
+
 def train_sequence(
     model: nn.Module,
     loader: TorchLoader,
@@ -1058,23 +1090,9 @@ def train_sequence(
                     flows_mb.permute(2, 0, 1)
                     .reshape(edge_index.size(1), -1)
                 )
-                if isinstance(Y_seq, dict) and "demand" in Y_seq:
-                    demand_mb = (
-                        Y_seq["demand"].permute(2, 0, 1).reshape(node_count, -1)
-                    )
-                else:
-                    dem_seq = X_seq[..., 0]
-                    if dem_seq.size(1) > 1:
-                        dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
-                    demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
-                    if hasattr(model, "x_mean") and model.x_mean is not None:
-                        if model.x_mean.ndim == 2:
-                            dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
-                            dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
-                        else:
-                            dem_mean = model.x_mean[0].to(device)
-                            dem_std = model.x_std[0].to(device)
-                        demand_mb = demand_mb * dem_std + dem_mean
+                demand_mb = _extract_next_demand(
+                    X_seq, Y_seq, node_count, model, device
+                )
                 mass_loss, mass_imb = compute_mass_balance_loss(
                     flows_mb,
                     edge_index,
@@ -1340,23 +1358,9 @@ def evaluate_sequence(
                             flows_mb.permute(2, 0, 1)
                             .reshape(edge_index.size(1), -1)
                         )
-                        if isinstance(Y_seq, dict) and "demand" in Y_seq:
-                            demand_mb = (
-                                Y_seq["demand"].permute(2, 0, 1).reshape(node_count, -1)
-                            )
-                        else:
-                            dem_seq = X_seq[..., 0]
-                            if dem_seq.size(1) > 1:
-                                dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
-                            demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
-                            if hasattr(model, "x_mean") and model.x_mean is not None:
-                                if model.x_mean.ndim == 2:
-                                    dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
-                                    dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
-                                else:
-                                    dem_mean = model.x_mean[0].to(device)
-                                    dem_std = model.x_std[0].to(device)
-                                demand_mb = demand_mb * dem_std + dem_mean
+                        demand_mb = _extract_next_demand(
+                            X_seq, Y_seq, node_count, model, device
+                        )
                         mass_loss, mass_imb = compute_mass_balance_loss(
                             flows_mb,
                             edge_index,
