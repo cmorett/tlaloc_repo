@@ -26,6 +26,7 @@ def test_train_sequence_with_physics_losses():
             {
                 "node_outputs": np.zeros((T, N, 2), dtype=np.float32),
                 "edge_outputs": np.zeros((T, E), dtype=np.float32),
+                "demand": np.zeros((T, N), dtype=np.float32),
             }
         ],
         dtype=object,

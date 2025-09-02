@@ -35,6 +35,7 @@ def test_mass_balance_denorm_per_edge():
             {
                 "node_outputs": np.zeros((T, N, 2), dtype=np.float32),
                 "edge_outputs": np.zeros((T, E), dtype=np.float32),
+                "demand": np.zeros((T, N), dtype=np.float32),
             }
         ],
         dtype=object,
