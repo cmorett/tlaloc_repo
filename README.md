@@ -253,8 +253,7 @@ looks like:
 
 ```bash
 python scripts/data_generation.py \
-    --num-scenarios 2000 --output-dir data/ --seed 42 \
-    --extreme-rate 0.03 --pump-outage-rate 0.1 --local-surge-rate 0.1
+    --num-scenarios 2000 --output-dir data/ --seed 42
 ```
 Append `--deterministic` to enforce deterministic CUDA kernels.
 The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.npy`` and
@@ -274,10 +273,12 @@ scenarios may be slightly smaller than requested.
 
 ``--pump-outage-rate`` randomly shuts off one pump for 2–4 hours while
 ``--local-surge-rate`` applies ±80% demand changes to a small subnetwork for a
-similar duration. ``--extreme-rate`` injects a small fraction of stress tests
-that scale demands and disable assets to drive pressures near zero. When an
-outage occurs a random pipe may also be closed to mimic maintenance. Initial
-tank levels are drawn uniformly from the fraction range specified by
+similar duration. ``--extreme-rate`` injects stress tests that scale demands and
+disable assets to drive pressures near zero. All three rates default to ``0`` so
+baseline datasets contain only normal operating conditions. Add
+``--exclude-stress`` to drop any stress-test scenarios from the saved arrays.
+When an outage occurs a random pipe may also be closed to mimic maintenance.
+Initial tank levels are drawn uniformly from the fraction range specified by
 ``--tank-level-range`` (default ``0 1`` covers the entire feasible range).
 Scenario labels are stored alongside the sequence arrays when
 ``--sequence-length`` is greater than one. Chlorine decay is enabled in the
@@ -285,8 +286,8 @@ example network via a global bulk reaction coefficient of ``-0.05`` 1/h which
 EPANET applies during water quality simulations. Pipe roughness coefficients are
 left unchanged; only demand multipliers and pump schedules vary between
 scenarios. Pump speeds follow a continuous randomization strategy: each pump
-starts from ``[0.3, 0.9]`` and is perturbed by small, temporally correlated
-Gaussian noise each hour with a dwell time to avoid rapid cycling.
+starts between ``0.6`` and ``1.2`` and drifts via a bounded random walk with
+hourly steps limited to ``±0.05``.
 
 After scenario generation finishes plots ``dataset_distributions_<timestamp>.png``
 and ``pressure_hist_<timestamp>.png`` are created under ``plots/``. The first
