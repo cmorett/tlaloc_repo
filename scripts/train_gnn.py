@@ -2069,15 +2069,15 @@ def main(args: argparse.Namespace):
         best_val = float("inf")
         patience = 0
         for epoch in range(start_epoch, args.epochs):
-            w_mass_curr = ramp_weight(args.w_mass, epoch, getattr(args, "mass_anneal", 0))
-            w_pump_curr = ramp_weight(args.w_pump, epoch, getattr(args, "pump_anneal", 0))
-            head_warmup = getattr(args, "head_warmup", 0)
-            if epoch < head_warmup:
-                w_head_curr = 0.0
-            else:
-                w_head_curr = ramp_weight(
-                    args.w_head, epoch - head_warmup, getattr(args, "head_anneal", 0)
-                )
+            w_mass_curr = ramp_weight(
+                args.w_mass, epoch, getattr(args, "mass_anneal", 0)
+            )
+            w_head_curr = ramp_weight(
+                args.w_head, epoch, getattr(args, "head_anneal", 0)
+            )
+            w_pump_curr = ramp_weight(
+                args.w_pump, epoch, getattr(args, "pump_anneal", 0)
+            )
             if seq_mode:
                 loss_tuple = train_sequence(
                     model,
@@ -2908,12 +2908,6 @@ if __name__ == "__main__":
         type=float,
         default=0.5,
         help="Additional weight for wrong-sign head-loss hinge penalty (0 disables)",
-    )
-    parser.add_argument(
-        "--head-warmup",
-        type=int,
-        default=0,
-        help="Number of initial epochs to disable head loss (curriculum)",
     )
     parser.add_argument(
         "--mass-anneal",
