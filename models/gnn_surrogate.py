@@ -223,7 +223,7 @@ class RecurrentGNNSurrogate(nn.Module):
             edge_type.repeat(batch_size) if edge_type is not None else None
         )
 
-        node_embeddings = []
+        emb = None
         for t in range(T):
             x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
 
@@ -242,9 +242,12 @@ class RecurrentGNNSurrogate(nn.Module):
             else:
                 gnn_out = encode(x_t)
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
-            node_embeddings.append(gnn_out)
 
-        emb = torch.stack(node_embeddings, dim=1)
+            if emb is None:
+                emb = X_seq.new_empty(batch_size, T, num_nodes, gnn_out.size(-1))
+            emb[:, t] = gnn_out
+
+        assert emb is not None
         rnn_in = emb.permute(0, 2, 1, 3).reshape(batch_size * num_nodes, T, -1)
         rnn_out, _ = self.rnn(rnn_in)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
@@ -363,7 +366,7 @@ class MultiTaskGNNSurrogate(nn.Module):
             edge_type.repeat(batch_size) if edge_type is not None else None
         )
 
-        node_embeddings = []
+        emb = None
         for t in range(T):
             x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
 
@@ -382,9 +385,12 @@ class MultiTaskGNNSurrogate(nn.Module):
             else:
                 gnn_out = encode(x_t)
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
-            node_embeddings.append(gnn_out)
 
-        emb = torch.stack(node_embeddings, dim=1)
+            if emb is None:
+                emb = X_seq.new_empty(batch_size, T, num_nodes, gnn_out.size(-1))
+            emb[:, t] = gnn_out
+
+        assert emb is not None
         rnn_in = emb.permute(0, 2, 1, 3).reshape(batch_size * num_nodes, T, -1)
         rnn_out, _ = self.rnn(rnn_in)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
