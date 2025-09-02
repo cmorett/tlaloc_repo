@@ -1318,6 +1318,9 @@ def evaluate_sequence(
                             if p_mean.ndim == 2:
                                 p_mean = p_mean[..., 0]
                                 p_std = p_std[..., 0]
+                            if node_mask is not None:
+                                p_mean = p_mean[node_mask]
+                                p_std = p_std[node_mask]
                             press_pred = press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                             press_true = press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
                         elif not isinstance(model.y_mean, dict):
