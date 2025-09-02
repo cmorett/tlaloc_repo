@@ -31,3 +31,15 @@ def test_demand_multiplier_range():
         assert np.all(ratio >= 0.8)
         assert np.all(ratio <= 1.2)
 
+    random.seed(123)
+    np.random.seed(123)
+    _, custom_scale_dict, _ = _build_randomized_network(
+        str(inp), idx=0, demand_scale_min=0.5, demand_scale_max=1.5
+    )
+
+    for jname, scaled in custom_scale_dict.items():
+        base_mult = base_patterns[jname][: len(scaled)]
+        ratio = scaled / base_mult
+        assert np.all(ratio >= 0.5)
+        assert np.all(ratio <= 1.5)
+

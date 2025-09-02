@@ -187,6 +187,8 @@ def _build_randomized_network(
     pump_speed_min: float = DEFAULT_PUMP_SPEED_MIN,
     pump_speed_max: float = DEFAULT_PUMP_SPEED_MAX,
     pump_step: float = DEFAULT_PUMP_STEP,
+    demand_scale_min: float = 0.8,
+    demand_scale_max: float = 1.2,
 ) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Create a network with randomized demand patterns and pump controls.
 
@@ -226,7 +228,9 @@ def _build_randomized_network(
         else:
             base_mult = np.array(ts.pattern.multipliers, dtype=float)
         multipliers = base_mult.copy()
-        scale_factors = np.random.uniform(0.8, 1.2, size=len(multipliers))
+        scale_factors = np.random.uniform(
+            demand_scale_min, demand_scale_max, size=len(multipliers)
+        )
         multipliers = multipliers * scale_factors
         multipliers = np.clip(multipliers, a_min=0.0, a_max=None)
         pat_name = f"{jname}_pat_{idx}"
@@ -353,6 +357,8 @@ def _run_single_scenario(
     pump_speed_min: float = DEFAULT_PUMP_SPEED_MIN,
     pump_speed_max: float = DEFAULT_PUMP_SPEED_MAX,
     pump_step: float = DEFAULT_PUMP_STEP,
+    demand_scale_min: float = 0.8,
+    demand_scale_max: float = 1.2,
 ) -> Optional[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
 ]:
@@ -389,6 +395,8 @@ def _run_single_scenario(
             pump_speed_min=pump_speed_min,
             pump_speed_max=pump_speed_max,
             pump_step=pump_step,
+            demand_scale_min=demand_scale_min,
+            demand_scale_max=demand_scale_max,
         )
 
         events = []
@@ -461,6 +469,8 @@ def run_scenarios(
     pump_speed_min: float = DEFAULT_PUMP_SPEED_MIN,
     pump_speed_max: float = DEFAULT_PUMP_SPEED_MAX,
     pump_step: float = DEFAULT_PUMP_STEP,
+    demand_scale_min: float = 0.8,
+    demand_scale_max: float = 1.2,
 ) -> List[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
 ]:
@@ -486,6 +496,8 @@ def run_scenarios(
             pump_speed_min=pump_speed_min,
             pump_speed_max=pump_speed_max,
             pump_step=pump_step,
+            demand_scale_min=demand_scale_min,
+            demand_scale_max=demand_scale_max,
         )
         if show_progress and tqdm is not None:
             raw_results = [
@@ -973,6 +985,18 @@ def main() -> None:
         help="Maximum absolute hourly change in pump speed",
     )
     parser.add_argument(
+        "--demand-scale-min",
+        type=float,
+        default=0.8,
+        help="Minimum multiplicative demand scaling factor",
+    )
+    parser.add_argument(
+        "--demand-scale-max",
+        type=float,
+        default=1.2,
+        help="Maximum multiplicative demand scaling factor",
+    )
+    parser.add_argument(
         "--exclude-stress",
         action="store_true",
         help="Drop stress-test scenarios from the saved datasets",
@@ -1063,6 +1087,8 @@ def main() -> None:
         pump_speed_min=args.pump_speed_min,
         pump_speed_max=args.pump_speed_max,
         pump_step=args.pump_step,
+        demand_scale_min=args.demand_scale_min,
+        demand_scale_max=args.demand_scale_max,
     )
 
     if args.exclude_stress:
