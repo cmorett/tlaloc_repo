@@ -3,11 +3,12 @@ import pickle
 import os
 import argparse
 import time
+import logging
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Optional, Union
 from sklearn.preprocessing import MinMaxScaler
-import warnings
 from functools import partial
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
@@ -21,6 +22,8 @@ try:
     from .reproducibility import configure_seeds, save_config
 except ImportError:  # pragma: no cover
     from reproducibility import configure_seeds, save_config
+
+logger = logging.getLogger(__name__)
 
 # Minimum allowed pressure [m].  Values below this threshold are clipped
 # in both data generation and validation to keep preprocessing consistent.
@@ -70,7 +73,7 @@ def temp_simulation_files(prefix: Union[Path, str]):
             except FileNotFoundError:
                 pass
             except PermissionError:
-                warnings.warn(f"Could not remove file {f}")
+                logger.warning(f"Could not remove file {f}")
 
 import numpy as np
 import wntr
@@ -422,7 +425,7 @@ def run_scenarios(
             ]
         else:
             if show_progress and tqdm is None:
-                warnings.warn("tqdm is not installed; progress bar disabled.")
+                logger.warning("tqdm is not installed; progress bar disabled.")
             raw_results = pool.map(func, args_list)
 
     # Filter out failed scenarios returned as ``None``
@@ -564,7 +567,7 @@ def build_sequence_dataset(
         flows_arr, energy_arr = extract_additional_targets(sim_results, wn_template)
 
         if len(times) <= seq_len:
-            warnings.warn(
+            logger.warning(
                 "Skipping scenario with only "
                 f"{len(times)} timesteps (need {seq_len + 1})"
             )
@@ -908,7 +911,35 @@ def main() -> None:
         default=True,
         help="Include chlorine concentration features and targets",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level",
+    )
+    parser.add_argument(
+        "--log-file",
+        default=str(REPO_ROOT / "logs" / "data_generation.log"),
+        help="File to write logs to",
+    )
     args = parser.parse_args()
+
+    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
+    log_file = Path(args.log_file)
+    if not log_file.is_absolute():
+        log_file = REPO_ROOT / log_file
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    logger.handlers = []
+    logger.setLevel(log_level)
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(formatter)
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+    logger.addHandler(file_handler)
+    logger.propagate = False
 
     if args.seed is not None:
         configure_seeds(args.seed, args.deterministic)

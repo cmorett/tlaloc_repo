@@ -267,6 +267,9 @@ generated node features and targets. The resulting node features become
 ``[d_t, p_t, elev, pump_speeds...]`` and the targets only contain next-step
 pressure. The training script automatically detects this layout and adjusts
 its output dimension accordingly.
+The script logs to stdout and ``logs/data_generation.log`` by default. Use
+``--log-level`` to control verbosity and ``--log-file`` to change the log
+destination.
 If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.
