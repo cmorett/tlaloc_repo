@@ -576,6 +576,7 @@ def build_sequence_dataset(
         node_out_seq: List[np.ndarray] = []
         edge_out_seq: List[np.ndarray] = []
         energy_seq: List[np.ndarray] = []
+        demand_seq: List[np.ndarray] = []
         for t in range(seq_len):
             pump_vector = pump_ctrl_arr[:, t]
             feat_nodes = []
@@ -632,12 +633,24 @@ def build_sequence_dataset(
 
             edge_out_seq.append(flows_arr[t + 1].astype(np.float64))
             energy_seq.append(energy_arr[t + 1].astype(np.float64))
+            if d_arr is not None:
+                demand_next = []
+                for node in node_names:
+                    if node in wn_template.junction_name_list:
+                        idx = node_idx[node]
+                        demand_next.append(float(d_arr[t + 1, idx]))
+                    else:
+                        demand_next.append(0.0)
+                demand_seq.append(np.array(demand_next, dtype=np.float64))
+            else:
+                demand_seq.append(np.zeros(len(node_names), dtype=np.float64))
 
         X_list.append(np.stack(X_seq))
         Y_list.append({
             "node_outputs": np.stack(node_out_seq).astype(np.float32),
             "edge_outputs": np.stack(edge_out_seq).astype(np.float32),
             "pump_energy": np.stack(energy_seq).astype(np.float32),
+            "demand": np.stack(demand_seq).astype(np.float32),
         })
 
     if not X_list:
@@ -736,6 +749,7 @@ def build_dataset(
             X_list.append(np.array(feat_nodes, dtype=np.float64))
 
             out_nodes = []
+            demand_next = []
             for node in node_names:
                 idx = node_idx[node]
                 if node in wn_template.reservoir_name_list:
@@ -747,10 +761,15 @@ def build_dataset(
                     out_nodes.append([p_next, c_next])
                 else:
                     out_nodes.append([p_next])
+                if d_arr is not None and node in wn_template.junction_name_list:
+                    demand_next.append(float(d_arr[i + 1, idx]))
+                else:
+                    demand_next.append(0.0)
             Y_list.append({
                 "node_outputs": np.array(out_nodes, dtype=np.float32),
                 "edge_outputs": flows_arr[i + 1].astype(np.float32),
                 "pump_energy": energy_arr[i + 1].astype(np.float32),
+                "demand": np.array(demand_next, dtype=np.float32),
             })
 
     if not X_list:
