@@ -1027,18 +1027,23 @@ def train_sequence(
                     flows_mb.permute(2, 0, 1)
                     .reshape(edge_index.size(1), -1)
                 )
-                dem_seq = X_seq[..., 0]
-                if dem_seq.size(1) > 1:
-                    dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
-                demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
-                if hasattr(model, "x_mean") and model.x_mean is not None:
-                    if model.x_mean.ndim == 2:
-                        dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
-                        dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
-                    else:
-                        dem_mean = model.x_mean[0].to(device)
-                        dem_std = model.x_std[0].to(device)
-                    demand_mb = demand_mb * dem_std + dem_mean
+                if isinstance(Y_seq, dict) and "demand" in Y_seq:
+                    demand_mb = (
+                        Y_seq["demand"].permute(2, 0, 1).reshape(node_count, -1)
+                    )
+                else:
+                    dem_seq = X_seq[..., 0]
+                    if dem_seq.size(1) > 1:
+                        dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
+                    demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
+                    if hasattr(model, "x_mean") and model.x_mean is not None:
+                        if model.x_mean.ndim == 2:
+                            dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
+                            dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
+                        else:
+                            dem_mean = model.x_mean[0].to(device)
+                            dem_std = model.x_std[0].to(device)
+                        demand_mb = demand_mb * dem_std + dem_mean
                 mass_loss, mass_imb = compute_mass_balance_loss(
                     flows_mb,
                     edge_index,
@@ -1063,6 +1068,9 @@ def train_sequence(
                 mass_loss = torch.tensor(0.0, device=device)
                 sym_loss = torch.tensor(0.0, device=device)
                 mass_imb = torch.tensor(0.0, device=device)
+            head_loss = torch.tensor(0.0, device=device)
+            head_violation = torch.tensor(0.0, device=device)
+            pump_loss_val = torch.tensor(0.0, device=device)
             if pressure_loss:
                 press = preds['node_outputs'][..., 0].float()
                 flow = edge_preds.squeeze(-1)
@@ -1088,9 +1096,6 @@ def train_sequence(
                     return_violation=True,
                     sign_weight=head_sign_weight,
                 )
-            else:
-                head_loss = torch.tensor(0.0, device=device)
-                head_violation = torch.tensor(0.0, device=device)
             if pump_loss and pump_coeffs is not None:
                 flow_pc = edge_preds.squeeze(-1)
                 if hasattr(model, 'y_mean') and model.y_mean is not None:
@@ -1106,30 +1111,28 @@ def train_sequence(
                     edge_index,
                     et,
                 )
-            else:
-                pump_loss_val = torch.tensor(0.0, device=device)
-            logger.debug(
-                "Raw physics losses - mass: %.6e, head: %.6e, pump: %.6e",
-                mass_loss.detach().item(),
-                head_loss.detach().item(),
-                pump_loss_val.detach().item(),
-            )
-            mass_loss, head_loss, pump_loss_val = scale_physics_losses(
-                mass_loss,
-                head_loss,
-                pump_loss_val,
-                mass_scale=mass_scale,
-                head_scale=head_scale,
-                pump_scale=pump_scale,
-            )
-            if mass_scale > 0:
-                sym_loss = sym_loss / mass_scale
-            if physics_loss:
-                loss = loss + w_mass * (mass_loss + sym_loss)
-            if pressure_loss:
-                loss = loss + w_head * head_loss
-            if pump_loss:
-                loss = loss + w_pump * pump_loss_val
+                logger.debug(
+                    'Raw physics losses - mass: %.6e, head: %.6e, pump: %.6e',
+                    mass_loss.detach().item(),
+                    head_loss.detach().item(),
+                    pump_loss_val.detach().item(),
+                )
+                mass_loss, head_loss, pump_loss_val = scale_physics_losses(
+                    mass_loss,
+                    head_loss,
+                    pump_loss_val,
+                    mass_scale=mass_scale,
+                    head_scale=head_scale,
+                    pump_scale=pump_scale,
+                )
+                if mass_scale > 0:
+                    sym_loss = sym_loss / mass_scale
+                if physics_loss:
+                    loss = loss + w_mass * (mass_loss + sym_loss)
+                if pressure_loss:
+                    loss = loss + w_head * head_loss
+                if pump_loss:
+                    loss = loss + w_pump * pump_loss_val
         else:
             Y_seq = Y_seq.to(device)
             loss_press = loss_cl = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
@@ -1273,18 +1276,23 @@ def evaluate_sequence(
                             flows_mb.permute(2, 0, 1)
                             .reshape(edge_index.size(1), -1)
                         )
-                        dem_seq = X_seq[..., 0]
-                        if dem_seq.size(1) > 1:
-                            dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
-                        demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
-                        if hasattr(model, "x_mean") and model.x_mean is not None:
-                            if model.x_mean.ndim == 2:
-                                dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
-                                dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
-                            else:
-                                dem_mean = model.x_mean[0].to(device)
-                                dem_std = model.x_std[0].to(device)
-                            demand_mb = demand_mb * dem_std + dem_mean
+                        if isinstance(Y_seq, dict) and "demand" in Y_seq:
+                            demand_mb = (
+                                Y_seq["demand"].permute(2, 0, 1).reshape(node_count, -1)
+                            )
+                        else:
+                            dem_seq = X_seq[..., 0]
+                            if dem_seq.size(1) > 1:
+                                dem_seq = torch.cat([dem_seq[:, 1:], dem_seq[:, -1:]], dim=1)
+                            demand_mb = dem_seq.permute(2, 0, 1).reshape(node_count, -1)
+                            if hasattr(model, "x_mean") and model.x_mean is not None:
+                                if model.x_mean.ndim == 2:
+                                    dem_mean = model.x_mean[:, 0].to(device).unsqueeze(1)
+                                    dem_std = model.x_std[:, 0].to(device).unsqueeze(1)
+                                else:
+                                    dem_mean = model.x_mean[0].to(device)
+                                    dem_std = model.x_std[0].to(device)
+                                demand_mb = demand_mb * dem_std + dem_mean
                         mass_loss, mass_imb = compute_mass_balance_loss(
                             flows_mb,
                             edge_index,
