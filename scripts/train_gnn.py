@@ -112,6 +112,30 @@ def summarize_target_norm_stats(y_mean, y_std, has_chlorine: bool):
     return pressure, chlorine
 
 
+def ramp_weight(target: float, epoch: int, anneal_epochs: int) -> float:
+    """Linearly ramp a weight from zero to ``target``.
+
+    Parameters
+    ----------
+    target:
+        Final desired weight value.
+    epoch:
+        Current training epoch (0-indexed).
+    anneal_epochs:
+        Number of epochs over which to increase the weight.
+
+    Returns
+    -------
+    float
+        The scaled weight for the current epoch.
+    """
+
+    if anneal_epochs <= 0:
+        return target
+    factor = min(1.0, float(epoch + 1) / anneal_epochs)
+    return target * factor
+
+
 def load_dataset(
     x_path: str,
     y_path: str,
@@ -2045,8 +2069,15 @@ def main(args: argparse.Namespace):
         best_val = float("inf")
         patience = 0
         for epoch in range(start_epoch, args.epochs):
-            # Optional curriculum: delay head-consistency loss
-            w_head_curr = 0.0 if epoch < getattr(args, "head_warmup", 0) else args.w_head
+            w_mass_curr = ramp_weight(args.w_mass, epoch, getattr(args, "mass_anneal", 0))
+            w_pump_curr = ramp_weight(args.w_pump, epoch, getattr(args, "pump_anneal", 0))
+            head_warmup = getattr(args, "head_warmup", 0)
+            if epoch < head_warmup:
+                w_head_curr = 0.0
+            else:
+                w_head_curr = ramp_weight(
+                    args.w_head, epoch - head_warmup, getattr(args, "head_anneal", 0)
+                )
             if seq_mode:
                 loss_tuple = train_sequence(
                     model,
@@ -2068,9 +2099,9 @@ def main(args: argparse.Namespace):
                     mass_scale=mass_scale,
                     head_scale=head_scale,
                     pump_scale=pump_scale,
-                    w_mass=args.w_mass,
+                    w_mass=w_mass_curr,
                     w_head=w_head_curr,
-                    w_pump=args.w_pump,
+                    w_pump=w_pump_curr,
                     w_press=args.w_press,
                     w_cl=args.w_cl,
                     w_flow=args.w_flow,
@@ -2117,9 +2148,9 @@ def main(args: argparse.Namespace):
                         mass_scale=mass_scale,
                         head_scale=head_scale,
                         pump_scale=pump_scale,
-                        w_mass=args.w_mass,
+                        w_mass=w_mass_curr,
                         w_head=w_head_curr,
-                        w_pump=args.w_pump,
+                        w_pump=w_pump_curr,
                         w_press=args.w_press,
                         w_cl=args.w_cl,
                         w_flow=args.w_flow,
@@ -2883,6 +2914,24 @@ if __name__ == "__main__":
         type=int,
         default=0,
         help="Number of initial epochs to disable head loss (curriculum)",
+    )
+    parser.add_argument(
+        "--mass-anneal",
+        type=int,
+        default=0,
+        help="Epochs to linearly ramp the mass loss weight from 0 to --w_mass",
+    )
+    parser.add_argument(
+        "--head-anneal",
+        type=int,
+        default=0,
+        help="Epochs to linearly ramp the head loss weight from 0 to --w_head",
+    )
+    parser.add_argument(
+        "--pump-anneal",
+        type=int,
+        default=0,
+        help="Epochs to linearly ramp the pump loss weight from 0 to --w_pump",
     )
     parser.add_argument(
         "--w_pump",
