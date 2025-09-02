@@ -198,7 +198,7 @@ def scale_physics_losses(
     head_scale: float = 1.0,
     pump_scale: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Normalise physics-based losses by baseline magnitudes and clamp small scales.
+    """Normalise physics-based losses by baseline magnitudes.
 
     Parameters
     ----------
@@ -206,15 +206,13 @@ def scale_physics_losses(
         Raw physics loss values.
     mass_scale, head_scale, pump_scale: float, optional
         Baseline magnitudes for each loss. Values ``\le 0`` disable scaling.
-        Very small positive scales are clamped to ``1e-3`` to avoid division
-        by near-zero numbers.
 
     Returns
     -------
     Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         Scaled ``mass_loss``, ``head_loss`` and ``pump_loss``.
     """
-    eps = 1e-3
+    eps = torch.finfo(mass_loss.dtype).eps
     if mass_scale > 0:
         mass_loss = mass_loss / max(mass_scale, eps)
     if head_scale > 0:
