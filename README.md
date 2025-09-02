@@ -178,6 +178,10 @@ Pass ``--no-progress`` to disable the training progress bars or
 Pressure–headloss consistency is now enforced by default with a weight of ``1.0``.
 Pass ``--no-pressure-loss`` if this coupling should be disabled.  To remove the
 mass balance penalty (now weighted ``2.0`` by default) use ``--no-physics-loss``.
+Each physics term can be introduced gradually by specifying an annealing period;
+for example, ``--mass-anneal 10`` linearly ramps the mass conservation weight
+from ``0`` to ``--w_mass`` over the first 10 epochs.  ``--head-anneal`` and
+``--pump-anneal`` behave analogously for their respective penalties.
 The surrogate clamps predicted pressures and chlorine concentrations to
 non-negative values and applies L2 regularization controlled by
 ``--weight-decay`` (default ``1e-5``) to avoid degenerate solutions.
