@@ -8,11 +8,15 @@ from scripts.data_generation import split_results
 
 def test_split_results_deterministic():
     results = [(i, {}, {}) for i in range(20)]
-    train1, val1, test1 = split_results(results, seed=123)
-    train2, val2, test2 = split_results(results, seed=123)
+    train1, val1, test1, counts1 = split_results(results, seed=123)
+    train2, val2, test2, counts2 = split_results(results, seed=123)
     assert train1 == train2
     assert val1 == val2
     assert test1 == test2
+    assert counts1 == counts2
+    assert counts1["train"] == len(train1)
+    assert counts1["val"] == len(val1)
+    assert counts1["test"] == len(test1)
 
 
 def test_split_results_different_seed():
