@@ -718,6 +718,7 @@ def build_sequence_dataset(
                 for node in node_names:
                     if node in wn_template.junction_name_list:
                         idx = node_idx[node]
+                        # Demand aligned to the next timestep ``t+1``
                         demand_next.append(float(d_arr[t + 1, idx]))
                     else:
                         demand_next.append(0.0)
