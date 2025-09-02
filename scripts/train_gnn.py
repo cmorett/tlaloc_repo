@@ -1325,15 +1325,15 @@ def evaluate_sequence(
                                 flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                             else:
                                 press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                head_loss, head_violation = pressure_headloss_consistency_loss(
-                    press,
-                    flow,
-                    edge_index,
-                    edge_attr_phys,
-                    edge_type=et,
-                    return_violation=True,
-                    sign_weight=head_sign_weight,
-                )
+                        head_loss, head_violation = pressure_headloss_consistency_loss(
+                            press,
+                            flow,
+                            edge_index,
+                            edge_attr_phys,
+                            edge_type=et,
+                            return_violation=True,
+                            sign_weight=head_sign_weight,
+                        )
                     else:
                         head_loss = torch.tensor(0.0, device=device)
                         head_violation = torch.tensor(0.0, device=device)
