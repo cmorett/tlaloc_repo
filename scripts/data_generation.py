@@ -86,26 +86,50 @@ import json
 def log_array_stats(name: str, arr: np.ndarray) -> None:
     """Log basic statistics for ``arr`` and ensure it has no invalid values.
 
+    ``arr`` is typically a numeric ``numpy.ndarray`` but some callers pass an
+    object array containing dictionaries of arrays (e.g. the training targets).
+    ``numpy.isnan`` does not support such object dtypes and raises a
+    ``TypeError``.  To keep the logging utility broadly applicable we detect
+    object arrays and manually inspect the contained values.
+
     Parameters
     ----------
     name: str
         Human readable name for the array.
     arr: np.ndarray
-        Array to inspect.
+        Array to inspect.  May contain nested arrays or dictionaries when
+        ``dtype`` is ``object``.
 
     Raises
     ------
     ValueError
-        If ``arr`` contains NaN or infinite values.
+        If ``arr`` or any nested array contains ``NaN`` or infinite values.
     """
 
-    nan_count = int(np.count_nonzero(np.isnan(arr)))
-    inf_count = int(np.count_nonzero(np.isinf(arr)))
+    nan_count = 0
+    inf_count = 0
+
+    if isinstance(arr, np.ndarray) and arr.dtype == object:
+        # Iterate over contained objects and accumulate counts
+        for item in arr.ravel():
+            if isinstance(item, dict):
+                values = item.values()
+            else:
+                values = [item]
+            for v in values:
+                v_arr = np.asarray(v)
+                nan_count += int(np.count_nonzero(np.isnan(v_arr)))
+                inf_count += int(np.count_nonzero(np.isinf(v_arr)))
+    else:
+        arr_np = np.asarray(arr)
+        nan_count = int(np.count_nonzero(np.isnan(arr_np)))
+        inf_count = int(np.count_nonzero(np.isinf(arr_np)))
+
     logger.info(
         "%s: shape=%s dtype=%s nan=%d inf=%d",
         name,
-        arr.shape,
-        arr.dtype,
+        getattr(arr, "shape", "n/a"),
+        getattr(arr, "dtype", type(arr)),
         nan_count,
         inf_count,
     )
