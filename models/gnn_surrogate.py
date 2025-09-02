@@ -69,11 +69,13 @@ class HydroConv(MessagePassing):
     ) -> torch.Tensor:
         if self.edge_type_emb is not None:
             edge_attr = edge_attr + self.edge_type_emb(edge_type)
-        weight = torch.zeros(edge_attr.size(0), 1, device=edge_attr.device)
+        weight = edge_attr.new_zeros(edge_attr.size(0), 1)
         for t, mlp in enumerate(self.edge_mlps):
-            idx = edge_type == t
-            if torch.any(idx):
-                weight[idx] = mlp(edge_attr[idx]).to(weight.dtype)
+            idx = torch.where(edge_type == t)[0]
+            if idx.numel() == 0:
+                continue
+            w_t = mlp(edge_attr.index_select(0, idx)).to(weight.dtype)
+            weight.index_copy_(0, idx, w_t)
         return weight * (x_j - x_i)
 
 
