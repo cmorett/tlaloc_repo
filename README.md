@@ -269,6 +269,8 @@ The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.np
 ``--num-workers`` to override the number of parallel workers if needed.
 Pass ``--show-progress`` to display a live progress bar during simulation
 when ``tqdm`` is installed.
+Base demands are scaled by random factors drawn uniformly from ``[0.8, 1.2]``.
+Customize this range via ``--demand-scale-min`` and ``--demand-scale-max``.
 The pump speed random walk can be adjusted using ``--pump-speed-min``,
 ``--pump-speed-max`` and ``--pump-step`` to set the minimum/maximum
 relative speeds and the maximum hourly change (defaults 0.6, 1.2 and
