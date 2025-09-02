@@ -790,6 +790,8 @@ def train(
     model.train()
     scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = press_total = cl_total = flow_total = 0.0
+    grad_total = 0.0
+    batch_count = 0
     for batch in tqdm(loader, disable=not progress):
         batch = batch.to(device, non_blocking=True)
         if torch.isnan(batch.x).any() or torch.isnan(batch.y).any():
@@ -839,22 +841,26 @@ def train(
             loss.backward()
         # Clip gradients to mitigate exploding gradients that could otherwise
         # result in ``NaN`` loss values when the optimizer updates the weights.
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         if amp:
             scaler.step(optimizer)
             scaler.update()
         else:
             optimizer.step()
+        grad_total += float(grad_norm)
+        batch_count += 1
         total_loss += loss.item() * batch.num_graphs
         press_total += press_l.item() * batch.num_graphs
         cl_total += cl_l.item() * batch.num_graphs
         flow_total += flow_l.item() * batch.num_graphs
     denom = len(loader.dataset)
+    avg_grad = grad_total / batch_count if batch_count > 0 else 0.0
     return (
         total_loss / denom,
         press_total / denom,
         cl_total / denom,
         flow_total / denom,
+        avg_grad,
     )
 
 
@@ -1002,6 +1008,8 @@ def train_sequence(
     press_total = cl_total = flow_total = 0.0
     mass_total = head_total = sym_total = pump_total = 0.0
     mass_imb_total = head_viol_total = press_mae_total = 0.0
+    grad_total = 0.0
+    batch_count = 0
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device)
     edge_attr_phys = edge_attr_phys.to(device)
@@ -1206,13 +1214,15 @@ def train_sequence(
         if amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+        grad_total += float(grad_norm)
+        batch_count += 1
         total_loss += loss.item() * X_seq.size(0)
         press_total += loss_press.item() * X_seq.size(0)
         cl_total += loss_cl.item() * X_seq.size(0)
@@ -1227,6 +1237,7 @@ def train_sequence(
         if interrupted:
             break
     denom = len(loader.dataset)
+    avg_grad = grad_total / batch_count if batch_count > 0 else 0.0
     return (
         total_loss / denom,
         press_total / denom,
@@ -1239,6 +1250,7 @@ def train_sequence(
         mass_imb_total / denom,
         head_viol_total / denom,
         press_mae_total / denom,
+        avg_grad,
     )
 
 
@@ -2097,6 +2109,7 @@ def main(args: argparse.Namespace):
         log_path = os.path.join(DATA_DIR, f"training_{run_name}.log")
     losses = []
     loss_components = []
+    grad_norms = []
     tb_writer = None
     if SummaryWriter is not None:
         tb_log_dir = REPO_ROOT / "logs" / f"tb_{run_name}"
@@ -2123,20 +2136,20 @@ def main(args: argparse.Namespace):
         if seq_mode:
             if pressure_only:
                 f.write(
-                    "epoch,train_loss,val_press_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation_pct,press_mae,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation_pct,val_press_mae,lr\n"
+                    "epoch,train_loss,val_press_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation_pct,press_mae,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation_pct,val_press_mae,lr,grad_norm\n"
                 )
             else:
                 f.write(
-                    "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation_pct,press_mae,val_press_loss,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation_pct,val_press_mae,lr\n"
+                    "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,mass_imbalance,head_violation_pct,press_mae,val_press_loss,val_cl_loss,val_flow_loss,val_mass_imbalance,val_head_violation_pct,val_press_mae,lr,grad_norm\n"
                 )
         else:
             if pressure_only:
                 f.write(
-                    "epoch,train_loss,val_press_loss,press_loss,cl_loss,flow_loss,val_cl_loss,val_flow_loss,lr\n"
+                    "epoch,train_loss,val_press_loss,press_loss,cl_loss,flow_loss,val_cl_loss,val_flow_loss,lr,grad_norm\n"
                 )
             else:
                 f.write(
-                    "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,val_press_loss,val_cl_loss,val_flow_loss,lr\n"
+                    "epoch,train_loss,val_loss,press_loss,cl_loss,flow_loss,val_press_loss,val_cl_loss,val_flow_loss,lr,grad_norm\n"
                 )
         best_val = float("inf")
         patience = 0
@@ -2193,6 +2206,7 @@ def main(args: argparse.Namespace):
                     mass_imb,
                     head_viols,
                     press_mae,
+                    grad_norm,
                 ) = loss_tuple[1:]
                 comp = [press_l, cl_l, flow_l, mass_l, sym_l]
                 if args.pressure_loss:
@@ -2200,6 +2214,7 @@ def main(args: argparse.Namespace):
                 if args.pump_loss:
                     comp.append(pump_l)
                 loss_components.append(tuple(comp))
+                grad_norms.append(grad_norm)
                 if val_loader is not None and not interrupted:
                     val_tuple = evaluate_sequence(
                         model,
@@ -2249,7 +2264,7 @@ def main(args: argparse.Namespace):
                     val_mass_imb, val_head_viols = mass_imb, head_viols
                     val_press_mae = press_mae
             else:
-                loss, press_l, cl_l, flow_l = train(
+                loss, press_l, cl_l, flow_l, grad_norm = train(
                     model,
                     loader,
                     optimizer,
@@ -2261,6 +2276,7 @@ def main(args: argparse.Namespace):
                     progress=args.progress,
                 )
                 loss_components.append((press_l, cl_l, flow_l))
+                grad_norms.append(grad_norm)
                 if val_loader is not None and not interrupted:
                     val_loss, val_press_l, val_cl_l, val_flow_l = evaluate(
                         model,
@@ -2282,12 +2298,12 @@ def main(args: argparse.Namespace):
                 if pressure_only:
                     f.write(
                         f"{epoch},{loss:.6f},{val_press_l:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},{mass_imb:.6f},{head_viols * 100:.6f},{press_mae:.6f},"
-                        f"{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols * 100:.6f},{val_press_mae:.6f},{curr_lr:.6e}\n"
+                        f"{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols * 100:.6f},{val_press_mae:.6f},{curr_lr:.6e},{grad_norm:.6f}\n"
                     )
                 else:
                     f.write(
                         f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},{mass_imb:.6f},{head_viols * 100:.6f},{press_mae:.6f},"
-                        f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols * 100:.6f},{val_press_mae:.6f},{curr_lr:.6e}\n"
+                        f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols * 100:.6f},{val_press_mae:.6f},{curr_lr:.6e},{grad_norm:.6f}\n"
                     )
                 if tb_writer is not None:
                     tb_writer.add_scalars(
@@ -2325,6 +2341,11 @@ def main(args: argparse.Namespace):
                         {"train": press_mae, "val": val_press_mae},
                         epoch,
                     )
+                    tb_writer.add_scalar(
+                        "metrics/grad_norm",
+                        grad_norm,
+                        epoch,
+                    )
                 if args.physics_loss:
                     msg = (
                         f"Epoch {epoch}: press={press_l:.3f}, cl={cl_l:.3f}, flow={flow_l:.3f}, "
@@ -2347,12 +2368,12 @@ def main(args: argparse.Namespace):
                 if pressure_only:
                     f.write(
                         f"{epoch},{loss:.6f},{val_press_l:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
-                        f"{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e}\n"
+                        f"{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e},{grad_norm:.6f}\n"
                     )
                 else:
                     f.write(
                         f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
-                        f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e}\n"
+                        f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e},{grad_norm:.6f}\n"
                     )
                 if tb_writer is not None:
                     tb_writer.add_scalars(
@@ -2373,6 +2394,11 @@ def main(args: argparse.Namespace):
                             "chlorine": val_cl_l,
                             "flow": val_flow_l,
                         },
+                        epoch,
+                    )
+                    tb_writer.add_scalar(
+                        "metrics/grad_norm",
+                        grad_norm,
                         epoch,
                     )
                 print(
@@ -2494,6 +2520,15 @@ def main(args: argparse.Namespace):
 
     if loss_components:
         plot_loss_components(loss_components, run_name)
+
+    if grad_norms:
+        plt.figure()
+        plt.plot(grad_norms)
+        plt.xlabel("Epoch")
+        plt.ylabel("Gradient Norm")
+        plt.tight_layout()
+        plt.savefig(os.path.join(PLOTS_DIR, f"grad_norm_{run_name}.png"))
+        plt.close()
 
     # scatter plot of predictions vs actual on test set
     if args.x_test_path and os.path.exists(args.x_test_path):
