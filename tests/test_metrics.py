@@ -25,6 +25,8 @@ def test_accuracy_metrics_basic():
     assert np.isclose(df.loc["Mean Absolute Error (MAE)", "Chlorine (mg/L)"], 0.125)
     assert np.isclose(df.loc["Maximum Error", "Pressure (m)"], 1.0)
     assert np.isclose(df.loc["Maximum Error", "Chlorine (mg/L)"], 0.2)
+    assert np.isclose(df.loc["R^2", "Pressure (m)"], 0.96)
+    assert np.isclose(df.loc["R^2", "Chlorine (mg/L)"], -7.5)
 
 
 def test_control_metrics_basic():

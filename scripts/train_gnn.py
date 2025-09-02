@@ -330,6 +330,8 @@ class RunningStats:
     sq_sum: float = 0.0
     abs_pct_sum: float = 0.0
     max_err: float = 0.0
+    tgt_sum: float = 0.0
+    tgt_sq_sum: float = 0.0
 
     def update(self, pred, true) -> None:
         p = np.asarray(pred, dtype=float)
@@ -339,6 +341,8 @@ class RunningStats:
         self.count += abs_err.size
         self.abs_sum += float(abs_err.sum())
         self.sq_sum += float(np.square(diff).sum())
+        self.tgt_sum += float(t.sum())
+        self.tgt_sq_sum += float(np.square(t).sum())
         denom = np.maximum(np.abs(t), 1e-8)
         self.abs_pct_sum += float((abs_err / denom).sum())
         if abs_err.size:
@@ -346,11 +350,15 @@ class RunningStats:
 
     def metrics(self) -> List[float]:
         if self.count == 0:
-            return [float("nan")] * 4
+            return [float("nan")] * 5
         mae = self.abs_sum / self.count
         rmse = np.sqrt(self.sq_sum / self.count)
         mape = (self.abs_pct_sum / self.count) * 100.0
-        return [mae, rmse, mape, self.max_err]
+        ss_tot = self.tgt_sq_sum - (self.tgt_sum ** 2) / self.count
+        r2 = float("nan")
+        if ss_tot > 1e-8:
+            r2 = 1.0 - (self.sq_sum / ss_tot)
+        return [mae, rmse, mape, self.max_err, r2]
 
 
 def save_scatter_plots(
@@ -409,6 +417,7 @@ def save_accuracy_metrics(
         "Root Mean Squared Error (RMSE)",
         "Mean Absolute Percentage Error",
         "Maximum Error",
+        "R^2",
     ]
     df = pd.DataFrame(data, index=index)
     export_table(df, str(logs_dir / f"accuracy_{run_name}.csv"))
