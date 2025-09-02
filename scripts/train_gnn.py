@@ -1043,91 +1043,91 @@ def evaluate(
                 edge_pred = out["edge_outputs"].float()
                 target_nodes = batch.y.float()
                 edge_target = batch.edge_y.float()
-                    # Preserve full predictions for per-node metrics
-                    node_count = pred_nodes.size(0) // batch.num_graphs
-                    pred_nodes_b = pred_nodes.view(batch.num_graphs, node_count, -1)
-                    target_nodes_b = target_nodes.view(batch.num_graphs, node_count, -1)
-                    press_pred = pred_nodes_b[..., 0]
-                    press_true = target_nodes_b[..., 0]
-                    if hasattr(model, "y_mean") and model.y_mean is not None:
-                        if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
-                            p_mean = model.y_mean["node_outputs"].to(device)
-                            p_std = model.y_std["node_outputs"].to(device)
-                            if p_mean.ndim == 2:
-                                p_mean = p_mean[..., 0]
-                                p_std = p_std[..., 0]
-                            press_pred = press_pred * p_std.view(1, -1) + p_mean.view(1, -1)
-                            press_true = press_true * p_std.view(1, -1) + p_mean.view(1, -1)
-                        elif not isinstance(model.y_mean, dict):
-                            press_pred = press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                            press_true = press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                    if abs_err_total is None:
-                        total_nodes = node_mask.numel() if node_mask is not None else node_count
-                        abs_err_total = torch.zeros(total_nodes, device=device)
-                        sq_err_total = torch.zeros(total_nodes, device=device)
-                        count = torch.zeros(total_nodes, device=device)
-                        mask_vec = (
-                            node_mask.to(device)
-                            if node_mask is not None
-                            else torch.ones(total_nodes, dtype=torch.bool, device=device)
-                        )
-                    diff = press_pred - press_true
-                    abs_err_total += diff.abs().sum(dim=0) * mask_vec.float()
-                    sq_err_total += diff.pow(2).sum(dim=0) * mask_vec.float()
-                    count += mask_vec.float() * batch.num_graphs
-                    if node_mask is not None:
-                        repeat = pred_nodes.size(0) // node_mask.numel()
-                        mask = node_mask.repeat(repeat)
-                        pred_nodes = pred_nodes[mask]
-                        target_nodes = target_nodes[mask]
-                    loss, press_l, cl_l, flow_l = weighted_mtl_loss(
-                        pred_nodes,
-                        target_nodes,
-                        edge_pred,
-                        edge_target,
-                        loss_fn=loss_fn,
+                # Preserve full predictions for per-node metrics
+                node_count = pred_nodes.size(0) // batch.num_graphs
+                pred_nodes_b = pred_nodes.view(batch.num_graphs, node_count, -1)
+                target_nodes_b = target_nodes.view(batch.num_graphs, node_count, -1)
+                press_pred = pred_nodes_b[..., 0]
+                press_true = target_nodes_b[..., 0]
+                if hasattr(model, "y_mean") and model.y_mean is not None:
+                    if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
+                        p_mean = model.y_mean["node_outputs"].to(device)
+                        p_std = model.y_std["node_outputs"].to(device)
+                        if p_mean.ndim == 2:
+                            p_mean = p_mean[..., 0]
+                            p_std = p_std[..., 0]
+                        press_pred = press_pred * p_std.view(1, -1) + p_mean.view(1, -1)
+                        press_true = press_true * p_std.view(1, -1) + p_mean.view(1, -1)
+                    elif not isinstance(model.y_mean, dict):
+                        press_pred = press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                        press_true = press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                if abs_err_total is None:
+                    total_nodes = node_mask.numel() if node_mask is not None else node_count
+                    abs_err_total = torch.zeros(total_nodes, device=device)
+                    sq_err_total = torch.zeros(total_nodes, device=device)
+                    count = torch.zeros(total_nodes, device=device)
+                    mask_vec = (
+                        node_mask.to(device)
+                        if node_mask is not None
+                        else torch.ones(total_nodes, dtype=torch.bool, device=device)
                     )
-                else:
-                    out_t = out if not isinstance(out, dict) else out["node_outputs"]
-                    target = batch.y.float()
-                    node_count = out_t.size(0) // batch.num_graphs
-                    out_b = out_t.view(batch.num_graphs, node_count, -1)
-                    tgt_b = target.view(batch.num_graphs, node_count, -1)
-                    press_pred = out_b[..., 0]
-                    press_true = tgt_b[..., 0]
-                    if hasattr(model, "y_mean") and model.y_mean is not None:
-                        if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
-                            p_mean = model.y_mean["node_outputs"].to(device)
-                            p_std = model.y_std["node_outputs"].to(device)
-                            if p_mean.ndim == 2:
-                                p_mean = p_mean[..., 0]
-                                p_std = p_std[..., 0]
-                            press_pred = press_pred * p_std.view(1, -1) + p_mean.view(1, -1)
-                            press_true = press_true * p_std.view(1, -1) + p_mean.view(1, -1)
-                        elif not isinstance(model.y_mean, dict):
-                            press_pred = press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                            press_true = press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                    if abs_err_total is None:
-                        total_nodes = node_mask.numel() if node_mask is not None else node_count
-                        abs_err_total = torch.zeros(total_nodes, device=device)
-                        sq_err_total = torch.zeros(total_nodes, device=device)
-                        count = torch.zeros(total_nodes, device=device)
-                        mask_vec = (
-                            node_mask.to(device)
-                            if node_mask is not None
-                            else torch.ones(total_nodes, dtype=torch.bool, device=device)
-                        )
-                    diff = press_pred - press_true
-                    abs_err_total += diff.abs().sum(dim=0) * mask_vec.float()
-                    sq_err_total += diff.pow(2).sum(dim=0) * mask_vec.float()
-                    count += mask_vec.float() * batch.num_graphs
-                    if node_mask is not None:
-                        repeat = out_t.size(0) // node_mask.numel()
-                        mask = node_mask.repeat(repeat)
-                        out_t = out_t[mask]
-                        target = target[mask]
-                    loss = _apply_loss(out_t, target, loss_fn)
-                    press_l = cl_l = flow_l = torch.tensor(0.0, device=device)
+                diff = press_pred - press_true
+                abs_err_total += diff.abs().sum(dim=0) * mask_vec.float()
+                sq_err_total += diff.pow(2).sum(dim=0) * mask_vec.float()
+                count += mask_vec.float() * batch.num_graphs
+                if node_mask is not None:
+                    repeat = pred_nodes.size(0) // node_mask.numel()
+                    mask = node_mask.repeat(repeat)
+                    pred_nodes = pred_nodes[mask]
+                    target_nodes = target_nodes[mask]
+                loss, press_l, cl_l, flow_l = weighted_mtl_loss(
+                    pred_nodes,
+                    target_nodes,
+                    edge_pred,
+                    edge_target,
+                    loss_fn=loss_fn,
+                )
+            else:
+                out_t = out if not isinstance(out, dict) else out["node_outputs"]
+                target = batch.y.float()
+                node_count = out_t.size(0) // batch.num_graphs
+                out_b = out_t.view(batch.num_graphs, node_count, -1)
+                tgt_b = target.view(batch.num_graphs, node_count, -1)
+                press_pred = out_b[..., 0]
+                press_true = tgt_b[..., 0]
+                if hasattr(model, "y_mean") and model.y_mean is not None:
+                    if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
+                        p_mean = model.y_mean["node_outputs"].to(device)
+                        p_std = model.y_std["node_outputs"].to(device)
+                        if p_mean.ndim == 2:
+                            p_mean = p_mean[..., 0]
+                            p_std = p_std[..., 0]
+                        press_pred = press_pred * p_std.view(1, -1) + p_mean.view(1, -1)
+                        press_true = press_true * p_std.view(1, -1) + p_mean.view(1, -1)
+                    elif not isinstance(model.y_mean, dict):
+                        press_pred = press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                        press_true = press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                if abs_err_total is None:
+                    total_nodes = node_mask.numel() if node_mask is not None else node_count
+                    abs_err_total = torch.zeros(total_nodes, device=device)
+                    sq_err_total = torch.zeros(total_nodes, device=device)
+                    count = torch.zeros(total_nodes, device=device)
+                    mask_vec = (
+                        node_mask.to(device)
+                        if node_mask is not None
+                        else torch.ones(total_nodes, dtype=torch.bool, device=device)
+                    )
+                diff = press_pred - press_true
+                abs_err_total += diff.abs().sum(dim=0) * mask_vec.float()
+                sq_err_total += diff.pow(2).sum(dim=0) * mask_vec.float()
+                count += mask_vec.float() * batch.num_graphs
+                if node_mask is not None:
+                    repeat = out_t.size(0) // node_mask.numel()
+                    mask = node_mask.repeat(repeat)
+                    out_t = out_t[mask]
+                    target = target[mask]
+                loss = _apply_loss(out_t, target, loss_fn)
+                press_l = cl_l = flow_l = torch.tensor(0.0, device=device)
             total_loss += loss.item() * batch.num_graphs
             press_total += press_l.item() * batch.num_graphs
             cl_total += cl_l.item() * batch.num_graphs
@@ -1668,30 +1668,30 @@ def evaluate_sequence(
                 pred_nodes_full = preds['node_outputs'].float()
                 press_pred_full = pred_nodes_full[..., 0]
                 press_true_full = target_nodes_full[..., 0]
-                    if hasattr(model, "y_mean") and model.y_mean is not None:
-                        if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
-                            p_mean_full = model.y_mean["node_outputs"].to(device)
-                            p_std_full = model.y_std["node_outputs"].to(device)
-                            if p_mean_full.ndim == 2:
-                                p_mean_full = p_mean_full[..., 0]
-                                p_std_full = p_std_full[..., 0]
-                            press_pred_full = (
-                                press_pred_full * p_std_full.view(1, 1, -1)
-                                + p_mean_full.view(1, 1, -1)
-                            )
-                            press_true_full = (
-                                press_true_full * p_std_full.view(1, 1, -1)
-                                + p_mean_full.view(1, 1, -1)
-                            )
-                        elif not isinstance(model.y_mean, dict):
-                            press_pred_full = (
-                                press_pred_full * model.y_std[0].to(device)
-                                + model.y_mean[0].to(device)
-                            )
-                            press_true_full = (
-                                press_true_full * model.y_std[0].to(device)
-                                + model.y_mean[0].to(device)
-                            )
+                if hasattr(model, "y_mean") and model.y_mean is not None:
+                    if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
+                        p_mean_full = model.y_mean["node_outputs"].to(device)
+                        p_std_full = model.y_std["node_outputs"].to(device)
+                        if p_mean_full.ndim == 2:
+                            p_mean_full = p_mean_full[..., 0]
+                            p_std_full = p_std_full[..., 0]
+                        press_pred_full = (
+                            press_pred_full * p_std_full.view(1, 1, -1)
+                            + p_mean_full.view(1, 1, -1)
+                        )
+                        press_true_full = (
+                            press_true_full * p_std_full.view(1, 1, -1)
+                            + p_mean_full.view(1, 1, -1)
+                        )
+                    elif not isinstance(model.y_mean, dict):
+                        press_pred_full = (
+                            press_pred_full * model.y_std[0].to(device)
+                            + model.y_mean[0].to(device)
+                        )
+                        press_true_full = (
+                            press_true_full * model.y_std[0].to(device)
+                            + model.y_mean[0].to(device)
+                        )
                     if node_mask is not None:
                         pred_nodes = pred_nodes_full[:, :, node_mask, :]
                         target_nodes = target_nodes_full[:, :, node_mask, :]
