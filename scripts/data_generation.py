@@ -103,30 +103,32 @@ def log_array_stats(name: str, arr: np.ndarray) -> None:
         If ``arr`` or any nested array contains ``NaN`` or infinite values.
     """
 
-    nan_count = 0
-    inf_count = 0
+    def _count_invalid(obj: object) -> Tuple[int, int]:
+        """Recursively count NaNs/Infs in ``obj`` regardless of ``dtype``."""
+        if isinstance(obj, dict):
+            n_tot = i_tot = 0
+            for v in obj.values():
+                n, i = _count_invalid(v)
+                n_tot += n
+                i_tot += i
+            return n_tot, i_tot
+        arr = np.asarray(obj)
+        if np.issubdtype(arr.dtype, np.number):
+            return (
+                int(np.count_nonzero(np.isnan(arr))),
+                int(np.count_nonzero(np.isinf(arr))),
+            )
+        if arr.dtype == object:
+            n_tot = i_tot = 0
+            for elem in arr.ravel():
+                n, i = _count_invalid(elem)
+                n_tot += n
+                i_tot += i
+            return n_tot, i_tot
+        return (0, 0)
 
-    arr_np = np.asarray(arr)
-
-    if arr_np.dtype == object:
-        # Iterate over contained objects and accumulate counts
-        for item in arr_np.ravel():
-            if isinstance(item, dict):
-                values = item.values()
-            else:
-                values = [item]
-            for v in values:
-                v_arr = np.asarray(v)
-                # ``np.isnan``/``np.isinf`` error on non-numeric dtypes such as
-                # strings.  Guard the checks so scenario label arrays with
-                # object dtype (e.g. ``["normal", "fire_flow"]``) don't
-                # trigger a ``TypeError``.
-                if np.issubdtype(v_arr.dtype, np.number):
-                    nan_count += int(np.count_nonzero(np.isnan(v_arr)))
-                    inf_count += int(np.count_nonzero(np.isinf(v_arr)))
-    else:
-        nan_count = int(np.count_nonzero(np.isnan(arr_np)))
-        inf_count = int(np.count_nonzero(np.isinf(arr_np)))
+    arr_np = np.asarray(arr, dtype=object)
+    nan_count, inf_count = _count_invalid(arr_np)
 
     logger.info(
         "%s: shape=%s dtype=%s nan=%d inf=%d",
