@@ -871,6 +871,9 @@ def evaluate(
     model.eval()
     total_loss = press_total = cl_total = flow_total = 0.0
     data_iter = iter(tqdm(loader, disable=not progress))
+    # Collect per-node errors for analysis before reduction
+    abs_err_total = sq_err_total = count = None
+    mask_vec = None
     with torch.no_grad():
         while True:
             try:
@@ -895,6 +898,38 @@ def evaluate(
                     edge_pred = out["edge_outputs"].float()
                     target_nodes = batch.y.float()
                     edge_target = batch.edge_y.float()
+                    # Preserve full predictions for per-node metrics
+                    node_count = pred_nodes.size(0) // batch.num_graphs
+                    pred_nodes_b = pred_nodes.view(batch.num_graphs, node_count, -1)
+                    target_nodes_b = target_nodes.view(batch.num_graphs, node_count, -1)
+                    press_pred = pred_nodes_b[..., 0]
+                    press_true = target_nodes_b[..., 0]
+                    if hasattr(model, "y_mean") and model.y_mean is not None:
+                        if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
+                            p_mean = model.y_mean["node_outputs"].to(device)
+                            p_std = model.y_std["node_outputs"].to(device)
+                            if p_mean.ndim == 2:
+                                p_mean = p_mean[..., 0]
+                                p_std = p_std[..., 0]
+                            press_pred = press_pred * p_std.view(1, -1) + p_mean.view(1, -1)
+                            press_true = press_true * p_std.view(1, -1) + p_mean.view(1, -1)
+                        elif not isinstance(model.y_mean, dict):
+                            press_pred = press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                            press_true = press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                    if abs_err_total is None:
+                        total_nodes = node_mask.numel() if node_mask is not None else node_count
+                        abs_err_total = torch.zeros(total_nodes, device=device)
+                        sq_err_total = torch.zeros(total_nodes, device=device)
+                        count = torch.zeros(total_nodes, device=device)
+                        mask_vec = (
+                            node_mask.to(device)
+                            if node_mask is not None
+                            else torch.ones(total_nodes, dtype=torch.bool, device=device)
+                        )
+                    diff = press_pred - press_true
+                    abs_err_total += diff.abs().sum(dim=0) * mask_vec.float()
+                    sq_err_total += diff.pow(2).sum(dim=0) * mask_vec.float()
+                    count += mask_vec.float() * batch.num_graphs
                     if node_mask is not None:
                         repeat = pred_nodes.size(0) // node_mask.numel()
                         mask = node_mask.repeat(repeat)
@@ -910,6 +945,37 @@ def evaluate(
                 else:
                     out_t = out if not isinstance(out, dict) else out["node_outputs"]
                     target = batch.y.float()
+                    node_count = out_t.size(0) // batch.num_graphs
+                    out_b = out_t.view(batch.num_graphs, node_count, -1)
+                    tgt_b = target.view(batch.num_graphs, node_count, -1)
+                    press_pred = out_b[..., 0]
+                    press_true = tgt_b[..., 0]
+                    if hasattr(model, "y_mean") and model.y_mean is not None:
+                        if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
+                            p_mean = model.y_mean["node_outputs"].to(device)
+                            p_std = model.y_std["node_outputs"].to(device)
+                            if p_mean.ndim == 2:
+                                p_mean = p_mean[..., 0]
+                                p_std = p_std[..., 0]
+                            press_pred = press_pred * p_std.view(1, -1) + p_mean.view(1, -1)
+                            press_true = press_true * p_std.view(1, -1) + p_mean.view(1, -1)
+                        elif not isinstance(model.y_mean, dict):
+                            press_pred = press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                            press_true = press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                    if abs_err_total is None:
+                        total_nodes = node_mask.numel() if node_mask is not None else node_count
+                        abs_err_total = torch.zeros(total_nodes, device=device)
+                        sq_err_total = torch.zeros(total_nodes, device=device)
+                        count = torch.zeros(total_nodes, device=device)
+                        mask_vec = (
+                            node_mask.to(device)
+                            if node_mask is not None
+                            else torch.ones(total_nodes, dtype=torch.bool, device=device)
+                        )
+                    diff = press_pred - press_true
+                    abs_err_total += diff.abs().sum(dim=0) * mask_vec.float()
+                    sq_err_total += diff.pow(2).sum(dim=0) * mask_vec.float()
+                    count += mask_vec.float() * batch.num_graphs
                     if node_mask is not None:
                         repeat = out_t.size(0) // node_mask.numel()
                         mask = node_mask.repeat(repeat)
@@ -924,6 +990,20 @@ def evaluate(
             if interrupted:
                 break
     denom = len(loader.dataset)
+    if abs_err_total is not None:
+        mae = abs_err_total / count.clamp(min=1)
+        rmse = torch.sqrt(sq_err_total / count.clamp(min=1))
+        mae[count == 0] = float("nan")
+        rmse[count == 0] = float("nan")
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        pd.DataFrame(
+            {
+                "node_index": np.arange(mae.numel()),
+                "mae": mae.cpu().numpy(),
+                "rmse": rmse.cpu().numpy(),
+            }
+        ).to_csv(log_dir / "eval_node_errors.csv", index=False)
     return (
         total_loss / denom,
         press_total / denom,
@@ -1402,6 +1482,7 @@ def evaluate_sequence(
         pump_coeffs = pump_coeffs.to(device)
     node_count = int(edge_index.max()) + 1
     data_iter = iter(tqdm(loader, disable=not progress))
+    abs_err_total = sq_err_total = count = None
     with torch.no_grad():
         while True:
             try:
@@ -1428,11 +1509,44 @@ def evaluate_sequence(
                     et,
                 )
                 if isinstance(Y_seq, dict):
-                    target_nodes = Y_seq['node_outputs'].to(device)
-                    pred_nodes = preds['node_outputs'].float()
+                    target_nodes_full = Y_seq['node_outputs'].to(device)
+                    pred_nodes_full = preds['node_outputs'].float()
+                    press_pred_full = pred_nodes_full[..., 0]
+                    press_true_full = target_nodes_full[..., 0]
+                    if hasattr(model, "y_mean") and model.y_mean is not None:
+                        if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
+                            p_mean_full = model.y_mean["node_outputs"].to(device)
+                            p_std_full = model.y_std["node_outputs"].to(device)
+                            if p_mean_full.ndim == 2:
+                                p_mean_full = p_mean_full[..., 0]
+                                p_std_full = p_std_full[..., 0]
+                            press_pred_full = (
+                                press_pred_full * p_std_full.view(1, 1, -1)
+                                + p_mean_full.view(1, 1, -1)
+                            )
+                            press_true_full = (
+                                press_true_full * p_std_full.view(1, 1, -1)
+                                + p_mean_full.view(1, 1, -1)
+                            )
+                        elif not isinstance(model.y_mean, dict):
+                            press_pred_full = (
+                                press_pred_full * model.y_std[0].to(device)
+                                + model.y_mean[0].to(device)
+                            )
+                            press_true_full = (
+                                press_true_full * model.y_std[0].to(device)
+                                + model.y_mean[0].to(device)
+                            )
                     if node_mask is not None:
-                        pred_nodes = pred_nodes[:, :, node_mask, :]
-                        target_nodes = target_nodes[:, :, node_mask, :]
+                        pred_nodes = pred_nodes_full[:, :, node_mask, :]
+                        target_nodes = target_nodes_full[:, :, node_mask, :]
+                        press_pred = press_pred_full[:, :, node_mask]
+                        press_true = press_true_full[:, :, node_mask]
+                    else:
+                        pred_nodes = pred_nodes_full
+                        target_nodes = target_nodes_full
+                        press_pred = press_pred_full
+                        press_true = press_true_full
                     edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
                     edge_preds = preds['edge_outputs'].float()
                     loss, loss_press, loss_cl, loss_edge = weighted_mtl_loss(
@@ -1445,24 +1559,22 @@ def evaluate_sequence(
                         w_cl=w_cl,
                         w_flow=w_flow,
                     )
-                    press_pred = pred_nodes[..., 0]
-                    press_true = target_nodes[..., 0]
-                    if hasattr(model, "y_mean") and model.y_mean is not None:
-                        if isinstance(model.y_mean, dict) and "node_outputs" in model.y_mean:
-                            p_mean = model.y_mean["node_outputs"].to(device)
-                            p_std = model.y_std["node_outputs"].to(device)
-                            if p_mean.ndim == 2:
-                                p_mean = p_mean[..., 0]
-                                p_std = p_std[..., 0]
-                            if node_mask is not None:
-                                p_mean = p_mean[node_mask]
-                                p_std = p_std[node_mask]
-                            press_pred = press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
-                            press_true = press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
-                        elif not isinstance(model.y_mean, dict):
-                            press_pred = press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                            press_true = press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
                     press_mae = torch.mean(torch.abs(press_pred - press_true))
+                    if abs_err_total is None:
+                        total_nodes = node_mask.numel() if node_mask is not None else press_pred_full.size(2)
+                        abs_err_total = torch.zeros(total_nodes, device=device)
+                        sq_err_total = torch.zeros(total_nodes, device=device)
+                        count = torch.zeros(total_nodes, device=device)
+                    diff_full = press_pred_full - press_true_full
+                    if node_mask is not None:
+                        mask_vec = node_mask.to(device)
+                        abs_err_total[mask_vec] += diff_full[:, :, mask_vec].abs().sum(dim=(0, 1))
+                        sq_err_total[mask_vec] += diff_full[:, :, mask_vec].pow(2).sum(dim=(0, 1))
+                        count[mask_vec] += diff_full.shape[0] * diff_full.shape[1]
+                    else:
+                        abs_err_total += diff_full.abs().sum(dim=(0, 1))
+                        sq_err_total += diff_full.pow(2).sum(dim=(0, 1))
+                        count += diff_full.shape[0] * diff_full.shape[1]
                     if physics_loss:
                         flows_mb = edge_preds.squeeze(-1)
                         if hasattr(model, "y_mean") and model.y_mean is not None:
@@ -1574,6 +1686,25 @@ def evaluate_sequence(
                     mass_imb = head_violation = torch.tensor(0.0, device=device)
                     press_mae = torch.tensor(0.0, device=device)
                     loss = _apply_loss(preds, Y_seq.float(), loss_fn)
+                    if abs_err_total is None and preds.dim() >= 3:
+                        total_nodes = node_mask.numel() if node_mask is not None else preds.size(2)
+                        abs_err_total = torch.zeros(total_nodes, device=device)
+                        sq_err_total = torch.zeros(total_nodes, device=device)
+                        count = torch.zeros(total_nodes, device=device)
+                    if preds.dim() >= 3:
+                        press_pred_full = preds[..., 0]
+                        press_true_full = Y_seq[..., 0]
+                        if node_mask is not None:
+                            mask_vec = node_mask.to(device)
+                            diff_full = press_pred_full - press_true_full
+                            abs_err_total[mask_vec] += diff_full.abs().sum(dim=(0, 1))
+                            sq_err_total[mask_vec] += diff_full.pow(2).sum(dim=(0, 1))
+                            count[mask_vec] += diff_full.shape[0] * diff_full.shape[1]
+                        else:
+                            diff_full = press_pred_full - press_true_full
+                            abs_err_total += diff_full.abs().sum(dim=(0, 1))
+                            sq_err_total += diff_full.pow(2).sum(dim=(0, 1))
+                            count += diff_full.shape[0] * diff_full.shape[1]
             total_loss += loss.item() * X_seq.size(0)
             press_total += loss_press.item() * X_seq.size(0)
             cl_total += loss_cl.item() * X_seq.size(0)
@@ -1588,6 +1719,20 @@ def evaluate_sequence(
             if interrupted:
                 break
     denom = len(loader.dataset)
+    if abs_err_total is not None:
+        mae = abs_err_total / count.clamp(min=1)
+        rmse = torch.sqrt(sq_err_total / count.clamp(min=1))
+        mae[count == 0] = float("nan")
+        rmse[count == 0] = float("nan")
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        pd.DataFrame(
+            {
+                "node_index": np.arange(mae.numel()),
+                "mae": mae.cpu().numpy(),
+                "rmse": rmse.cpu().numpy(),
+            }
+        ).to_csv(log_dir / "eval_sequence_node_errors.csv", index=False)
     return (
         total_loss / denom,
         press_total / denom,
