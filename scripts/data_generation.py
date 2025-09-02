@@ -501,7 +501,7 @@ def split_results(
         ]
     ],
     seed: Optional[int] = None,
-) -> Tuple[List, List, List]:
+) -> Tuple[List, List, List, Tuple[int, int, int]]:
     num_total = len(results)
     rng = np.random.default_rng(seed)
     indices = rng.permutation(num_total)
@@ -514,7 +514,12 @@ def split_results(
     train_results = [results[i] for i in train_idx]
     val_results = [results[i] for i in val_idx]
     test_results = [results[i] for i in test_idx]
-    return train_results, val_results, test_results
+    counts = (len(train_results), len(val_results), len(test_results))
+    logger.info(
+        "Split results into %d train, %d val and %d test scenarios",
+        *counts,
+    )
+    return train_results, val_results, test_results, counts
 
 
 def build_sequence_dataset(
@@ -991,7 +996,14 @@ def main() -> None:
     plot_dataset_distributions(demand_mults, pump_speeds, run_ts)
     plot_pressure_histogram(all_pressures, base_pressures, run_ts)
     extreme_count = sum(m["min_pressure"] < 10.0 for m in manifest_records)
-    train_res, val_res, test_res = split_results(results, seed=args.seed)
+    train_res, val_res, test_res, split_counts = split_results(results, seed=args.seed)
+    train_count, val_count, test_count = split_counts
+    logger.info(
+        "Dataset split counts - train: %d, val: %d, test: %d",
+        train_count,
+        val_count,
+        test_count,
+    )
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
     if args.sequence_length > 1:
@@ -1034,6 +1046,11 @@ def main() -> None:
         "total_scenarios": len(manifest_records),
         "include_chlorine": bool(args.include_chlorine),
         "node_target_dim": 2 if args.include_chlorine else 1,
+        "split_counts": {
+            "train": int(train_count),
+            "val": int(val_count),
+            "test": int(test_count),
+        },
         "scenarios": manifest_records,
     }
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:

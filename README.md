@@ -297,8 +297,9 @@ and ``pressure_hist_<timestamp>.png`` are created under ``plots/``. The first
 summarises the sampled demand multipliers and pump speeds, while the latter
 compares the pressure distribution before (normal scenarios) and after the
 augmented extremes. A ``manifest.json`` file in the output directory lists the
-min/median/max pressure for each scenario and counts how many runs fall below
-10 m to verify coverage of extreme low-pressure events.
+min/median/max pressure for each scenario, counts how many runs fall below
+10 m to verify coverage of extreme low-pressure events, and records the number
+of scenarios allocated to the training, validation and test splits.
 
 To create sequence datasets for the recurrent surrogate specify ``--sequence-length``:
 
