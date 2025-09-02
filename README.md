@@ -225,12 +225,12 @@ direction, a hinge penalty on the head‑loss sign is applied with configurable 
 ``--head-sign-weight`` (default ``0.5``). You can delay introducing the head‑loss term
 for a short supervised warm‑up via ``--head-warmup <epochs>``.
 To keep the physics penalties on a comparable
-scale the script estimates baseline magnitudes for the mass, headloss and pump
-curve terms relative to the pressure loss during a calibration pass over the
-training data. These ratios are used to normalise the respective losses before
-applying the user-specified weights. The automatically detected scales can be
-overridden via ``--mass-scale``, ``--head-scale`` and ``--pump-scale`` if manual
-tuning or logging is desired.
+scale the script now estimates baseline magnitudes for the mass, headloss and pump
+curve terms using the ground‑truth flows and pressures from the training set.
+These magnitudes are used to normalise the respective losses before applying the
+user‑specified weights. The automatically detected scales can be overridden via
+``--mass-scale``, ``--head-scale`` and ``--pump-scale`` if manual tuning or logging
+is desired.
 Training logs also report the average mass imbalance per batch and the
 percentage of edges with inconsistent headloss signs.
 

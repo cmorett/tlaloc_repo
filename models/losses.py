@@ -212,12 +212,12 @@ def scale_physics_losses(
     Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         Scaled ``mass_loss``, ``head_loss`` and ``pump_loss``.
     """
-    eps = torch.finfo(mass_loss.dtype).eps
+    scale_floor = 1e-3
     if mass_scale > 0:
-        mass_loss = mass_loss / max(mass_scale, eps)
+        mass_loss = mass_loss / max(mass_scale, scale_floor)
     if head_scale > 0:
-        head_loss = head_loss / max(head_scale, eps)
+        head_loss = head_loss / max(head_scale, scale_floor)
     if pump_scale > 0:
-        pump_loss = pump_loss / max(pump_scale, eps)
+        pump_loss = pump_loss / max(pump_scale, scale_floor)
     return mass_loss, head_loss, pump_loss
 

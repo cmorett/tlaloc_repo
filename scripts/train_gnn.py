@@ -1242,6 +1242,108 @@ def train_sequence(
     )
 
 
+def estimate_physics_scales_from_data(
+    loader: TorchLoader,
+    edge_index: torch.Tensor,
+    edge_attr_phys: torch.Tensor,
+    node_type: Optional[torch.Tensor],
+    edge_type: Optional[torch.Tensor],
+    device,
+    model: nn.Module,
+    pump_coeffs: Optional[torch.Tensor] = None,
+    head_sign_weight: float = 0.5,
+) -> Tuple[float, float, float]:
+    """Estimate baseline magnitudes using ground-truth flows and pressures."""
+
+    edge_index = edge_index.to(device)
+    edge_attr_phys = edge_attr_phys.to(device)
+    if node_type is not None:
+        node_type = node_type.to(device)
+    if edge_type is not None:
+        edge_type = edge_type.to(device)
+    if pump_coeffs is not None:
+        pump_coeffs = pump_coeffs.to(device)
+    node_count = int(edge_index.max()) + 1
+    mass_total = head_total = pump_total = 0.0
+    num_samples = 0
+    with torch.no_grad():
+        for X_seq, Y_seq in loader:
+            if not isinstance(Y_seq, dict):
+                continue
+            X_seq = X_seq.to(device)
+            target_nodes = Y_seq["node_outputs"].to(device)
+            edge_target = Y_seq["edge_outputs"].to(device)
+
+            flows = edge_target
+            press = target_nodes[..., 0].float()
+            if hasattr(model, "y_mean") and model.y_mean is not None:
+                if isinstance(model.y_mean, dict):
+                    p_mean = model.y_mean["node_outputs"].to(device)
+                    p_std = model.y_std["node_outputs"].to(device)
+                    if p_mean.ndim == 2:
+                        p_mean = p_mean[..., 0]
+                        p_std = p_std[..., 0]
+                    press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                    q_mean = model.y_mean["edge_outputs"].to(device)
+                    q_std = model.y_std["edge_outputs"].to(device)
+                    flows = flows * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                else:
+                    press = (
+                        press * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                    )
+
+            flows_mb = flows.permute(2, 0, 1).reshape(edge_index.size(1), -1)
+            demand_mb = _extract_next_demand(
+                X_seq, Y_seq, node_count, model, device
+            )
+            mass_loss, _ = compute_mass_balance_loss(
+                flows_mb,
+                edge_index,
+                node_count,
+                demand=demand_mb,
+                node_type=node_type,
+                return_imbalance=True,
+            )
+
+            head_loss, _ = pressure_headloss_consistency_loss(
+                press,
+                flows,
+                edge_index,
+                edge_attr_phys,
+                edge_type=edge_type,
+                return_violation=True,
+                sign_weight=head_sign_weight,
+            )
+
+            if pump_coeffs is not None:
+                flow_pc = edge_target
+                if hasattr(model, "y_mean") and model.y_mean is not None:
+                    if isinstance(model.y_mean, dict):
+                        q_mean = model.y_mean["edge_outputs"].to(device)
+                        q_std = model.y_std["edge_outputs"].to(device)
+                        flow_pc = flow_pc * q_std + q_mean
+                    else:
+                        flow_pc = (
+                            flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
+                        )
+                pump_loss_val = pump_curve_loss(
+                    flow_pc,
+                    pump_coeffs,
+                    edge_index,
+                    edge_type,
+                )
+            else:
+                pump_loss_val = torch.tensor(0.0, device=device)
+
+            bsz = X_seq.size(0)
+            mass_total += mass_loss.item() * bsz
+            head_total += head_loss.item() * bsz
+            pump_total += pump_loss_val.item() * bsz
+            num_samples += bsz
+    denom = max(num_samples, 1)
+    return mass_total / denom, head_total / denom, pump_total / denom
+
+
 def evaluate_sequence(
     model: nn.Module,
     loader: TorchLoader,
@@ -1954,42 +2056,23 @@ def main(args: argparse.Namespace):
         or (args.pressure_loss and head_scale <= 0)
         or (args.pump_loss and pump_scale <= 0)
     ):
-        base_eval = evaluate_sequence(
-            model,
+        m_base, h_base, p_base = estimate_physics_scales_from_data(
             loader,
             data_ds.edge_index,
-            data_ds.edge_attr,
             edge_attr_phys,
             data_ds.node_type,
             data_ds.edge_type,
-            edge_pairs,
             device,
-            pump_coeffs_tensor,
-            loss_fn=args.loss_fn,
-            physics_loss=args.physics_loss,
-            pressure_loss=args.pressure_loss,
-            pump_loss=args.pump_loss,
-            node_mask=loss_mask,
-            mass_scale=1.0,
-            head_scale=1.0,
-            pump_scale=1.0,
-            w_mass=args.w_mass,
-            w_head=args.w_head,
-            w_pump=args.w_pump,
-            w_press=args.w_press,
-            w_cl=args.w_cl,
-            w_flow=args.w_flow,
-            amp=args.amp,
-            progress=False,
+            model,
+            pump_coeffs_tensor if args.pump_loss else None,
             head_sign_weight=getattr(args, "head_sign_weight", 0.5),
         )
-        press_base = float(base_eval[1]) if base_eval[1] > 0 else 1.0
         if args.physics_loss and mass_scale <= 0:
-            mass_scale = float(base_eval[4]) / press_base if base_eval[4] > 0 else 1.0
+            mass_scale = m_base
         if args.pressure_loss and head_scale <= 0:
-            head_scale = float(base_eval[5]) / press_base if base_eval[5] > 0 else 1.0
+            head_scale = h_base
         if args.pump_loss and pump_scale <= 0:
-            pump_scale = float(base_eval[7]) / press_base if base_eval[7] > 0 else 1.0
+            pump_scale = p_base
     args.mass_scale = mass_scale
     args.head_scale = head_scale
     args.pump_scale = pump_scale
