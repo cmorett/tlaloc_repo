@@ -91,7 +91,9 @@ separately which removes large baseline offsets and often reduces pressure MAE.
 When sequence models are used a component-wise loss curve
 ``loss_components_<run>.png`` is stored alongside ``loss_curve_<run>.png`` and
 the per-component pressure, chlorine and flow losses are recorded each epoch in
-``training_<run>.log`` as well as TensorBoard summaries.
+``training_<run>.log`` as well as TensorBoard summaries. The gradient norm is
+logged to the same files and its trajectory is saved as ``grad_norm_<run>.png``
+under ``plots/`` to highlight potential optimisation instability.
 For sequence datasets a time-series example ``time_series_example_<run>.png``
 plots predicted and actual pressure and chlorine for one node across all steps.
 
