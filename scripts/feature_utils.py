@@ -141,7 +141,10 @@ class SequenceDataset(torch.utils.data.Dataset):
 
 
 def compute_sequence_norm_stats(
-    X: np.ndarray, Y: np.ndarray, per_node: bool = False
+    X: np.ndarray,
+    Y: np.ndarray,
+    per_node: bool = False,
+    static_cols: Optional[Sequence[int]] = None,
 ):
     """Return mean and std for sequence arrays including multi-task targets."""
 
@@ -149,6 +152,13 @@ def compute_sequence_norm_stats(
         flat = X.reshape(-1, X.shape[-2], X.shape[-1])
         x_mean = torch.tensor(flat.mean(axis=0), dtype=torch.float32)
         x_std = torch.tensor(flat.std(axis=0) + EPS, dtype=torch.float32)
+        if static_cols:
+            x_flat = X.reshape(-1, X.shape[-1])
+            global_mean = torch.tensor(x_flat.mean(axis=0), dtype=torch.float32)
+            global_std = torch.tensor(x_flat.std(axis=0) + EPS, dtype=torch.float32)
+            for col in static_cols:
+                x_mean[:, col] = global_mean[col]
+                x_std[:, col] = global_std[col]
     else:
         x_flat = X.reshape(-1, X.shape[-1])
         x_mean = torch.tensor(x_flat.mean(axis=0), dtype=torch.float32)
@@ -194,8 +204,9 @@ def apply_sequence_normalization(
     edge_attr_mean: Optional[torch.Tensor] = None,
     edge_attr_std: Optional[torch.Tensor] = None,
     per_node: bool = False,
+    static_cols: Optional[Sequence[int]] = None,
 ) -> None:
-    del per_node  # parameter kept for API symmetry
+    del per_node, static_cols  # parameters kept for API symmetry
     dataset.X = (dataset.X - x_mean) / x_std
     if dataset.multi:
         for k in dataset.Y:
