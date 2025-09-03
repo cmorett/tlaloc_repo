@@ -7,6 +7,7 @@ import sys
 import signal
 import warnings
 import logging
+import math
 
 import numpy as np
 import pandas as pd
@@ -926,7 +927,7 @@ def train(
     scaler = GradScaler(device=device.type, enabled=amp)
     total_loss = press_total = cl_total = flow_total = 0.0
     grad_total = 0.0
-    batch_count = 0
+    grad_count = 0
     for batch in tqdm(loader, disable=not progress):
         batch = batch.to(device, non_blocking=True)
         if torch.isnan(batch.x).any() or torch.isnan(batch.y).any():
@@ -979,19 +980,24 @@ def train(
         # Clip gradients to mitigate exploding gradients that could otherwise
         # result in ``NaN`` loss values when the optimizer updates the weights.
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = float(grad_norm)
+        if not math.isfinite(grad_norm):
+            logger.warning("Non‑finite grad norm detected; skipping value")
+            grad_norm = None
         if amp:
             scaler.step(optimizer)
             scaler.update()
         else:
             optimizer.step()
-        grad_total += float(grad_norm)
-        batch_count += 1
+        if grad_norm is not None:
+            grad_total += grad_norm
+            grad_count += 1
         total_loss += loss.item() * batch.num_graphs
         press_total += press_l.item() * batch.num_graphs
         cl_total += cl_l.item() * batch.num_graphs
         flow_total += flow_l.item() * batch.num_graphs
     denom = len(loader.dataset)
-    avg_grad = grad_total / batch_count if batch_count > 0 else 0.0
+    avg_grad = grad_total / grad_count if grad_count > 0 else None
     return (
         total_loss / denom,
         press_total / denom,
@@ -1228,7 +1234,7 @@ def train_sequence(
     mass_total = head_total = sym_total = pump_total = 0.0
     mass_imb_total = head_viol_total = press_mae_total = 0.0
     grad_total = 0.0
-    batch_count = 0
+    grad_count = 0
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device)
     edge_attr_phys = edge_attr_phys.to(device)
@@ -1436,14 +1442,23 @@ def train_sequence(
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            grad_norm = float(grad_norm)
+            if not math.isfinite(grad_norm):
+                logger.warning("Non‑finite grad norm detected; skipping value")
+                grad_norm = None
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            grad_norm = float(grad_norm)
+            if not math.isfinite(grad_norm):
+                logger.warning("Non‑finite grad norm detected; skipping value")
+                grad_norm = None
             optimizer.step()
-        grad_total += float(grad_norm)
-        batch_count += 1
+        if grad_norm is not None:
+            grad_total += grad_norm
+            grad_count += 1
         total_loss += loss.item() * X_seq.size(0)
         press_total += loss_press.item() * X_seq.size(0)
         cl_total += loss_cl.item() * X_seq.size(0)
@@ -1458,7 +1473,7 @@ def train_sequence(
         if interrupted:
             break
     denom = len(loader.dataset)
-    avg_grad = grad_total / batch_count if batch_count > 0 else 0.0
+    avg_grad = grad_total / grad_count if grad_count > 0 else None
     return (
         total_loss / denom,
         press_total / denom,
@@ -2508,7 +2523,8 @@ def main(args: argparse.Namespace):
                 if args.pump_loss:
                     comp.append(pump_l)
                 loss_components.append(tuple(comp))
-                grad_norms.append(grad_norm)
+                if grad_norm is not None:
+                    grad_norms.append(grad_norm)
                 if val_loader is not None and not interrupted:
                     val_tuple = evaluate_sequence(
                         model,
@@ -2570,7 +2586,8 @@ def main(args: argparse.Namespace):
                     progress=args.progress,
                 )
                 loss_components.append((press_l, cl_l, flow_l))
-                grad_norms.append(grad_norm)
+                if grad_norm is not None:
+                    grad_norms.append(grad_norm)
                 if val_loader is not None and not interrupted:
                     val_loss, val_press_l, val_cl_l, val_flow_l = evaluate(
                         model,
@@ -2588,16 +2605,17 @@ def main(args: argparse.Namespace):
             scheduler.step(val_metric)
             curr_lr = optimizer.param_groups[0]['lr']
             losses.append((loss, val_metric))
+            grad_val = grad_norm if grad_norm is not None else float("nan")
             if seq_mode:
                 if pressure_only:
                     f.write(
                         f"{epoch},{loss:.6f},{val_press_l:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},{mass_imb:.6f},{head_viols * 100:.6f},{press_mae:.6f},"
-                        f"{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols * 100:.6f},{val_press_mae:.6f},{curr_lr:.6e},{grad_norm:.6f}\n"
+                        f"{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols * 100:.6f},{val_press_mae:.6f},{curr_lr:.6e},{grad_val:.6f}\n"
                     )
                 else:
                     f.write(
                         f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},{mass_imb:.6f},{head_viols * 100:.6f},{press_mae:.6f},"
-                        f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols * 100:.6f},{val_press_mae:.6f},{curr_lr:.6e},{grad_norm:.6f}\n"
+                        f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{val_mass_imb:.6f},{val_head_viols * 100:.6f},{val_press_mae:.6f},{curr_lr:.6e},{grad_val:.6f}\n"
                     )
                 if tb_writer is not None:
                     tb_writer.add_scalars(
@@ -2635,11 +2653,12 @@ def main(args: argparse.Namespace):
                         {"train": press_mae, "val": val_press_mae},
                         epoch,
                     )
-                    tb_writer.add_scalar(
-                        "metrics/grad_norm",
-                        grad_norm,
-                        epoch,
-                    )
+                    if grad_norm is not None:
+                        tb_writer.add_scalar(
+                            "metrics/grad_norm",
+                            grad_norm,
+                            epoch,
+                        )
                 if args.physics_loss:
                     msg = (
                         f"Epoch {epoch}: press={press_l:.3f}, cl={cl_l:.3f}, flow={flow_l:.3f}, "
@@ -2662,12 +2681,12 @@ def main(args: argparse.Namespace):
                 if pressure_only:
                     f.write(
                         f"{epoch},{loss:.6f},{val_press_l:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
-                        f"{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e},{grad_norm:.6f}\n"
+                        f"{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e},{grad_val:.6f}\n"
                     )
                 else:
                     f.write(
                         f"{epoch},{loss:.6f},{val_loss:.6f},{press_l:.6f},{cl_l:.6f},{flow_l:.6f},"
-                        f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e},{grad_norm:.6f}\n"
+                        f"{val_press_l:.6f},{val_cl_l:.6f},{val_flow_l:.6f},{curr_lr:.6e},{grad_val:.6f}\n"
                     )
                 if tb_writer is not None:
                     tb_writer.add_scalars(
@@ -2690,11 +2709,12 @@ def main(args: argparse.Namespace):
                         },
                         epoch,
                     )
-                    tb_writer.add_scalar(
-                        "metrics/grad_norm",
-                        grad_norm,
-                        epoch,
-                    )
+                    if grad_norm is not None:
+                        tb_writer.add_scalar(
+                            "metrics/grad_norm",
+                            grad_norm,
+                            epoch,
+                        )
                 print(
                     f"Epoch {epoch}: press={press_l:.3f}, cl={cl_l:.3f}, flow={flow_l:.3f}"
                 )
@@ -2816,13 +2836,15 @@ def main(args: argparse.Namespace):
         plot_loss_components(loss_components, run_name)
 
     if grad_norms:
-        plt.figure()
-        plt.plot(grad_norms)
-        plt.xlabel("Epoch")
-        plt.ylabel("Gradient Norm")
-        plt.tight_layout()
-        plt.savefig(os.path.join(PLOTS_DIR, f"grad_norm_{run_name}.png"))
-        plt.close()
+        valid_grad_norms = [g for g in grad_norms if g is not None]
+        if valid_grad_norms:
+            plt.figure()
+            plt.plot(valid_grad_norms)
+            plt.xlabel("Epoch")
+            plt.ylabel("Gradient Norm")
+            plt.tight_layout()
+            plt.savefig(os.path.join(PLOTS_DIR, f"grad_norm_{run_name}.png"))
+            plt.close()
 
     # scatter plot of predictions vs actual on test set
     if args.x_test_path and os.path.exists(args.x_test_path):
