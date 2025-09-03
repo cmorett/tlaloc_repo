@@ -2040,9 +2040,13 @@ def main(args: argparse.Namespace):
 
     norm_md5 = None
     if args.normalize:
+        static_cols = [3] if args.per_node_norm else None
         if seq_mode:
             x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
-                X_raw, Y_raw, per_node=args.per_node_norm
+                X_raw,
+                Y_raw,
+                per_node=args.per_node_norm,
+                static_cols=static_cols,
             )
             apply_sequence_normalization(
                 data_ds,
@@ -2053,6 +2057,7 @@ def main(args: argparse.Namespace):
                 edge_mean,
                 edge_std,
                 per_node=args.per_node_norm,
+                static_cols=static_cols,
             )
             if isinstance(val_list, SequenceDataset):
                 apply_sequence_normalization(
@@ -2064,6 +2069,7 @@ def main(args: argparse.Namespace):
                     edge_mean,
                     edge_std,
                     per_node=args.per_node_norm,
+                    static_cols=static_cols,
                 )
         else:
             x_mean, x_std, y_mean, y_std = compute_norm_stats(
@@ -2844,6 +2850,7 @@ def main(args: argparse.Namespace):
                     edge_mean,
                     edge_std,
                     per_node=args.per_node_norm,
+                    static_cols=static_cols,
                 )
             test_loader = TorchLoader(
                 test_ds,
