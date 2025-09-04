@@ -22,6 +22,7 @@ class DummyModel(torch.nn.Module):
         self.x_std = torch.ones(1)
         self.y_mean = None
         self.y_std = torch.ones(1)
+        self.y_mean_node = torch.zeros(1, out_dim)
 
     def forward(self, x, edge_index, edge_attr=None, node_types=None, edge_types=None):
         return torch.zeros(x.size(0), self.out_dim, device=x.device)
@@ -118,6 +119,39 @@ def test_validate_surrogate_respects_node_mask():
     assert abs(metrics["chlorine_rmse"] - expected_rmse_c) < 1e-6
     assert abs(metrics["chlorine_mae"] - expected_mae_c) < 1e-6
     assert abs(metrics["chlorine_max_error"] - expected_max_c) < 1e-6
+
+
+def test_validate_surrogate_pressure_only():
+    """Surrogate without chlorine output should still validate."""
+    device = torch.device('cpu')
+    (
+        wn,
+        node_to_index,
+        pump_names,
+        edge_index,
+        node_types,
+        edge_types,
+    ) = load_network('CTown.inp')
+    wn.options.time.duration = 2 * 3600
+    wn.options.time.hydraulic_timestep = 3600
+    wn.options.time.quality_timestep = 3600
+    wn.options.time.report_timestep = 3600
+    sim = wntr.sim.EpanetSimulator(wn)
+    res = sim.run_sim(str(TEMP_DIR / "temp_pressure_only"))
+    model = DummyModel(out_dim=1).to(device)
+    metrics, arr, times = validate_surrogate(
+        model,
+        edge_index,
+        None,
+        wn,
+        [res],
+        device,
+        "test_pressure_only",
+        torch.tensor(node_types, dtype=torch.long),
+        torch.tensor(edge_types, dtype=torch.long),
+    )
+    assert "pressure_rmse" in metrics
+    assert "chlorine_rmse" not in metrics
 
 def test_validate_surrogate_dict_stats():
     """Validation should unnormalize predictions using dict stats."""

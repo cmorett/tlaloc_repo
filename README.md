@@ -373,6 +373,10 @@ python scripts/experiments_validation.py \
     --run-name baseline
 ```
 
+The validation script automatically detects whether the surrogate was trained
+with chlorine targets. Models trained without chlorine (pressure-only) are
+also supported and skip chlorine-related metrics and MPC experiments.
+
 The validation run also exports an animated view of network pressures,
 chlorine and pump speeds:
 
