@@ -238,8 +238,17 @@ def _prepare_features(
     """Assemble and optionally normalize node features."""
 
     num_pumps = len(pump_controls)
-    if not hasattr(_prepare_features, "template"):
-        _prepare_features.template = build_static_node_features(wn, num_pumps)
+    include_chlorine = (
+        getattr(model, "y_mean_node", None) is not None
+        and model.y_mean_node.size(-1) > 1
+    )
+    if not hasattr(_prepare_features, "template") or getattr(
+        _prepare_features, "include_chlorine", True
+    ) != include_chlorine:
+        _prepare_features.template = build_static_node_features(
+            wn, num_pumps, include_chlorine=include_chlorine
+        )
+        _prepare_features.include_chlorine = include_chlorine
     template = _prepare_features.template
 
     pressures_t = torch.tensor(
@@ -249,8 +258,10 @@ def _prepare_features(
         ],
         dtype=torch.float32,
     )
-    chlorine_t = torch.tensor(
-        [chlorine.get(n, 0.0) for n in wn.node_name_list], dtype=torch.float32
+    chlorine_t = (
+        torch.tensor([chlorine.get(n, 0.0) for n in wn.node_name_list], dtype=torch.float32)
+        if include_chlorine
+        else None
     )
     pump_t = torch.tensor(pump_controls, dtype=torch.float32)
     demands_t = None
@@ -266,6 +277,7 @@ def _prepare_features(
         model,
         demands_t,
         skip_normalization=skip_normalization,
+        include_chlorine=include_chlorine,
     )
 
 def validate_surrogate(
@@ -280,6 +292,7 @@ def validate_surrogate(
     edge_types_tensor: Optional[torch.Tensor] = None,
     debug: bool = False,
     debug_info: Optional[Dict[str, Any]] = None,
+    include_chlorine: Optional[bool] = None,
 ) -> Tuple[Dict[str, float], np.ndarray, List[int]] | Tuple[Dict[str, float], np.ndarray, List[int], Dict[str, Any]]:
     """Compute RMSE of surrogate predictions.
 
@@ -296,15 +309,21 @@ def validate_surrogate(
                 f"but received {edge_attr.size(1)}."
             )
 
+    if include_chlorine is None:
+        include_chlorine = (
+            getattr(model, "y_mean_node", None) is not None
+            and model.y_mean_node.size(-1) > 1
+        )
+
     rmse_p = 0.0
-    rmse_c = 0.0
     mae_p = 0.0
-    mae_c = 0.0
     rmse_p_all = 0.0
     mae_p_all = 0.0
+    max_err_p = 0.0
+    rmse_c = 0.0
+    mae_c = 0.0
     rmse_c_all = 0.0
     mae_c_all = 0.0
-    max_err_p = 0.0
     max_err_c = 0.0
     mass_total = 0.0
     mass_count = 0
@@ -325,7 +344,7 @@ def validate_surrogate(
         for n in wn.node_name_list
     }
     err_p_by_type = {t: [] for t in set(node_types.values())}
-    err_c_by_type = {t: [] for t in set(node_types.values())}
+    err_c_by_type = {t: [] for t in set(node_types.values())} if include_chlorine else {}
     model.eval()
     edge_index = edge_index.to(device)
     if edge_attr is not None:
@@ -352,7 +371,11 @@ def validate_surrogate(
             pressures_df = (
                 res.node["pressure"].clip(lower=MIN_PRESSURE).reindex(columns=wn.node_name_list)
             )
-            chlorine_df = res.node["quality"].reindex(columns=wn.node_name_list)
+            chlorine_df = (
+                res.node["quality"].reindex(columns=wn.node_name_list)
+                if include_chlorine
+                else None
+            )
             demand_df = res.node.get("demand")
             if demand_df is not None:
                 demand_df = demand_df.reindex(columns=wn.node_name_list)
@@ -367,7 +390,7 @@ def validate_surrogate(
                 disable=__name__ != "__main__",
             ):
                 p = pressures_df.iloc[i].to_dict()
-                c = chlorine_df.iloc[i].to_dict()
+                c = chlorine_df.iloc[i].to_dict() if include_chlorine else {}
                 dem = demand_df.iloc[i].to_dict() if demand_df is not None else None
                 controls = pump_array[i]
                 feats = _prepare_features(wn, p, c, controls, model, dem)
@@ -428,46 +451,48 @@ def validate_surrogate(
                     node_pred = node_pred[:, :target_dim]
                     node_pred = node_pred * y_std + y_mean
                 pred_p = node_pred[:, 0].cpu().numpy()
-                pred_c = node_pred[:, 1].cpu().numpy()
                 y_true_p = pressures_df.iloc[i + 1].to_numpy()
                 for j, name in enumerate(wn.node_name_list):
                     if name in wn.reservoir_name_list:
                         y_true_p[j] = wn.get_node(name).base_head
-                y_true_c = chlorine_df.iloc[i + 1].to_numpy()
-                # chlorine predictions were trained in log space so convert
-                # predictions back to mg/L before computing errors
-                pred_c = np.expm1(pred_c) * 1000.0
-
                 diff_p = pred_p - y_true_p
-                diff_c = pred_c - y_true_c
                 if node_types_tensor is not None:
                     mask = (node_types_tensor == 0).cpu().numpy()
                     diff_p_masked = diff_p[mask]
-                    diff_c_masked = diff_c[mask]
                 else:
                     diff_p_masked = diff_p
-                    diff_c_masked = diff_c
                 err_p_all.extend(diff_p.tolist())
-                err_c_all.extend(diff_c.tolist())
                 for idx, name in enumerate(wn.node_name_list):
                     t = node_types[name]
                     err_p_by_type[t].append(float(diff_p[idx]))
-                    err_c_by_type[t].append(float(diff_c[idx]))
+                if include_chlorine:
+                    pred_c = node_pred[:, 1].cpu().numpy()
+                    y_true_c = chlorine_df.iloc[i + 1].to_numpy()
+                    pred_c = np.expm1(pred_c) * 1000.0
+                    diff_c = pred_c - y_true_c
+                    if node_types_tensor is not None:
+                        diff_c_masked = diff_c[mask]
+                    else:
+                        diff_c_masked = diff_c
+                    err_c_all.extend(diff_c.tolist())
+                    for idx, name in enumerate(wn.node_name_list):
+                        t = node_types[name]
+                        err_c_by_type[t].append(float(diff_c[idx]))
+                    rmse_c += float((diff_c_masked ** 2).sum())
+                    mae_c += float(np.abs(diff_c_masked).sum())
+                    rmse_c_all += float((diff_c ** 2).sum())
+                    mae_c_all += float(np.abs(diff_c).sum())
+                    if diff_c_masked.size > 0:
+                        max_err_c = max(max_err_c, float(np.max(np.abs(diff_c_masked))))
                 if first:
                     err_matrix.append(diff_p)
                     err_times.append(int(times[i + 1]))
                 rmse_p += float((diff_p_masked ** 2).sum())
-                rmse_c += float((diff_c_masked ** 2).sum())
                 mae_p += float(np.abs(diff_p_masked).sum())
-                mae_c += float(np.abs(diff_c_masked).sum())
                 rmse_p_all += float((diff_p ** 2).sum())
-                rmse_c_all += float((diff_c ** 2).sum())
                 mae_p_all += float(np.abs(diff_p).sum())
-                mae_c_all += float(np.abs(diff_c).sum())
                 if diff_p_masked.size > 0:
                     max_err_p = max(max_err_p, float(np.max(np.abs(diff_p_masked))))
-                if diff_c_masked.size > 0:
-                    max_err_c = max(max_err_c, float(np.max(np.abs(diff_c_masked))))
                 count += len(diff_p_masked)
                 count_all += len(diff_p)
                 if flow_pred is not None:
@@ -500,9 +525,10 @@ def validate_surrogate(
                 first = False
 
     rmse_p = (rmse_p / count) ** 0.5
-    rmse_c = (rmse_c / count) ** 0.5
     mae_p = mae_p / count
-    mae_c = mae_c / count
+    if include_chlorine and count > 0:
+        rmse_c = (rmse_c / count) ** 0.5
+        mae_c = mae_c / count
     if count_all > 0:
         rmse_p_all = (rmse_p_all / count_all) ** 0.5
         mae_p_all = mae_p_all / count_all
@@ -518,18 +544,24 @@ def validate_surrogate(
     print(
         f"[Metrics] RMSE (Pressure): {rmse_p:.4f} | MAE: {mae_p:.4f} | Max Err: {max_err_p:.4f}"
     )
-    print(
-        f"[Metrics] RMSE (Chlorine): {rmse_c:.4f} | MAE: {mae_c:.4f} | Max Err: {max_err_c:.4f}"
-    )
+    if include_chlorine:
+        print(
+            f"[Metrics] RMSE (Chlorine): {rmse_c:.4f} | MAE: {mae_c:.4f} | Max Err: {max_err_c:.4f}"
+        )
 
     metrics = {
         "pressure_rmse": rmse_p,
-        "chlorine_rmse": rmse_c,
         "pressure_mae": mae_p,
-        "chlorine_mae": mae_c,
         "pressure_max_error": max_err_p,
-        "chlorine_max_error": max_err_c,
     }
+    if include_chlorine:
+        metrics.update(
+            {
+                "chlorine_rmse": rmse_c,
+                "chlorine_mae": mae_c,
+                "chlorine_max_error": max_err_c,
+            }
+        )
     if mass_count > 0:
         avg_mass = mass_total / mass_count
         print(f"[Validation] Avg node imbalance (kg/s): {avg_mass:.3e}")
@@ -541,16 +573,21 @@ def validate_surrogate(
 
     if err_p_all:
         os.makedirs(PLOTS_DIR, exist_ok=True)
-        fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+        if include_chlorine:
+            fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+        else:
+            fig, axes = plt.subplots(1, 1, figsize=(5, 4))
+            axes = np.array([[axes]])
         axes[0, 0].hist(err_p_all, bins=50, color="tab:blue", alpha=0.7)
         axes[0, 0].set_title("Pressure Error")
-        axes[0, 1].hist(err_c_all, bins=50, color="tab:orange", alpha=0.7)
-        axes[0, 1].set_title("Chlorine Error")
-        types = list(err_p_by_type.keys())
-        axes[1, 0].boxplot([err_p_by_type[t] for t in types], labels=types)
-        axes[1, 0].set_title("Pressure Error by Node Type")
-        axes[1, 1].boxplot([err_c_by_type[t] for t in types], labels=types)
-        axes[1, 1].set_title("Chlorine Error by Node Type")
+        if include_chlorine:
+            axes[0, 1].hist(err_c_all, bins=50, color="tab:orange", alpha=0.7)
+            axes[0, 1].set_title("Chlorine Error")
+            types = list(err_p_by_type.keys())
+            axes[1, 0].boxplot([err_p_by_type[t] for t in types], labels=types)
+            axes[1, 0].set_title("Pressure Error by Node Type")
+            axes[1, 1].boxplot([err_c_by_type[t] for t in types], labels=types)
+            axes[1, 1].set_title("Chlorine Error by Node Type")
         for ax in axes.ravel():
             ax.tick_params(labelsize=8)
         plt.tight_layout()
@@ -955,7 +992,7 @@ def main() -> None:
         edge_attr,
         node_types,
         edge_types,
-        feature_template,
+        _feature_template,
     ) = load_network(args.inp, return_edge_attr=True, return_features=True)
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device)
@@ -976,6 +1013,13 @@ def main() -> None:
         force_arch_mismatch=args.force_arch_mismatch,
     )
     torch.set_grad_enabled(False)
+    include_chlorine = (
+        getattr(model, "y_mean_node", None) is not None
+        and model.y_mean_node.size(-1) > 1
+    )
+    feature_template = build_static_node_features(
+        wn, len(pump_names), include_chlorine=include_chlorine
+    )
     if args.debug:
         params = sum(p.numel() for p in model.parameters())
         first_w = next(model.parameters()).detach().abs().sum().item()
@@ -1031,6 +1075,7 @@ def main() -> None:
             torch.tensor(node_types, dtype=torch.long, device=device),
             torch.tensor(edge_types, dtype=torch.long, device=device),
             debug=args.debug,
+            include_chlorine=include_chlorine,
         )
         if args.debug:
             dbg["edge_attr_stats"] = edge_stats if edge_attr is not None else {}
@@ -1058,7 +1103,7 @@ def main() -> None:
             args.inp,
             run_name,
         )
-        if args.rollout_eval:
+        if args.rollout_eval and include_chlorine:
             rmse_p, rmse_c = rollout_surrogate(
                 model,
                 edge_index,
@@ -1089,8 +1134,22 @@ def main() -> None:
             plt.tight_layout()
             plt.savefig(run_dir / "rollout_rmse.png")
             plt.close()
-    else:
-        print(f"{args.test_pkl} not found. Skipping surrogate validation.")
+        else:
+            print(f"{args.test_pkl} not found. Skipping surrogate validation.")
+
+    if not include_chlorine:
+        print("[WARN] Model has no chlorine output; skipping MPC and baseline evaluations.")
+        cfg_extra = {
+            "norm_stats_md5": norm_md5,
+            "model_layers": model_layers,
+            "model_hidden_dim": model_hidden,
+        }
+        save_config(
+            REPO_ROOT / "logs" / f"config_validation_{run_name}.yaml",
+            vars(args),
+            cfg_extra,
+        )
+        return
 
     # Re-enable gradient calculations for MPC optimization
     torch.set_grad_enabled(True)
