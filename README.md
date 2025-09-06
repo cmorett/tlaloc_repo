@@ -155,7 +155,7 @@ python scripts/train_gnn.py \
     --x-val-path data/X_val.npy --y-val-path data/Y_val.npy \
     --edge-index-path data/edge_index.npy --edge-attr-path data/edge_attr.npy \
     --inp-path CTown.inp \
-    --epochs 100 --batch-size 32 --hidden-dim 128 --num-layers 4 \
+    --epochs 100 --batch-size 32 --hidden-dim 512 --num-layers 10 \
     --lstm-hidden 64 --workers 8 --eval-sample 1000 \
     --dropout 0.1 --residual --early-stop-patience 10 \
     --weight-decay 1e-5 --w-press 5.0 --w-flow 3.0 --w-cl 0.0 \
@@ -164,7 +164,7 @@ python scripts/train_gnn.py \
 Chlorine supervision is disabled by default. Pass a positive weight such as
 ``--w-cl 1.0`` to train on chlorine again.
 
-GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8}) and ``--hidden-dim`` ({128,256}).
+GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8,10}) and ``--hidden-dim`` ({128,256,512}).
 Use ``--residual`` to enable skip connections and ``--use-attention`` for graph attention on node updates.
 The LSTM hidden size can be set with ``--lstm-hidden`` (choices: 64, 128, 256).
 When training larger models that exceed GPU memory, pass ``--checkpoint`` to
