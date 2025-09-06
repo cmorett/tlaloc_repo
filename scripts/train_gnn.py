@@ -1929,6 +1929,7 @@ def main(args: argparse.Namespace):
     configure_seeds(args.seed, args.deterministic)
     signal.signal(signal.SIGINT, _signal_handler)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(device)
     edge_index_np = np.load(args.edge_index_path)
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     # Always compute the physical edge attributes from the network
