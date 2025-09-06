@@ -2416,6 +2416,12 @@ def main(args: argparse.Namespace):
         model_path = f"{base}_{run_name}{ext}"
         norm_path = f"{base}_{run_name}_norm.npz"
         log_path = os.path.join(DATA_DIR, f"training_{run_name}.log")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    pred_csv_path = (
+        Path(args.pred_csv)
+        if args.pred_csv
+        else DATA_DIR / f"pressures_{run_name}.csv"
+    )
     losses = []
     loss_components = []
     grad_norms = []
@@ -3093,6 +3099,15 @@ def main(args: argparse.Namespace):
                 preds_c = true_c = err_c = None
             err_p = preds_p - true_p
 
+            df = pd.DataFrame(
+                {
+                    "actual_pressure": true_p,
+                    "predicted_pressure": preds_p,
+                }
+            )
+            pred_csv_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(pred_csv_path, index=False)
+
             save_scatter_plots(
                 true_p,
                 preds_p,
@@ -3172,6 +3187,11 @@ if __name__ == "__main__":
         "--y-test-path",
         default=os.path.join(DATA_DIR, "Y_test.npy"),
         help="Test labels",
+    )
+    parser.add_argument(
+        "--pred-csv",
+        default="",
+        help="Path to save pressure predictions CSV",
     )
     parser.add_argument(
         "--epochs",
