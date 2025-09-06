@@ -3200,7 +3200,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hidden-dim",
         type=int,
-        choices=[128, 256],
+        choices=[128, 256, 512],
         default=128,
         help="Hidden dimension",
     )
@@ -3210,7 +3210,7 @@ if __name__ == "__main__":
                         help="Number of attention heads for GATConv (if attention is enabled)")
     parser.add_argument("--dropout", type=float, default=0.1,
                         help="Dropout rate applied after each GNN layer")
-    parser.add_argument("--num-layers", type=int, choices=[4, 6, 8], default=4,
+    parser.add_argument("--num-layers", type=int, choices=[4, 6, 8, 10], default=4,
                         help="Number of convolutional layers in the GNN model")
     parser.add_argument(
         "--activation",
