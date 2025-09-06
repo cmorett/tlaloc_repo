@@ -74,7 +74,10 @@ these plots since their pressures are fixed. In addition,
 both the ground truth and the predictions. ``error_histograms_<run>.png``
 contains histograms and box plots of the prediction errors and the CSV
 ``logs/accuracy_<run>.csv`` records MAE, RMSE, MAPE, maximum error and R^2 for
-pressure and chlorine. Reservoir and tank nodes are excluded from these metrics
+pressure and chlorine. The retained pressure predictions are also written to
+``data/pressures_<run>.csv`` which lists the actual and predicted pressures. Use
+``--pred-csv`` to override the output location. Reservoir and tank nodes are
+excluded from these metrics
 so outliers from fixed heads do not skew the results. Metrics are accumulated
 using running statistics so the full prediction arrays are never stored in
 memory. To limit the number of predictions retained for plotting, pass
