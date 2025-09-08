@@ -1312,14 +1312,21 @@ def train_sequence(
                     if p_mean.ndim == 2:
                         p_mean = p_mean[..., 0]
                         p_std = p_std[..., 0]
-                    if node_mask is not None:
-                        p_mean = p_mean[node_mask]
-                        p_std = p_std[node_mask]
-                    press_pred = press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
-                    press_true = press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                        if node_mask is not None:
+                            p_mean = p_mean[node_mask]
+                            p_std = p_std[node_mask]
+                        press_pred = press_pred * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                        press_true = press_true * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+                    else:
+                        press_pred = press_pred * p_std.view(-1)[0] + p_mean.view(-1)[0]
+                        press_true = press_true * p_std.view(-1)[0] + p_mean.view(-1)[0]
                 elif not isinstance(model.y_mean, dict):
-                    press_pred = press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                    press_true = press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                    press_pred = (
+                        press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                    )
+                    press_true = (
+                        press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                    )
             press_mae = torch.mean(torch.abs(press_pred - press_true))
             for name, val in [
                 ("pressure", loss_press),
