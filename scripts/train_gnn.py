@@ -2862,12 +2862,14 @@ def main(args: argparse.Namespace):
 
     # scatter plot of predictions vs actual on test set
     if args.x_test_path and os.path.exists(args.x_test_path):
+        X_test_raw = None
         if seq_mode:
             Xt = np.load(args.x_test_path, allow_pickle=True)
             Yt = np.load(args.y_test_path, allow_pickle=True)
             if Xt.ndim == 3:
                 Yt = np.array([{k: v[None, ...] for k, v in y.items()} for y in Yt], dtype=object)
                 Xt = Xt[:, None, ...]
+            X_test_raw = Xt.copy()
             test_ds = SequenceDataset(
                 Xt,
                 Yt,
@@ -2896,6 +2898,7 @@ def main(args: argparse.Namespace):
                 persistent_workers=args.workers > 0,
             )
         else:
+            X_test_raw = np.load(args.x_test_path, allow_pickle=True)
             test_list = load_dataset(
                 args.x_test_path,
                 args.y_test_path,
@@ -3107,12 +3110,39 @@ def main(args: argparse.Namespace):
                 preds_c = true_c = err_c = None
             err_p = preds_p - true_p
 
-            df = pd.DataFrame(
-                {
-                    "actual_pressure": true_p,
-                    "predicted_pressure": preds_p,
-                }
-            )
+            # gather additional node metadata from raw test features
+            demand_idx = 0
+            elev_idx = 3 if has_chlorine else 2
+            pump_start = 4 if has_chlorine else 3
+            pump_count = len(wn.pump_name_list)
+            node_indices = np.arange(len(wn.node_name_list))[node_mask_np]
+            X_features = X_test_raw
+            if isinstance(X_features, np.ndarray) and X_features.dtype == object and isinstance(X_features[0], dict):
+                X_features = np.stack([x["node_features"] for x in X_features], axis=0)
+            if seq_mode:
+                X_flat = X_features.reshape(-1, X_features.shape[-2], X_features.shape[-1])
+            else:
+                X_flat = X_features
+            demand = X_flat[..., demand_idx][:, node_mask_np].reshape(-1)
+            elevation = X_flat[..., elev_idx][:, node_mask_np].reshape(-1)
+            if pump_count > 0:
+                pumps = X_flat[..., pump_start : pump_start + pump_count][
+                    :, node_mask_np, :
+                ].reshape(-1, pump_count)
+            else:
+                pumps = np.empty((demand.size, 0))
+            node_idx_flat = np.tile(node_indices, X_flat.shape[0])
+            n_samples = preds_p.shape[0]
+            df_dict = {
+                "node_index": node_idx_flat[:n_samples],
+                "elevation": elevation[:n_samples],
+                "demand": demand[:n_samples],
+                "actual_pressure": true_p,
+                "predicted_pressure": preds_p,
+            }
+            for i, pname in enumerate(wn.pump_name_list):
+                df_dict[f"pump_{pname}"] = pumps[:n_samples, i]
+            df = pd.DataFrame(df_dict)
             pred_csv_path.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(pred_csv_path, index=False)
 
