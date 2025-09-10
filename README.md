@@ -62,6 +62,11 @@ the ``"demand"`` key.  ``train_gnn.py`` relies on this field for mass balance
 checks and will error out if it is missing.  Ensure datasets are generated with
 the current ``data_generation.py`` so demands are recorded.
 
+``scripts/data_generation.py`` also writes a ``node_names.npy`` file capturing
+the node ordering used to build the feature matrices.  ``train_gnn.py`` verifies
+that the loaded features align with this reference list and raises an error if
+any nodes are missing or out of order.
+
 All plots generated during training, validation and MPC experiments are
 saved under the top-level ``plots/`` directory.  The scripts automatically
 create this folder if it does not yet exist. After each training run

@@ -175,6 +175,8 @@ def load_dataset(
     edge_attr: Optional[np.ndarray] = None,
     node_type: Optional[np.ndarray] = None,
     edge_type: Optional[np.ndarray] = None,
+    node_names_path: Optional[str] = None,
+    expected_node_names: Optional[Sequence[str]] = None,
 ) -> List[Data]:
     """Load training data.
 
@@ -184,11 +186,17 @@ def load_dataset(
        ``edge_index`` and ``node_features`` arrays.
     2. **Matrix format** – ``X`` is an array of node feature matrices while a
        shared ``edge_index`` array is stored separately.
+
+    If ``expected_node_names`` is provided, the function will attempt to load a
+    reference node ordering (saved during data generation) from
+    ``node_names_path`` or ``"node_names.npy"`` in the same directory as the
+    feature matrix.  The node count and ordering of the loaded dataset must
+    match this reference list, otherwise a ``ValueError`` is raised.
     """
 
     X = np.load(x_path, allow_pickle=True)
     y = np.load(y_path, allow_pickle=True)
-    data_list = []
+    data_list: List[Data] = []
     edge_attr_tensor = None
     node_type_tensor = None
     edge_type_tensor = None
@@ -198,6 +206,24 @@ def load_dataset(
         node_type_tensor = torch.tensor(node_type, dtype=torch.long)
     if edge_type is not None:
         edge_type_tensor = torch.tensor(edge_type, dtype=torch.long)
+
+    # Verify node ordering against the reference list saved during
+    # data generation.  ``expected_node_names`` typically comes from
+    # ``wn.node_name_list``.  The reference ordering is stored in a
+    # separate file (``node_names.npy`` by default) within the dataset
+    # directory.  The check is skipped if either argument is ``None``
+    # or the reference file is missing.
+    node_names_ref: Optional[List[str]] = None
+    if expected_node_names is not None:
+        if node_names_path is None:
+            node_names_path = str(Path(x_path).with_name("node_names.npy"))
+        if os.path.exists(node_names_path):
+            node_names_ref = np.load(node_names_path, allow_pickle=True).tolist()
+            if list(expected_node_names) != list(node_names_ref):
+                raise ValueError("Node name ordering mismatch between dataset and reference list")
+        else:  # pragma: no cover - reference file missing
+            logger.warning("Node names file %s not found; skipping order check", node_names_path)
+    ref_count = len(node_names_ref) if node_names_ref is not None else None
 
     # Detect whether the first entry is a dictionary (object array) or a plain
     # matrix. ``np.ndarray`` with ``dtype=object`` will require calling
@@ -215,6 +241,10 @@ def load_dataset(
                 # reservoir heads) with zeros so that training does not produce
                 # ``NaN`` losses.
                 node_feat = torch.nan_to_num(node_feat)
+            if ref_count is not None and node_feat.shape[0] != ref_count:
+                raise ValueError(
+                    "Feature matrix node count does not match reference list length"
+                )
 
             edge_target = None
             node_target = label
@@ -244,6 +274,10 @@ def load_dataset(
             node_feat = torch.tensor(node_feat, dtype=torch.float32)
             if torch.isnan(node_feat).any():
                 node_feat = torch.nan_to_num(node_feat)
+            if ref_count is not None and node_feat.shape[0] != ref_count:
+                raise ValueError(
+                    "Feature matrix node count does not match reference list length"
+                )
             edge_target = None
             node_target = label
             if isinstance(label, dict):
@@ -1992,6 +2026,7 @@ def main(args: argparse.Namespace):
             edge_attr=edge_attr,
             node_type=node_types,
             edge_type=edge_types,
+            expected_node_names=wn.node_name_list,
         )
         loader = DataLoader(
             data_list,
@@ -2034,6 +2069,7 @@ def main(args: argparse.Namespace):
                 edge_attr=edge_attr,
                 node_type=node_types,
                 edge_type=edge_types,
+                expected_node_names=wn.node_name_list,
             )
             val_loader = DataLoader(
                 val_list,
@@ -2906,6 +2942,7 @@ def main(args: argparse.Namespace):
                 edge_attr=edge_attr,
                 node_type=node_types,
                 edge_type=edge_types,
+                expected_node_names=wn.node_name_list,
             )
             if args.normalize:
                 apply_normalization(
