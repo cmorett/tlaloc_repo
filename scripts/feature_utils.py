@@ -10,6 +10,7 @@ def compute_norm_stats(
     data_list,
     per_node: bool = False,
     static_cols: Optional[Sequence[int]] = None,
+    node_mask: Optional[torch.Tensor] = None,
 ):
     """Compute mean and std per feature/target dimension from ``data_list``.
 
@@ -18,20 +19,31 @@ def compute_norm_stats(
     in ``static_cols`` will always use global (across-node) statistics even when
     ``per_node`` is ``True``.  This is useful for features that are repeated for
     every node such as pump speeds.
+    ``node_mask`` can be used to exclude specific node indices (e.g. tanks or
+    reservoirs) from the aggregation.
     """
+    mask = None
+    if node_mask is not None:
+        mask = node_mask.to(dtype=torch.bool)
     if per_node:
         all_x = torch.stack([d.x.float() for d in data_list], dim=0)
         x_mean = all_x.mean(dim=0)
         x_std = all_x.std(dim=0) + EPS
         if static_cols:
-            x_flat = all_x.reshape(-1, all_x.shape[-1])
+            if mask is not None:
+                x_flat = all_x[:, mask].reshape(-1, all_x.shape[-1])
+            else:
+                x_flat = all_x.reshape(-1, all_x.shape[-1])
             global_mean = x_flat.mean(dim=0)
             global_std = x_flat.std(dim=0) + EPS
             for col in static_cols:
                 x_mean[:, col] = global_mean[col]
                 x_std[:, col] = global_std[col]
     else:
-        all_x = torch.cat([d.x.float() for d in data_list], dim=0)
+        if mask is not None:
+            all_x = torch.cat([d.x.float()[mask] for d in data_list], dim=0)
+        else:
+            all_x = torch.cat([d.x.float() for d in data_list], dim=0)
         x_mean = all_x.mean(dim=0)
         x_std = all_x.std(dim=0) + EPS
 
@@ -39,7 +51,10 @@ def compute_norm_stats(
         if per_node:
             all_y_node = torch.stack([d.y.float() for d in data_list], dim=0)
         else:
-            all_y_node = torch.cat([d.y.float() for d in data_list], dim=0)
+            if mask is not None:
+                all_y_node = torch.cat([d.y.float()[mask] for d in data_list], dim=0)
+            else:
+                all_y_node = torch.cat([d.y.float() for d in data_list], dim=0)
         all_y_edge = torch.cat([d.edge_y.float() for d in data_list], dim=0)
         y_mean = {
             "node_outputs": all_y_node.mean(dim=0),
@@ -55,7 +70,10 @@ def compute_norm_stats(
             y_mean = all_y.mean(dim=0)
             y_std = all_y.std(dim=0) + EPS
         else:
-            all_y = torch.cat([d.y.float() for d in data_list], dim=0)
+            if mask is not None:
+                all_y = torch.cat([d.y.float()[mask] for d in data_list], dim=0)
+            else:
+                all_y = torch.cat([d.y.float() for d in data_list], dim=0)
             y_mean = all_y.mean(dim=0)
             y_std = all_y.std(dim=0) + EPS
     return x_mean, x_std, y_mean, y_std
@@ -159,28 +177,43 @@ def compute_sequence_norm_stats(
     Y: np.ndarray,
     per_node: bool = False,
     static_cols: Optional[Sequence[int]] = None,
+    node_mask: Optional[Sequence[bool]] = None,
 ):
-    """Return mean and std for sequence arrays including multi-task targets."""
+    """Return mean and std for sequence arrays including multi-task targets.
 
+    ``node_mask`` may be provided to exclude certain node indices from the
+    aggregation when computing global statistics.
+    """
+    mask = None
+    if node_mask is not None:
+        mask = np.asarray(node_mask, dtype=bool)
     if per_node:
         flat = X.reshape(-1, X.shape[-2], X.shape[-1])
         x_mean = torch.tensor(flat.mean(axis=0), dtype=torch.float32)
         x_std = torch.tensor(flat.std(axis=0) + EPS, dtype=torch.float32)
         if static_cols:
-            x_flat = X.reshape(-1, X.shape[-1])
+            if mask is not None:
+                x_flat = flat[:, mask, :].reshape(-1, X.shape[-1])
+            else:
+                x_flat = flat.reshape(-1, X.shape[-1])
             global_mean = torch.tensor(x_flat.mean(axis=0), dtype=torch.float32)
             global_std = torch.tensor(x_flat.std(axis=0) + EPS, dtype=torch.float32)
             for col in static_cols:
                 x_mean[:, col] = global_mean[col]
                 x_std[:, col] = global_std[col]
     else:
-        x_flat = X.reshape(-1, X.shape[-1])
+        if mask is not None:
+            x_flat = X[:, :, mask, :].reshape(-1, X.shape[-1])
+        else:
+            x_flat = X.reshape(-1, X.shape[-1])
         x_mean = torch.tensor(x_flat.mean(axis=0), dtype=torch.float32)
         x_std = torch.tensor(x_flat.std(axis=0) + EPS, dtype=torch.float32)
 
     first = Y[0]
     if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
         node = np.stack([y["node_outputs"] for y in Y])
+        if mask is not None:
+            node = node[:, :, mask, :]
         if per_node:
             node_flat = node.reshape(-1, node.shape[-2], node.shape[-1])
             node_mean = torch.tensor(node_flat.mean(axis=0), dtype=torch.float32)
@@ -197,6 +230,8 @@ def compute_sequence_norm_stats(
         y_mean = {"node_outputs": node_mean, "edge_outputs": edge_mean}
         y_std = {"node_outputs": node_std, "edge_outputs": edge_std}
     else:
+        if mask is not None:
+            Y = Y[:, :, mask, ...]
         if per_node:
             y_flat = Y.reshape(-1, Y.shape[-2], Y.shape[-1])
             y_mean = torch.tensor(y_flat.mean(axis=0), dtype=torch.float32)

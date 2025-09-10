@@ -2101,12 +2101,14 @@ def main(args: argparse.Namespace):
     norm_md5 = None
     if args.normalize:
         static_cols = pump_cols if args.per_node_norm else None
+        norm_mask = loss_mask.cpu()
         if seq_mode:
             x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
                 X_raw,
                 Y_raw,
                 per_node=args.per_node_norm,
                 static_cols=static_cols,
+                node_mask=norm_mask,
             )
             apply_sequence_normalization(
                 data_ds,
@@ -2136,6 +2138,7 @@ def main(args: argparse.Namespace):
                 data_list,
                 per_node=args.per_node_norm,
                 static_cols=static_cols,
+                node_mask=norm_mask,
             )
             apply_normalization(
                 data_list,
