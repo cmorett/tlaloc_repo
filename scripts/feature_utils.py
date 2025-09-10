@@ -6,16 +6,30 @@ import wntr
 EPS = 1e-8
 
 
-def compute_norm_stats(data_list, per_node: bool = False):
+def compute_norm_stats(
+    data_list,
+    per_node: bool = False,
+    static_cols: Optional[Sequence[int]] = None,
+):
     """Compute mean and std per feature/target dimension from ``data_list``.
 
     When ``per_node`` is ``True`` statistics are computed for each node index
-    separately, otherwise they are aggregated across all nodes.
+    separately, otherwise they are aggregated across all nodes.  Columns listed
+    in ``static_cols`` will always use global (across-node) statistics even when
+    ``per_node`` is ``True``.  This is useful for features that are repeated for
+    every node such as pump speeds.
     """
     if per_node:
         all_x = torch.stack([d.x.float() for d in data_list], dim=0)
         x_mean = all_x.mean(dim=0)
         x_std = all_x.std(dim=0) + EPS
+        if static_cols:
+            x_flat = all_x.reshape(-1, all_x.shape[-1])
+            global_mean = x_flat.mean(dim=0)
+            global_std = x_flat.std(dim=0) + EPS
+            for col in static_cols:
+                x_mean[:, col] = global_mean[col]
+                x_std[:, col] = global_std[col]
     else:
         all_x = torch.cat([d.x.float() for d in data_list], dim=0)
         x_mean = all_x.mean(dim=0)
