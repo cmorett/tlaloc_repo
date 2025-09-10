@@ -1228,6 +1228,10 @@ def main() -> None:
     np.save(os.path.join(out_dir, "edge_type.npy"), edge_type)
     log_array_stats("pump_coeffs", pump_coeffs)
     np.save(os.path.join(out_dir, "pump_coeffs.npy"), pump_coeffs)
+    # Persist node ordering so training can validate feature alignment
+    node_names = np.array(wn_template.node_name_list)
+    log_array_stats("node_names", node_names)
+    np.save(os.path.join(out_dir, "node_names.npy"), node_names)
 
     manifest = {
         "num_extreme": int(extreme_count),

@@ -14,13 +14,13 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `losses.py` – weighted multi-task loss utilities.
   - `gnn_surrogate.pth` – trained weights saved here after running the training script.
 - `scripts/`
-  - `data_generation.py` – create randomized simulation scenarios and produce training datasets.
+  - `data_generation.py` – create randomized simulation scenarios and produce training datasets. It also stores the node order in `node_names.npy`.
   - `experiments_validation.py` – validate the surrogate, compare baselines and aggregate results.
   - `metrics.py` – report surrogate accuracy, MPC control and runtime metrics.
   - `mpc_control.py` – run gradient-based MPC using the trained surrogate.
   - `feature_utils.py` – shared feature construction and normalization helpers.
   - `ablation_study.py` – run a small grid of model variants and report validation pressure MAE.
-  - `train_gnn.py` – train a graph neural network surrogate on generated data. Pass `--checkpoint` to enable gradient checkpointing when GPU memory is limited. The script also writes predicted vs. actual pressures to `data/pressures_<run>.csv` (override with `--pred-csv`).
+  - `train_gnn.py` – train a graph neural network surrogate on generated data. Pass `--checkpoint` to enable gradient checkpointing when GPU memory is limited. The script also writes predicted vs. actual pressures to `data/pressures_<run>.csv` (override with `--pred-csv`). The loader verifies that feature matrices follow the node order saved as `node_names.npy` during data generation.
   - `sweep_training.py` – run hyperparameter sweeps over loss weights and architecture.
   - `plot_sweep.py` – visualise pressure MAE across sweep configurations.
   - `reproducibility.py` – helper utilities for seeding and config logging.
