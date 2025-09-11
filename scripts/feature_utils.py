@@ -212,7 +212,7 @@ def compute_sequence_norm_stats(
     first = Y[0]
     if isinstance(first, dict) or (isinstance(first, np.ndarray) and Y.dtype == object):
         node = np.stack([y["node_outputs"] for y in Y])
-        if mask is not None:
+        if mask is not None and not per_node:
             node = node[:, :, mask, :]
         if per_node:
             node_flat = node.reshape(-1, node.shape[-2], node.shape[-1])
@@ -230,7 +230,7 @@ def compute_sequence_norm_stats(
         y_mean = {"node_outputs": node_mean, "edge_outputs": edge_mean}
         y_std = {"node_outputs": node_std, "edge_outputs": edge_std}
     else:
-        if mask is not None:
+        if mask is not None and not per_node:
             Y = Y[:, :, mask, ...]
         if per_node:
             y_flat = Y.reshape(-1, Y.shape[-2], Y.shape[-1])
