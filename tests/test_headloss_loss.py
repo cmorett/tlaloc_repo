@@ -3,7 +3,7 @@ from models.loss_utils import pressure_headloss_consistency_loss
 
 def test_headloss_consistency_zero():
     edge_index = torch.tensor([[0], [1]], dtype=torch.long)
-    edge_attr = torch.tensor([[1000.0, 0.5, 100.0]], dtype=torch.float32)
+    edge_attr = torch.tensor([[1000.0, 0.5, 100.0, 1.0]], dtype=torch.float32)
     flow = torch.tensor([0.1], dtype=torch.float32)
     const = 10.67
     q_m3 = flow * 0.001

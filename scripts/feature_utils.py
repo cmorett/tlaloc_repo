@@ -269,8 +269,8 @@ def apply_sequence_normalization(
 
 def build_edge_attr(
     wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
-) -> np.ndarray:
-    """Return edge attribute matrix [E,3] for given edge index."""
+    ) -> np.ndarray:
+    """Return edge attribute matrix ``[E,4]`` for given edge index."""
     node_map = {n: i for i, n in enumerate(wn.node_name_list)}
     attr_dict: Dict[Tuple[int, int], List[float]] = {}
     for link_name in wn.link_name_list:
@@ -280,9 +280,13 @@ def build_edge_attr(
         length = getattr(link, "length", 0.0) or 0.0
         diam = getattr(link, "diameter", 0.0) or 0.0
         rough = getattr(link, "roughness", 0.0) or 0.0
-        attr = [float(length), float(diam), float(rough)]
-        attr_dict[(i, j)] = attr
-        attr_dict[(j, i)] = attr
+        attr_fwd = [float(length), float(diam), float(rough), 1.0]
+        if link_name in wn.pump_name_list:
+            attr_rev = [float(length), float(diam), float(rough), 0.0]
+        else:
+            attr_rev = attr_fwd
+        attr_dict[(i, j)] = attr_fwd
+        attr_dict[(j, i)] = attr_rev
     return np.array([
         attr_dict[(int(s), int(t))] for s, t in edge_index.T
     ], dtype=np.float32)

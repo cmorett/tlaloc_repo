@@ -912,8 +912,12 @@ def build_edge_index(
         length = getattr(link, "length", 0.0) or 0.0
         diam = getattr(link, "diameter", 0.0) or 0.0
         rough = getattr(link, "roughness", 0.0) or 0.0
-        attrs.append([length, diam, rough])
-        attrs.append([length, diam, rough])
+        if link_name in wn.pump_name_list:
+            attrs.append([length, diam, rough, 1.0])
+            attrs.append([length, diam, rough, 0.0])
+        else:
+            attrs.append([length, diam, rough, 1.0])
+            attrs.append([length, diam, rough, 1.0])
         if link_name in wn.pipe_name_list:
             t = 0
             a = b = c = 0.0

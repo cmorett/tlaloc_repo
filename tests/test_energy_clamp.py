@@ -9,7 +9,7 @@ def test_negative_flow_headloss_clamped():
     wn = wntr.network.WaterNetworkModel('CTown.inp')
     speeds = torch.zeros((1, 1))
     edge_index = torch.tensor([[0], [1]], dtype=torch.long)
-    edge_attr = torch.zeros((1, 3))
+    edge_attr = torch.zeros((1, 4))
     node_types = torch.zeros(2, dtype=torch.long)
     edge_types = torch.zeros(1, dtype=torch.long)
     feature_template = torch.zeros((2, 5))

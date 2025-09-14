@@ -36,7 +36,7 @@ def test_evaluate_sequence_applies_node_mask_to_stats():
         }
     ], dtype=object)
     edge_index = np.array([[0], [1]])
-    edge_attr = np.zeros((1, 3), dtype=np.float32)
+    edge_attr = np.zeros((1, 4), dtype=np.float32)
     dataset = SequenceDataset(X, Y, edge_index=edge_index, edge_attr=edge_attr)
     loader = DataLoader(dataset, batch_size=1)
 
