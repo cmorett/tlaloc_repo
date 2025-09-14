@@ -650,6 +650,130 @@ def plot_error_histograms(
     return fig if return_fig else None
 
 
+def plot_error_heatmap(
+    errors: Sequence[float],
+    wn: wntr.network.WaterNetworkModel,
+    run_name: str,
+    plots_dir: Optional[Path] = None,
+    return_fig: bool = False,
+    mask: Optional[Sequence[bool]] = None,
+) -> Optional[plt.Figure]:
+    """Visualise per-node pressure errors on the network layout."""
+
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    err = np.asarray(errors, dtype=float)
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        err = err.copy()
+        err[~m] = np.nan
+
+    coords = {n: wn.get_node(n).coordinates for n in wn.node_name_list}
+    xs = [coords[n][0] for n in wn.node_name_list]
+    ys = [coords[n][1] for n in wn.node_name_list]
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    for link in wn.link_name_list:
+        link_obj = wn.get_link(link)
+        x1, y1 = coords[link_obj.start_node_name]
+        x2, y2 = coords[link_obj.end_node_name]
+        ax.plot([x1, x2], [y1, y2], color="lightgray", linewidth=0.5)
+    sc = ax.scatter(xs, ys, c=err, cmap="Reds", s=35)
+    plt.colorbar(sc, ax=ax, label="Pressure MAE (m)")
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"error_heatmap_{run_name}.png")
+    if not return_fig:
+        plt.close(fig)
+    return fig if return_fig else None
+
+
+def compute_node_pressure_mae(
+    model: nn.Module,
+    dataset,
+    loader,
+    device: torch.device,
+    has_chlorine: bool,
+) -> np.ndarray:
+    """Return mean absolute pressure error for each node in ``dataset``."""
+
+    if isinstance(dataset, SequenceDataset):
+        num_nodes = dataset.X.shape[-2]
+        ei = dataset.edge_index.to(device)
+        ea = dataset.edge_attr.to(device) if dataset.edge_attr is not None else None
+        nt = dataset.node_type.to(device) if dataset.node_type is not None else None
+        et = dataset.edge_type.to(device) if dataset.edge_type is not None else None
+    else:
+        num_nodes = dataset[0].num_nodes
+
+    err_sum = torch.zeros(num_nodes, device=device)
+    count = 0
+
+    model.eval()
+    with torch.no_grad():
+        if isinstance(dataset, SequenceDataset):
+            for X_seq, Y_seq in loader:
+                X_seq = X_seq.to(device)
+
+                def _model_forward():
+                    return model(X_seq, ei, ea, nt, et)
+
+                out = _forward_with_auto_checkpoint(model, _model_forward)
+                node_pred = out["node_outputs"] if isinstance(out, dict) else out
+                Y_node = (
+                    Y_seq["node_outputs"].to(node_pred.device)
+                    if isinstance(Y_seq, dict)
+                    else Y_seq.to(node_pred.device)
+                )
+                if hasattr(model, "y_mean") and model.y_mean is not None:
+                    if isinstance(model.y_mean, dict):
+                        y_mean = model.y_mean["node_outputs"].to(node_pred.device)
+                        y_std = model.y_std["node_outputs"].to(node_pred.device)
+                    else:
+                        y_mean = model.y_mean.to(node_pred.device)
+                        y_std = model.y_std.to(node_pred.device)
+                    node_pred = node_pred * y_std + y_mean
+                    Y_node = Y_node * y_std + y_mean
+                pred_p = node_pred[..., 0].reshape(-1, num_nodes)
+                true_p = Y_node[..., 0].reshape(-1, num_nodes)
+                err_sum += torch.abs(pred_p - true_p).sum(0)
+                count += pred_p.shape[0]
+        else:
+            for batch in loader:
+                batch = batch.to(device, non_blocking=True)
+
+                def _model_forward():
+                    return model(
+                        batch.x,
+                        batch.edge_index,
+                        getattr(batch, "edge_attr", None),
+                        getattr(batch, "node_type", None),
+                        getattr(batch, "edge_type", None),
+                    )
+
+                out = _forward_with_auto_checkpoint(model, _model_forward)
+                node_out = out["node_outputs"] if isinstance(out, dict) else out
+                batch_y = batch.y
+                if hasattr(model, "y_mean") and model.y_mean is not None:
+                    if isinstance(model.y_mean, dict):
+                        y_mean = model.y_mean["node_outputs"].to(node_out.device)
+                        y_std = model.y_std["node_outputs"].to(node_out.device)
+                    else:
+                        y_mean = model.y_mean.to(node_out.device)
+                        y_std = model.y_std.to(node_out.device)
+                    node_out = node_out * y_std + y_mean
+                    batch_y = batch_y * y_std + y_mean
+                pred_p = node_out[:, 0].view(-1, num_nodes)
+                true_p = batch_y[:, 0].view(-1, num_nodes)
+                err_sum += torch.abs(pred_p - true_p).sum(0)
+                count += pred_p.shape[0]
+
+    return (err_sum / max(count, 1)).cpu().numpy()
+
+
 def correlation_heatmap(
     matrix: np.ndarray,
     labels: Sequence[str],
@@ -1992,6 +2116,7 @@ def main(args: argparse.Namespace):
     edge_pairs = build_edge_pairs(edge_index_np, edge_types)
     node_types = build_node_type(wn)
     loss_mask = build_loss_mask(wn).to(device)
+    node_mask_np = loss_mask.cpu().numpy()
     # Always allocate a distinct node type for tanks even if they are absent
     # from the network to ensure ``HydroConv`` learns a dedicated transform.
     num_node_types = max(int(np.max(node_types)) + 1, 2)
@@ -2038,6 +2163,7 @@ def main(args: argparse.Namespace):
         )
 
 
+    val_ds = None
     if args.x_val_path and os.path.exists(args.x_val_path):
         if seq_mode:
             Xv = np.load(args.x_val_path, allow_pickle=True)
@@ -2903,8 +3029,11 @@ def main(args: argparse.Namespace):
             plt.close()
 
     # scatter plot of predictions vs actual on test set
+    test_loader = None
+    test_ds = None
+    test_list = None
+    X_test_raw = None
     if args.x_test_path and os.path.exists(args.x_test_path):
-        X_test_raw = None
         if seq_mode:
             Xt = np.load(args.x_test_path, allow_pickle=True)
             Yt = np.load(args.y_test_path, allow_pickle=True)
@@ -3206,8 +3335,29 @@ def main(args: argparse.Namespace):
             labels += [f"pump_{i}" for i in range(len(wn.pump_name_list))]
             X_flat = X_raw.reshape(-1, X_raw.shape[-1])
             sample_size = min(sample_cap if sample_cap else X_flat.shape[0], X_flat.shape[0])
-            if sample_size > 0:
-                correlation_heatmap(X_flat[:sample_size], labels, run_name)
+        if sample_size > 0:
+            correlation_heatmap(X_flat[:sample_size], labels, run_name)
+
+    # Generate node-level error heatmap
+    heatmap_loader = None
+    heatmap_dataset = None
+    if test_loader is not None:
+        heatmap_loader = test_loader
+        heatmap_dataset = test_ds if seq_mode else test_list
+    elif val_loader is not None:
+        heatmap_loader = val_loader
+        heatmap_dataset = val_ds if seq_mode else val_list
+    else:
+        heatmap_loader = loader
+        heatmap_dataset = data_ds if seq_mode else data_list
+    node_mae = compute_node_pressure_mae(
+        model,
+        heatmap_dataset,
+        heatmap_loader,
+        device,
+        has_chlorine,
+    )
+    plot_error_heatmap(node_mae, wn, run_name, mask=node_mask_np)
 
     cfg_extra = {
         "norm_stats_md5": norm_md5,
