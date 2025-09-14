@@ -77,12 +77,13 @@ these plots since their pressures are fixed. In addition,
 ``residual_scatter_pressure_<run>.png`` and
 ``residual_scatter_chlorine_<run>.png`` show the prediction residuals versus
 both the ground truth and the predictions. ``error_histograms_<run>.png``
-contains histograms and box plots of the prediction errors and the CSV
-``logs/accuracy_<run>.csv`` records MAE, RMSE, MAPE, maximum error and R^2 for
-pressure and chlorine. The retained pressure predictions are also written to
-``data/pressures_<run>.csv`` which lists the node index, elevation, demand,
-pump speeds, and the actual and predicted pressures. Use ``--pred-csv`` to
-override the output location. Reservoir and tank nodes are
+contains histograms and box plots of the prediction errors, while
+``error_heatmap_<run>.png`` highlights the nodes with the largest pressure
+errors. The CSV ``logs/accuracy_<run>.csv`` records MAE, RMSE, MAPE, maximum
+error and R^2 for pressure and chlorine. The retained pressure predictions are
+also written to ``data/pressures_<run>.csv`` which lists the node index,
+elevation, demand, pump speeds, and the actual and predicted pressures. Use
+``--pred-csv`` to override the output location. Reservoir and tank nodes are
 excluded from these metrics
 so outliers from fixed heads do not skew the results. Metrics are accumulated
 using running statistics so the full prediction arrays are never stored in
