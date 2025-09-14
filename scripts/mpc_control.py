@@ -263,16 +263,19 @@ def load_network(
         length = getattr(link, "length", 0.0) or 0.0
         diam = getattr(link, "diameter", 0.0) or 0.0
         rough = getattr(link, "roughness", 0.0) or 0.0
-        attrs.append([length, diam, rough])
-        attrs.append([length, diam, rough])
-        if link_name in wn.pipe_name_list:
-            t = 0
-        elif link_name in wn.pump_name_list:
+        if link_name in wn.pump_name_list:
+            attrs.append([length, diam, rough, 1.0])
+            attrs.append([length, diam, rough, 0.0])
             t = 1
-        elif link_name in wn.valve_name_list:
-            t = 2
         else:
-            t = 0
+            attrs.append([length, diam, rough, 1.0])
+            attrs.append([length, diam, rough, 1.0])
+            if link_name in wn.pipe_name_list:
+                t = 0
+            elif link_name in wn.valve_name_list:
+                t = 2
+            else:
+                t = 0
         etypes.extend([t, t])
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
     node_types = build_node_type(wn)

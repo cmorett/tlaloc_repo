@@ -29,7 +29,7 @@ def test_amp_evaluate_sequence_runs():
         return
     edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
     edge_attr = torch.tensor(
-        [[1.0, 0.5, 100.0], [1.0, 0.5, 100.0]], dtype=torch.float32
+        [[1.0, 0.5, 100.0, 1.0], [1.0, 0.5, 100.0, 1.0]], dtype=torch.float32
     )
     T = 2
     N = 2
@@ -49,7 +49,7 @@ def test_amp_evaluate_sequence_runs():
     model = MultiTaskGNNSurrogate(
         in_channels=4,
         hidden_channels=8,
-        edge_dim=3,
+        edge_dim=4,
         node_output_dim=2,
         edge_output_dim=1,
         num_layers=2,

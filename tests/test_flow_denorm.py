@@ -25,7 +25,7 @@ class DummyModel(torch.nn.Module):
 
 def test_mass_balance_denorm_per_edge():
     edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
-    edge_attr = torch.zeros((2, 3), dtype=torch.float32)
+    edge_attr = torch.zeros((2, 4), dtype=torch.float32)
     T = 1
     N = 2
     E = 2

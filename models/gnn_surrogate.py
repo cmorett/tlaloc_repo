@@ -67,6 +67,7 @@ class HydroConv(MessagePassing):
         edge_attr: torch.Tensor,
         edge_type: torch.Tensor,
     ) -> torch.Tensor:
+        direction = edge_attr[:, -1:].clone()
         if self.edge_type_emb is not None:
             edge_attr = edge_attr + self.edge_type_emb(edge_type)
         weight = edge_attr.new_zeros(edge_attr.size(0), 1)
@@ -76,7 +77,8 @@ class HydroConv(MessagePassing):
                 continue
             w_t = mlp(edge_attr.index_select(0, idx)).to(weight.dtype)
             weight.index_copy_(0, idx, w_t)
-        return weight * (x_j - x_i)
+        sign = direction * 2.0 - 1.0
+        return weight * sign * (x_j - x_i)
 
 
 class EnhancedGNNEncoder(nn.Module):

@@ -4,11 +4,11 @@ from scripts.train_gnn import RecurrentGNNSurrogate, MultiTaskGNNSurrogate
 
 def test_recurrent_output_clamp():
     edge_index = torch.tensor([[0], [1]], dtype=torch.long)
-    edge_attr = torch.ones(1, 3)
+    edge_attr = torch.ones(1, 4)
     model = RecurrentGNNSurrogate(
         in_channels=2,
         hidden_channels=4,
-        edge_dim=3,
+        edge_dim=4,
         output_dim=2,
         num_layers=1,
         use_attention=False,
@@ -26,11 +26,11 @@ def test_recurrent_output_clamp():
 
 def test_multitask_output_clamp_and_tank_level():
     edge_index = torch.tensor([[0], [1]], dtype=torch.long)
-    edge_attr = torch.ones(1, 3)
+    edge_attr = torch.ones(1, 4)
     model = MultiTaskGNNSurrogate(
         in_channels=2,
         hidden_channels=4,
-        edge_dim=3,
+        edge_dim=4,
         node_output_dim=2,
         edge_output_dim=1,
         num_layers=1,
@@ -56,11 +56,11 @@ def test_multitask_output_clamp_and_tank_level():
 
 def test_output_clamp_with_per_node_norm():
     edge_index = torch.tensor([[0], [1]], dtype=torch.long)
-    edge_attr = torch.ones(1, 3)
+    edge_attr = torch.ones(1, 4)
     model = MultiTaskGNNSurrogate(
         in_channels=2,
         hidden_channels=4,
-        edge_dim=3,
+        edge_dim=4,
         node_output_dim=2,
         edge_output_dim=1,
         num_layers=1,
