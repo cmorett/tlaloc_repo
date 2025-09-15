@@ -1371,6 +1371,8 @@ def train_sequence(
     amp: bool = False,
     progress: bool = True,
     head_sign_weight: float = 0.5,
+    has_chlorine: bool = True,
+    use_head: bool = True,
 ) -> Tuple[
     float,
     float,
@@ -1549,15 +1551,32 @@ def train_sequence(
                         flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                     else:
                         press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                head_loss, head_violation = pressure_headloss_consistency_loss(
-                    press,
-                    flow,
-                    edge_index,
-                    edge_attr_phys,
-                    edge_type=et,
-                    return_violation=True,
-                    sign_weight=head_sign_weight,
-                )
+                    elevation = None
+                    use_head_local = use_head
+                    elev_idx = 3 if has_chlorine else 2
+                    if use_head and X_seq.size(-1) > elev_idx:
+                        elevation = X_seq[..., elev_idx].float()
+                        if hasattr(model, 'x_mean') and model.x_mean is not None:
+                            x_mean = model.x_mean.to(device)
+                            x_std = model.x_std.to(device)
+                            if x_mean.ndim == 1:
+                                elevation = elevation * x_std[elev_idx] + x_mean[elev_idx]
+                            else:
+                                elevation = elevation * x_std[:, elev_idx].view(1, 1, -1) + x_mean[:, elev_idx].view(1, 1, -1)
+                    else:
+                        use_head_local = False
+                    head_loss, head_violation = pressure_headloss_consistency_loss(
+                        press,
+                        flow,
+                        edge_index,
+                        edge_attr_phys,
+                        elevation=elevation,
+                        edge_type=et,
+                        node_type=nt,
+                        return_violation=True,
+                        sign_weight=head_sign_weight,
+                        use_head=use_head_local,
+                    )
             if pump_loss and pump_coeffs is not None:
                 flow_pc = edge_preds.squeeze(-1)
                 if hasattr(model, 'y_mean') and model.y_mean is not None:
@@ -1665,6 +1684,8 @@ def estimate_physics_scales_from_data(
     model: nn.Module,
     pump_coeffs: Optional[torch.Tensor] = None,
     head_sign_weight: float = 0.5,
+    has_chlorine: bool = True,
+    use_head: bool = True,
 ) -> Tuple[float, float, float]:
     """Estimate baseline magnitudes using ground-truth flows and pressures."""
 
@@ -1718,14 +1739,31 @@ def estimate_physics_scales_from_data(
                 return_imbalance=True,
             )
 
+            elevation = None
+            use_head_local = use_head
+            elev_idx = 3 if has_chlorine else 2
+            if use_head and X_seq.size(-1) > elev_idx:
+                elevation = X_seq[..., elev_idx].float()
+                if hasattr(model, 'x_mean') and model.x_mean is not None:
+                    x_mean = model.x_mean.to(device)
+                    x_std = model.x_std.to(device)
+                    if x_mean.ndim == 1:
+                        elevation = elevation * x_std[elev_idx] + x_mean[elev_idx]
+                    else:
+                        elevation = elevation * x_std[:, elev_idx].view(1, 1, -1) + x_mean[:, elev_idx].view(1, 1, -1)
+            else:
+                use_head_local = False
             head_loss, _ = pressure_headloss_consistency_loss(
                 press,
                 flows,
                 edge_index,
                 edge_attr_phys,
+                elevation=elevation,
                 edge_type=edge_type,
+                node_type=node_type,
                 return_violation=True,
                 sign_weight=head_sign_weight,
+                use_head=use_head_local,
             )
 
             if pump_coeffs is not None:
@@ -1785,6 +1823,8 @@ def evaluate_sequence(
     amp: bool = False,
     progress: bool = True,
     head_sign_weight: float = 0.5,
+    has_chlorine: bool = True,
+    use_head: bool = True,
 ) -> Tuple[
     float,
     float,
@@ -1963,14 +2003,31 @@ def evaluate_sequence(
                                 flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                             else:
                                 press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                        elevation = None
+                        use_head_local = use_head
+                        elev_idx = 3 if has_chlorine else 2
+                        if use_head and X_seq.size(-1) > elev_idx:
+                            elevation = X_seq[..., elev_idx].float()
+                            if hasattr(model, 'x_mean') and model.x_mean is not None:
+                                x_mean = model.x_mean.to(device)
+                                x_std = model.x_std.to(device)
+                                if x_mean.ndim == 1:
+                                    elevation = elevation * x_std[elev_idx] + x_mean[elev_idx]
+                                else:
+                                    elevation = elevation * x_std[:, elev_idx].view(1, 1, -1) + x_mean[:, elev_idx].view(1, 1, -1)
+                        else:
+                            use_head_local = False
                         head_loss, head_violation = pressure_headloss_consistency_loss(
                             press,
                             flow,
                             edge_index,
                             edge_attr_phys,
+                            elevation=elevation,
                             edge_type=et,
+                            node_type=nt,
                             return_violation=True,
                             sign_weight=head_sign_weight,
+                            use_head=use_head_local,
                         )
                     else:
                         head_loss = torch.tensor(0.0, device=device)
@@ -2563,6 +2620,8 @@ def main(args: argparse.Namespace):
             model,
             pump_coeffs_tensor if args.pump_loss else None,
             head_sign_weight=getattr(args, "head_sign_weight", 0.5),
+            has_chlorine=has_chlorine,
+            use_head=args.physics_loss_use_head,
         )
         if args.physics_loss and mass_scale <= 0:
             mass_scale = m_base
@@ -2684,6 +2743,8 @@ def main(args: argparse.Namespace):
                     amp=args.amp,
                     progress=args.progress,
                     head_sign_weight=getattr(args, "head_sign_weight", 0.5),
+                    has_chlorine=has_chlorine,
+                    use_head=args.physics_loss_use_head,
                 )
                 loss = loss_tuple[0]
                 (
@@ -2736,6 +2797,8 @@ def main(args: argparse.Namespace):
                         amp=args.amp,
                         progress=args.progress,
                         head_sign_weight=getattr(args, "head_sign_weight", 0.5),
+                        has_chlorine=has_chlorine,
+                        use_head=args.physics_loss_use_head,
                     )
                     val_loss = val_tuple[0]
                     (
@@ -3558,6 +3621,12 @@ if __name__ == "__main__":
         help="Disable pressure-headloss consistency penalty",
     )
     parser.set_defaults(pressure_loss=True)
+    parser.add_argument(
+        "--physics-loss-use-head",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use hydraulic head (pressure + elevation) for head-loss consistency",
+    )
     parser.add_argument(
         "--pump-loss",
         action="store_true",
