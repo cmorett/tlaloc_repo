@@ -120,9 +120,12 @@ file by default via ``--edge-attr-path``. Pump curve coefficients are saved as
 (``--pump-loss``) with weight ``--w_pump``.
 Optional physics losses in ``models/loss_utils.py`` further regularise
 training. ``compute_mass_balance_loss`` penalises node flow imbalance,
-``pressure_headloss_consistency_loss`` enforces Hazen–Williams head losses and
-``pump_curve_loss`` discourages infeasible pump operating points. Combine these
-terms with data losses to keep predictions physically plausible.
+``pressure_headloss_consistency_loss`` enforces Hazen–Williams head losses using
+hydraulic head (pressure plus elevation) and ignores edges connected to tanks or
+reservoirs, while ``pump_curve_loss`` discourages infeasible pump operating
+points. Combine these terms with data losses to keep predictions physically
+plausible. The head-based behaviour can be disabled for ablation studies via
+``--no-physics-loss-use-head`` when running ``scripts/train_gnn.py``.
 
 Training performs node-wise regression and by default optimizes the mean
 absolute error (MAE).  Specify ``--loss-fn`` to switch between MAE (``mae``),

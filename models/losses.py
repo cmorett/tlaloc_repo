@@ -108,18 +108,25 @@ def pressure_headloss_consistency_loss(
     pred_flows: torch.Tensor,
     edge_index: torch.Tensor,
     edge_attr: torch.Tensor,
+    elevation: Optional[torch.Tensor] = None,
     edge_attr_mean: Optional[torch.Tensor] = None,
     edge_attr_std: Optional[torch.Tensor] = None,
     edge_type: Optional[torch.Tensor] = None,
+    node_type: Optional[torch.Tensor] = None,
     *,
     return_violation: bool = False,
     epsilon: float = 1e-6,
     sign_weight: float = 0.5,
+    use_head: bool = True,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """Return MSE between predicted and Hazen--Williams head losses.
 
-    When ``return_violation`` is ``True`` the percentage of edges where the
-    predicted head loss has the wrong sign is also returned.
+    The loss compares predicted hydraulic head drops against the
+    Hazen--Williams formula.  When ``use_head`` is ``True`` the function
+    expects an ``elevation`` tensor and adds it to pressures before forming
+    edge drops.  Edges incident to tanks or reservoirs (``node_type`` 1 or 2)
+    are excluded.  When ``return_violation`` is ``True`` the percentage of
+    edges where the predicted head loss has the wrong sign is also returned.
     """
     # Un-normalise edge attributes if statistics are available
     if edge_attr_mean is not None and edge_attr_std is not None:
@@ -135,17 +142,32 @@ def pressure_headloss_consistency_loss(
     p = pred_pressures.reshape(-1, pred_pressures.shape[-1])
     q = pred_flows.reshape(-1, pred_flows.shape[-1])
 
+    if use_head:
+        if elevation is None:
+            raise ValueError("elevation tensor required when use_head=True")
+        elev = elevation.reshape(-1, elevation.shape[-1]).to(p.device)
+        head = p + elev
+    else:
+        head = p
+
     if edge_type is not None:
         edge_type = edge_type.flatten()
         pipe_mask = edge_type == 0
     else:
         pipe_mask = torch.ones(edge_index.size(1), dtype=torch.bool, device=p.device)
 
+    if node_type is not None:
+        nt = node_type.flatten().to(p.device)
+        src_nt = nt[edge_index[0]]
+        tgt_nt = nt[edge_index[1]]
+        mask_nodes = (src_nt == 1) | (src_nt == 2) | (tgt_nt == 1) | (tgt_nt == 2)
+        pipe_mask = pipe_mask & ~mask_nodes
+
     src = edge_index[0, pipe_mask]
     tgt = edge_index[1, pipe_mask]
-    p_src = p[:, src]
-    p_tgt = p[:, tgt]
-    pred_hl = p_src - p_tgt
+    h_src = head[:, src]
+    h_tgt = head[:, tgt]
+    pred_hl = h_src - h_tgt
 
     const = 10.67
     length = length[pipe_mask]
