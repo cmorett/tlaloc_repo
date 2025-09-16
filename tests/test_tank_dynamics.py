@@ -3,11 +3,11 @@ from scripts.train_gnn import MultiTaskGNNSurrogate
 
 def test_tank_pressure_update():
     edge_index = torch.tensor([[0],[1]], dtype=torch.long)
-    edge_attr = torch.ones(1,4)
+    edge_attr = torch.ones(1,5)
     model = MultiTaskGNNSurrogate(
         in_channels=2,
         hidden_channels=4,
-        edge_dim=4,
+        edge_dim=5,
         node_output_dim=2,
         edge_output_dim=1,
         num_layers=1,

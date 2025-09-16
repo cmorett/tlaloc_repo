@@ -1,6 +1,7 @@
 import torch
 import wntr
 import torch
+import torch
 import wntr
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ def _setup():
     wn = wntr.network.WaterNetworkModel('CTown.inp')
     speeds = torch.tensor([[2.0]], requires_grad=True)
     edge_index = torch.tensor([[0], [1]], dtype=torch.long)
-    edge_attr = torch.zeros((1, 4))
+    edge_attr = torch.zeros((1, 5))
     node_types = torch.zeros(2, dtype=torch.long)
     edge_types = torch.zeros(1, dtype=torch.long)
     feature_template = torch.zeros((2, 5))

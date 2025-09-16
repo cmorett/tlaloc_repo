@@ -67,7 +67,8 @@ class HydroConv(MessagePassing):
         edge_attr: torch.Tensor,
         edge_type: torch.Tensor,
     ) -> torch.Tensor:
-        direction = edge_attr[:, -1:].clone()
+        direction = edge_attr[:, -2:-1].clone()
+        pump_speed = edge_attr[:, -1:].clone()
         if self.edge_type_emb is not None:
             edge_attr = edge_attr + self.edge_type_emb(edge_type)
         weight = edge_attr.new_zeros(edge_attr.size(0), 1)
@@ -76,6 +77,8 @@ class HydroConv(MessagePassing):
             if idx.numel() == 0:
                 continue
             w_t = mlp(edge_attr.index_select(0, idx)).to(weight.dtype)
+            if t == 1:
+                w_t = w_t * pump_speed.index_select(0, idx)
             weight.index_copy_(0, idx, w_t)
         sign = direction * 2.0 - 1.0
         return weight * sign * (x_j - x_i)
@@ -209,7 +212,7 @@ class RecurrentGNNSurrogate(nn.Module):
         self,
         X_seq: torch.Tensor,
         edge_index: torch.Tensor,
-        edge_attr: torch.Tensor,
+        edge_attr: Optional[torch.Tensor],
         node_type: Optional[torch.Tensor] = None,
         edge_type: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -219,7 +222,21 @@ class RecurrentGNNSurrogate(nn.Module):
         batch_edge_index = edge_index.repeat(1, batch_size) + (
             torch.arange(batch_size, device=device).repeat_interleave(E) * num_nodes
         )
-        edge_attr_rep = edge_attr.repeat(batch_size, 1) if edge_attr is not None else None
+        edge_attr_seq = None
+        if edge_attr is not None:
+            edge_attr = edge_attr.to(device)
+            if edge_attr.dim() == 2:
+                edge_attr_seq = edge_attr.view(1, 1, E, -1).expand(batch_size, T, E, -1)
+            elif edge_attr.dim() == 3:
+                if edge_attr.size(0) != T:
+                    raise IndexError("edge_attr sequence shorter than input sequence")
+                edge_attr_seq = edge_attr.view(1, edge_attr.size(0), E, -1).expand(batch_size, -1, -1, -1)
+            elif edge_attr.dim() == 4:
+                edge_attr_seq = edge_attr
+            else:
+                raise ValueError("Unsupported edge_attr shape for sequence model")
+            if edge_attr_seq.size(0) == 1 and batch_size > 1:
+                edge_attr_seq = edge_attr_seq.expand(batch_size, -1, -1, -1)
         node_type_rep = (
             node_type.repeat(batch_size) if node_type is not None else None
         )
@@ -230,21 +247,51 @@ class RecurrentGNNSurrogate(nn.Module):
         emb = None
         for t in range(T):
             x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
+            edge_attr_t = None
+            if edge_attr_seq is not None:
+                edge_attr_t = edge_attr_seq[:, t].reshape(batch_size * E, -1)
 
-            def encode(x):
-                return self.encoder(
-                    x,
-                    batch_edge_index,
-                    edge_attr_rep,
-                    node_type_rep,
-                    edge_type_rep,
-                )
+            if edge_attr_t is not None:
 
-            if self.use_checkpoint and self.training:
-                x_t = x_t.requires_grad_()
-                gnn_out = torch.utils.checkpoint.checkpoint(encode, x_t, use_reentrant=False)
+                def encode(x, attr):
+                    return self.encoder(
+                        x,
+                        batch_edge_index,
+                        attr,
+                        node_type_rep,
+                        edge_type_rep,
+                    )
+
+                if self.use_checkpoint and self.training:
+                    x_t = x_t.requires_grad_()
+                    gnn_out = torch.utils.checkpoint.checkpoint(
+                        encode,
+                        x_t,
+                        edge_attr_t,
+                        use_reentrant=False,
+                    )
+                else:
+                    gnn_out = encode(x_t, edge_attr_t)
             else:
-                gnn_out = encode(x_t)
+
+                def encode_no_attr(x):
+                    return self.encoder(
+                        x,
+                        batch_edge_index,
+                        None,
+                        node_type_rep,
+                        edge_type_rep,
+                    )
+
+                if self.use_checkpoint and self.training:
+                    x_t = x_t.requires_grad_()
+                    gnn_out = torch.utils.checkpoint.checkpoint(
+                        encode_no_attr,
+                        x_t,
+                        use_reentrant=False,
+                    )
+                else:
+                    gnn_out = encode_no_attr(x_t)
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
 
             if emb is None:
@@ -352,7 +399,7 @@ class MultiTaskGNNSurrogate(nn.Module):
         self,
         X_seq: torch.Tensor,
         edge_index: torch.Tensor,
-        edge_attr: torch.Tensor,
+        edge_attr: Optional[torch.Tensor],
         node_type: Optional[torch.Tensor] = None,
         edge_type: Optional[torch.Tensor] = None,
     ):
@@ -362,7 +409,21 @@ class MultiTaskGNNSurrogate(nn.Module):
         batch_edge_index = edge_index.repeat(1, batch_size) + (
             torch.arange(batch_size, device=device).repeat_interleave(E) * num_nodes
         )
-        edge_attr_rep = edge_attr.repeat(batch_size, 1) if edge_attr is not None else None
+        edge_attr_seq = None
+        if edge_attr is not None:
+            edge_attr = edge_attr.to(device)
+            if edge_attr.dim() == 2:
+                edge_attr_seq = edge_attr.view(1, 1, E, -1).expand(batch_size, T, E, -1)
+            elif edge_attr.dim() == 3:
+                if edge_attr.size(0) != T:
+                    raise IndexError("edge_attr sequence shorter than input sequence")
+                edge_attr_seq = edge_attr.view(1, edge_attr.size(0), E, -1).expand(batch_size, -1, -1, -1)
+            elif edge_attr.dim() == 4:
+                edge_attr_seq = edge_attr
+            else:
+                raise ValueError("Unsupported edge_attr shape for sequence model")
+            if edge_attr_seq.size(0) == 1 and batch_size > 1:
+                edge_attr_seq = edge_attr_seq.expand(batch_size, -1, -1, -1)
         node_type_rep = (
             node_type.repeat(batch_size) if node_type is not None else None
         )
@@ -373,21 +434,51 @@ class MultiTaskGNNSurrogate(nn.Module):
         emb = None
         for t in range(T):
             x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
+            edge_attr_t = None
+            if edge_attr_seq is not None:
+                edge_attr_t = edge_attr_seq[:, t].reshape(batch_size * E, -1)
 
-            def encode(x):
-                return self.encoder(
-                    x,
-                    batch_edge_index,
-                    edge_attr_rep,
-                    node_type_rep,
-                    edge_type_rep,
-                )
+            if edge_attr_t is not None:
 
-            if self.use_checkpoint and self.training:
-                x_t = x_t.requires_grad_()
-                gnn_out = torch.utils.checkpoint.checkpoint(encode, x_t, use_reentrant=False)
+                def encode(x, attr):
+                    return self.encoder(
+                        x,
+                        batch_edge_index,
+                        attr,
+                        node_type_rep,
+                        edge_type_rep,
+                    )
+
+                if self.use_checkpoint and self.training:
+                    x_t = x_t.requires_grad_()
+                    gnn_out = torch.utils.checkpoint.checkpoint(
+                        encode,
+                        x_t,
+                        edge_attr_t,
+                        use_reentrant=False,
+                    )
+                else:
+                    gnn_out = encode(x_t, edge_attr_t)
             else:
-                gnn_out = encode(x_t)
+
+                def encode_no_attr(x):
+                    return self.encoder(
+                        x,
+                        batch_edge_index,
+                        None,
+                        node_type_rep,
+                        edge_type_rep,
+                    )
+
+                if self.use_checkpoint and self.training:
+                    x_t = x_t.requires_grad_()
+                    gnn_out = torch.utils.checkpoint.checkpoint(
+                        encode_no_attr,
+                        x_t,
+                        use_reentrant=False,
+                    )
+                else:
+                    gnn_out = encode_no_attr(x_t)
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
 
             if emb is None:

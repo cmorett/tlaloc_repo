@@ -113,12 +113,16 @@ class SequenceDataset(torch.utils.data.Dataset):
         edge_attr: Optional[np.ndarray],
         node_type: Optional[np.ndarray] = None,
         edge_type: Optional[np.ndarray] = None,
+        edge_attr_seq: Optional[np.ndarray] = None,
     ):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.edge_index = torch.tensor(edge_index, dtype=torch.long)
         self.edge_attr = None
         if edge_attr is not None:
             self.edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
+        self.edge_attr_seq = None
+        if edge_attr_seq is not None:
+            self.edge_attr_seq = torch.tensor(edge_attr_seq, dtype=torch.float32)
         self.node_type = None
         if node_type is not None:
             self.node_type = torch.tensor(node_type, dtype=torch.long)
@@ -146,6 +150,10 @@ class SequenceDataset(torch.utils.data.Dataset):
                 self.Y["demand"] = torch.stack(
                     [torch.tensor(y["demand"], dtype=torch.float32) for y in Y]
                 )
+            if self.edge_attr_seq is None and isinstance(first, dict) and "edge_attr_seq" in first:
+                self.edge_attr_seq = torch.stack(
+                    [torch.tensor(y["edge_attr_seq"], dtype=torch.float32) for y in Y]
+                )
         else:
             self.multi = False
             self.Y = torch.tensor(Y, dtype=torch.float32)
@@ -158,18 +166,26 @@ class SequenceDataset(torch.utils.data.Dataset):
             self.X = self.X[: self.length]
             for k in list(self.Y.keys()):
                 self.Y[k] = self.Y[k][: self.length]
+            if self.edge_attr_seq is not None:
+                self.edge_attr_seq = self.edge_attr_seq[: self.length]
         else:
             self.length = min(self.length, self.Y.shape[0])
             self.X = self.X[: self.length]
             self.Y = self.Y[: self.length]
+            if self.edge_attr_seq is not None:
+                self.edge_attr_seq = self.edge_attr_seq[: self.length]
 
     def __len__(self) -> int:  # type: ignore[override]
         return self.length
 
     def __getitem__(self, idx: int):  # type: ignore[override]
         if self.multi:
-            return self.X[idx], {k: v[idx] for k, v in self.Y.items()}
-        return self.X[idx], self.Y[idx]
+            target = {k: v[idx] for k, v in self.Y.items()}
+        else:
+            target = self.Y[idx]
+        if self.edge_attr_seq is not None:
+            return self.X[idx], self.edge_attr_seq[idx], target
+        return self.X[idx], target
 
 
 def compute_sequence_norm_stats(
@@ -265,12 +281,21 @@ def apply_sequence_normalization(
         dataset.Y = (dataset.Y - y_mean) / y_std
     if edge_attr_mean is not None and dataset.edge_attr is not None:
         dataset.edge_attr = (dataset.edge_attr - edge_attr_mean) / edge_attr_std
+    if edge_attr_mean is not None and dataset.edge_attr_seq is not None:
+        mean = edge_attr_mean
+        std = edge_attr_std
+        while mean.dim() < dataset.edge_attr_seq.dim():
+            mean = mean.unsqueeze(0)
+            std = std.unsqueeze(0)
+        dataset.edge_attr_seq = (dataset.edge_attr_seq - mean) / std
 
 
 def build_edge_attr(
-    wn: wntr.network.WaterNetworkModel, edge_index: np.ndarray
-    ) -> np.ndarray:
-    """Return edge attribute matrix ``[E,4]`` for given edge index."""
+    wn: wntr.network.WaterNetworkModel,
+    edge_index: np.ndarray,
+    pump_speeds: Optional[Dict[str, float]] = None,
+) -> np.ndarray:
+    """Return edge attribute matrix ``[E,5]`` for given edge index."""
     node_map = {n: i for i, n in enumerate(wn.node_name_list)}
     attr_dict: Dict[Tuple[int, int], List[float]] = {}
     for link_name in wn.link_name_list:
@@ -280,9 +305,14 @@ def build_edge_attr(
         length = getattr(link, "length", 0.0) or 0.0
         diam = getattr(link, "diameter", 0.0) or 0.0
         rough = getattr(link, "roughness", 0.0) or 0.0
-        attr_fwd = [float(length), float(diam), float(rough), 1.0]
+        is_pump = link_name in wn.pump_name_list
+        speed = 1.0
+        if is_pump and pump_speeds is not None:
+            speed = float(pump_speeds.get(link_name, 1.0))
+        pump_col = float(speed if is_pump else 0.0)
+        attr_fwd = [float(length), float(diam), float(rough), 1.0, pump_col]
         if link_name in wn.pump_name_list:
-            attr_rev = [float(length), float(diam), float(rough), 0.0]
+            attr_rev = [float(length), float(diam), float(rough), 0.0, pump_col]
         else:
             attr_rev = attr_fwd
         attr_dict[(i, j)] = attr_fwd

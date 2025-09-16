@@ -12,7 +12,7 @@ from scripts.mpc_control import MAX_PUMP_SPEED, run_mpc_step
 def _setup():
     wn = wntr.network.WaterNetworkModel("CTown.inp")
     edge_index = torch.tensor([[0], [1]], dtype=torch.long)
-    edge_attr = torch.zeros((1, 4))
+    edge_attr = torch.zeros((1, 5))
     node_types = torch.zeros(2, dtype=torch.long)
     edge_types = torch.zeros(1, dtype=torch.long)
     feature_template = torch.zeros((2, 5))
