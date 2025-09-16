@@ -8,7 +8,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Optional, Union
-from sklearn.preprocessing import MinMaxScaler
 from functools import partial
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
@@ -643,9 +642,27 @@ def build_sequence_dataset(
     X_list: List[np.ndarray] = []
     Y_list: List[dict] = []
     scenario_types: List[str] = []
+    edge_attr_seq_list: List[np.ndarray] = []
 
     pumps = np.array(wn_template.pump_name_list)
+    pump_index_map = {name: idx for idx, name in enumerate(pumps)}
     node_names = wn_template.node_name_list
+
+    base_edge_attr: List[List[float]] = []
+    pump_edge_indices: Dict[str, Tuple[int, int]] = {}
+    for link_name in wn_template.link_name_list:
+        link = wn_template.get_link(link_name)
+        length = float(getattr(link, "length", 0.0) or 0.0)
+        diam = float(getattr(link, "diameter", 0.0) or 0.0)
+        rough = float(getattr(link, "roughness", 0.0) or 0.0)
+        is_pump = link_name in wn_template.pump_name_list
+        base_edge_attr.append([length, diam, rough, 1.0, 0.0])
+        rev_dir = 0.0 if is_pump else 1.0
+        base_edge_attr.append([length, diam, rough, rev_dir, 0.0])
+        if is_pump:
+            pump_edge_indices[link_name] = (len(base_edge_attr) - 2, len(base_edge_attr) - 1)
+    base_edge_attr_arr = np.array(base_edge_attr, dtype=np.float64)
+    base_edge_attr_arr[:, 2] = np.log1p(base_edge_attr_arr[:, 2])
 
     for sim_results, _scale_dict, pump_ctrl in results:
         scenario_types.append(getattr(sim_results, "scenario_type", "normal"))
@@ -690,8 +707,19 @@ def build_sequence_dataset(
         edge_out_seq: List[np.ndarray] = []
         energy_seq: List[np.ndarray] = []
         demand_seq: List[np.ndarray] = []
+        edge_attr_seq: List[np.ndarray] = []
         for t in range(seq_len):
             pump_vector = pump_ctrl_arr[:, t]
+            edge_attr_t = base_edge_attr_arr.copy()
+            if pump_edge_indices:
+                for pump_name, (idx_fwd, idx_rev) in pump_edge_indices.items():
+                    pump_idx = pump_index_map.get(pump_name)
+                    if pump_idx is None:
+                        continue
+                    speed = float(pump_ctrl_arr[pump_idx, t])
+                    edge_attr_t[idx_fwd, -1] = speed
+                    edge_attr_t[idx_rev, -1] = speed
+            edge_attr_seq.append(edge_attr_t.astype(np.float64))
             feat_nodes = []
             for node in node_names:
                 idx = node_idx[node]
@@ -757,12 +785,15 @@ def build_sequence_dataset(
             demand_seq.append(np.array(demand_next, dtype=np.float64))
 
         X_list.append(np.stack(X_seq))
+        scenario_edge_attr = np.stack(edge_attr_seq).astype(np.float32)
         Y_list.append({
             "node_outputs": np.stack(node_out_seq).astype(np.float32),
             "edge_outputs": np.stack(edge_out_seq).astype(np.float32),
             "pump_energy": np.stack(energy_seq).astype(np.float32),
             "demand": np.stack(demand_seq).astype(np.float32),
+            "edge_attr_seq": scenario_edge_attr,
         })
+        edge_attr_seq_list.append(scenario_edge_attr)
 
     if not X_list:
         raise ValueError(
@@ -771,7 +802,8 @@ def build_sequence_dataset(
 
     X = np.stack(X_list).astype(np.float32)
     Y = np.array(Y_list, dtype=object)
-    return X, Y, np.array(scenario_types)
+    edge_attr_seq_arr = np.stack(edge_attr_seq_list).astype(np.float32)
+    return X, Y, np.array(scenario_types), edge_attr_seq_arr
 
 def build_dataset(
     results: Iterable[
@@ -894,9 +926,21 @@ def build_dataset(
 
 def build_edge_index(
     wn: wntr.network.WaterNetworkModel,
-
+    pump_speeds: Optional[Dict[str, float]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return directed edge index, edge attributes, edge types and pump curves."""
+    """Return directed edge index, attributes, types and pump curves.
+
+    Parameters
+    ----------
+    wn:
+        Water network model used to extract structural information.
+    pump_speeds:
+        Optional mapping from pump names to their contemporaneous speed. When
+        supplied, the returned edge attributes will include this value in the
+        final column for both directions of every pump edge.  Missing entries
+        default to ``1.0`` which corresponds to the nominal speed used by
+        EPANET.  Non-pump edges always store ``0.0`` in the pump-speed column.
+    """
 
     node_index_map = {name: idx for idx, name in enumerate(wn.node_name_list)}
     edges: List[List[int]] = []
@@ -909,19 +953,21 @@ def build_edge_index(
         i2 = node_index_map[link.end_node.name]
         edges.append([i1, i2])
         edges.append([i2, i1])
-        length = getattr(link, "length", 0.0) or 0.0
-        diam = getattr(link, "diameter", 0.0) or 0.0
-        rough = getattr(link, "roughness", 0.0) or 0.0
-        if link_name in wn.pump_name_list:
-            attrs.append([length, diam, rough, 1.0])
-            attrs.append([length, diam, rough, 0.0])
-        else:
-            attrs.append([length, diam, rough, 1.0])
-            attrs.append([length, diam, rough, 1.0])
+        length = float(getattr(link, "length", 0.0) or 0.0)
+        diam = float(getattr(link, "diameter", 0.0) or 0.0)
+        rough = float(getattr(link, "roughness", 0.0) or 0.0)
+        is_pump = link_name in wn.pump_name_list
+        speed = 1.0
+        if is_pump and pump_speeds is not None:
+            speed = float(pump_speeds.get(link_name, 1.0))
+        pump_col = speed if is_pump else 0.0
+        attrs.append([length, diam, rough, 1.0, pump_col])
+        rev_dir = 0.0 if is_pump else 1.0
+        attrs.append([length, diam, rough, rev_dir, pump_col])
         if link_name in wn.pipe_name_list:
             t = 0
             a = b = c = 0.0
-        elif link_name in wn.pump_name_list:
+        elif is_pump:
             t = 1
             a, b, c = link.get_head_curve_coefficients()
         elif link_name in wn.valve_name_list:
@@ -935,10 +981,9 @@ def build_edge_index(
 
     edge_index = np.array(edges, dtype=np.int64).T
     edge_attr = np.array(attrs, dtype=np.float32)
-    # log-normalize roughness then scale all features to [0,1]
+    # log-normalise roughness to keep the scale consistent with previous
+    # datasets.  Downstream normalisation handles the remaining features.
     edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
-    scaler = MinMaxScaler()
-    edge_attr = scaler.fit_transform(edge_attr)
 
     assert edge_index.shape[0] == 2
     edge_type = np.array(types, dtype=np.int64)
@@ -1185,20 +1230,51 @@ def main() -> None:
         json.dump(summary, f, indent=2)
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
+    edge_attr_train_seq = edge_attr_val_seq = edge_attr_test_seq = None
     if args.sequence_length > 1:
-        X_train, Y_train, train_labels = build_sequence_dataset(
-            train_res, wn_template, args.sequence_length, include_chlorine=args.include_chlorine
+        (
+            X_train,
+            Y_train,
+            train_labels,
+            edge_attr_train_seq,
+        ) = build_sequence_dataset(
+            train_res,
+            wn_template,
+            args.sequence_length,
+            include_chlorine=args.include_chlorine,
         )
-        X_val, Y_val, val_labels = build_sequence_dataset(
-            val_res, wn_template, args.sequence_length, include_chlorine=args.include_chlorine
+        (
+            X_val,
+            Y_val,
+            val_labels,
+            edge_attr_val_seq,
+        ) = build_sequence_dataset(
+            val_res,
+            wn_template,
+            args.sequence_length,
+            include_chlorine=args.include_chlorine,
         )
-        X_test, Y_test, test_labels = build_sequence_dataset(
-            test_res, wn_template, args.sequence_length, include_chlorine=args.include_chlorine
+        (
+            X_test,
+            Y_test,
+            test_labels,
+            edge_attr_test_seq,
+        ) = build_sequence_dataset(
+            test_res,
+            wn_template,
+            args.sequence_length,
+            include_chlorine=args.include_chlorine,
         )
     else:
-        X_train, Y_train = build_dataset(train_res, wn_template, include_chlorine=args.include_chlorine)
-        X_val, Y_val = build_dataset(val_res, wn_template, include_chlorine=args.include_chlorine)
-        X_test, Y_test = build_dataset(test_res, wn_template, include_chlorine=args.include_chlorine)
+        X_train, Y_train = build_dataset(
+            train_res, wn_template, include_chlorine=args.include_chlorine
+        )
+        X_val, Y_val = build_dataset(
+            val_res, wn_template, include_chlorine=args.include_chlorine
+        )
+        X_test, Y_test = build_dataset(
+            test_res, wn_template, include_chlorine=args.include_chlorine
+        )
 
     edge_index, edge_attr, edge_type, pump_coeffs = build_edge_index(wn_template)
 
@@ -1218,6 +1294,15 @@ def main() -> None:
     log_array_stats("Y_test", Y_test)
     np.save(os.path.join(out_dir, "Y_test.npy"), Y_test)
     if args.sequence_length > 1:
+        if edge_attr_train_seq is not None:
+            log_array_stats("edge_attr_train_seq", edge_attr_train_seq)
+            np.save(os.path.join(out_dir, "edge_attr_train_seq.npy"), edge_attr_train_seq)
+        if edge_attr_val_seq is not None:
+            log_array_stats("edge_attr_val_seq", edge_attr_val_seq)
+            np.save(os.path.join(out_dir, "edge_attr_val_seq.npy"), edge_attr_val_seq)
+        if edge_attr_test_seq is not None:
+            log_array_stats("edge_attr_test_seq", edge_attr_test_seq)
+            np.save(os.path.join(out_dir, "edge_attr_test_seq.npy"), edge_attr_test_seq)
         log_array_stats("scenario_train", train_labels)
         np.save(os.path.join(out_dir, "scenario_train.npy"), train_labels)
         log_array_stats("scenario_val", val_labels)

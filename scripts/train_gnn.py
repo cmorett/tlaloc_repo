@@ -715,11 +715,17 @@ def compute_node_pressure_mae(
     model.eval()
     with torch.no_grad():
         if isinstance(dataset, SequenceDataset):
-            for X_seq, Y_seq in loader:
+            for batch in loader:
+                if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                    X_seq, edge_attr_batch, Y_seq = batch
+                else:
+                    X_seq, Y_seq = batch
+                    edge_attr_batch = None
                 X_seq = X_seq.to(device)
+                attr = edge_attr_batch.to(device) if isinstance(edge_attr_batch, torch.Tensor) else ea
 
                 def _model_forward():
-                    return model(X_seq, ei, ea, nt, et)
+                    return model(X_seq, ei, attr, nt, et)
 
                 out = _forward_with_auto_checkpoint(model, _model_forward)
                 node_pred = out["node_outputs"] if isinstance(out, dict) else out
@@ -858,10 +864,18 @@ def plot_sequence_prediction(
     device = next(model.parameters()).device
     model.eval()
 
-    X_seq, Y_seq = dataset[0]
+    sample = dataset[0]
+    if isinstance(sample, (list, tuple)) and len(sample) == 3:
+        X_seq, edge_attr_seq, Y_seq = sample
+    else:
+        X_seq, Y_seq = sample
+        edge_attr_seq = None
     X_seq = X_seq.unsqueeze(0).to(device)
     ei = dataset.edge_index.to(device)
-    ea = dataset.edge_attr.to(device) if dataset.edge_attr is not None else None
+    if edge_attr_seq is not None:
+        ea = edge_attr_seq.unsqueeze(0).to(device)
+    else:
+        ea = dataset.edge_attr.to(device) if dataset.edge_attr is not None else None
     nt = dataset.node_type.to(device) if dataset.node_type is not None else None
     et = dataset.edge_type.to(device) if dataset.edge_type is not None else None
 
@@ -1346,7 +1360,7 @@ def train_sequence(
     model: nn.Module,
     loader: TorchLoader,
     edge_index: torch.Tensor,
-    edge_attr: torch.Tensor,
+    edge_attr: Optional[torch.Tensor],
     edge_attr_phys: torch.Tensor,
     node_type: Optional[torch.Tensor],
     edge_type: Optional[torch.Tensor],
@@ -1396,7 +1410,7 @@ def train_sequence(
     grad_total = 0.0
     grad_count = 0
     edge_index = edge_index.to(device)
-    edge_attr = edge_attr.to(device)
+    edge_attr = edge_attr.to(device) if edge_attr is not None else None
     edge_attr_phys = edge_attr_phys.to(device)
     if node_type is not None:
         node_type = node_type.to(device)
@@ -1408,14 +1422,20 @@ def train_sequence(
     data_iter = iter(tqdm(loader, disable=not progress))
     while True:
         try:
-            X_seq, Y_seq = next(data_iter)
+            batch = next(data_iter)
         except StopIteration:
             break
         except RuntimeError as e:
             if interrupted and "DataLoader worker" in str(e):
                 break
             raise
+        if isinstance(batch, (list, tuple)) and len(batch) == 3:
+            X_seq, edge_attr_batch, Y_seq = batch
+        else:
+            X_seq, Y_seq = batch
+            edge_attr_batch = None
         X_seq = X_seq.to(device)
+        attr_input = edge_attr_batch.to(device) if isinstance(edge_attr_batch, torch.Tensor) else edge_attr
         if isinstance(Y_seq, dict):
             Y_seq = {k: v.to(device) for k, v in Y_seq.items()}
         else:
@@ -1438,7 +1458,7 @@ def train_sequence(
             return model(
                 X_seq,
                 edge_index,
-                edge_attr,
+                attr_input,
                 nt,
                 et,
             )
@@ -1701,7 +1721,11 @@ def estimate_physics_scales_from_data(
     mass_total = head_total = pump_total = 0.0
     num_samples = 0
     with torch.no_grad():
-        for X_seq, Y_seq in loader:
+        for batch in loader:
+            if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                X_seq, _edge_attr_batch, Y_seq = batch
+            else:
+                X_seq, Y_seq = batch
             if not isinstance(Y_seq, dict):
                 continue
             X_seq = X_seq.to(device)
@@ -1845,7 +1869,7 @@ def evaluate_sequence(
     mass_total = head_total = sym_total = pump_total = 0.0
     mass_imb_total = head_viol_total = press_mae_total = 0.0
     edge_index = edge_index.to(device)
-    edge_attr = edge_attr.to(device)
+    edge_attr = edge_attr.to(device) if edge_attr is not None else None
     edge_attr_phys = edge_attr_phys.to(device)
     if node_type is not None:
         node_type = node_type.to(device)
@@ -1859,14 +1883,20 @@ def evaluate_sequence(
     with torch.no_grad():
         while True:
             try:
-                X_seq, Y_seq = next(data_iter)
+                batch = next(data_iter)
             except StopIteration:
                 break
             except RuntimeError as e:
                 if interrupted and "DataLoader worker" in str(e):
                     break
                 raise
+            if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                X_seq, edge_attr_batch, Y_seq = batch
+            else:
+                X_seq, Y_seq = batch
+                edge_attr_batch = None
             X_seq = X_seq.to(device)
+            attr = edge_attr_batch.to(device) if isinstance(edge_attr_batch, torch.Tensor) else edge_attr
             nt = node_type
             et = edge_type
             if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
@@ -1877,7 +1907,7 @@ def evaluate_sequence(
                 return model(
                     X_seq,
                     edge_index,
-                    edge_attr,
+                    attr,
                     nt,
                     et,
                 )
@@ -2156,6 +2186,11 @@ def main(args: argparse.Namespace):
     wn = wntr.network.WaterNetworkModel(args.inp_path)
     # Always compute the physical edge attributes from the network
     edge_attr_phys_np = build_edge_attr(wn, edge_index_np)
+    if edge_attr_phys_np.shape[1] == 4:
+        edge_attr_phys_np = np.concatenate(
+            [edge_attr_phys_np, np.zeros((edge_attr_phys_np.shape[0], 1), dtype=edge_attr_phys_np.dtype)],
+            axis=1,
+        )
     edge_attr_phys = torch.tensor(edge_attr_phys_np.copy(), dtype=torch.float32)
     if os.path.exists(args.pump_coeffs_path):
         pump_coeffs_np = np.load(args.pump_coeffs_path)
@@ -2169,6 +2204,10 @@ def main(args: argparse.Namespace):
         edge_attr = edge_attr_phys_np.copy()
         # log-transform roughness like in data generation
         edge_attr[:, 2] = np.log1p(edge_attr[:, 2])
+    if edge_attr.shape[1] == 4:
+        edge_attr = np.concatenate(
+            [edge_attr, np.zeros((edge_attr.shape[0], 1), dtype=edge_attr.dtype)], axis=1
+        )
     edge_types = build_edge_type(wn, edge_index_np)
     edge_pairs = build_edge_pairs(edge_index_np, edge_types)
     node_types = build_node_type(wn)
@@ -2178,10 +2217,36 @@ def main(args: argparse.Namespace):
     # from the network to ensure ``HydroConv`` learns a dedicated transform.
     num_node_types = max(int(np.max(node_types)) + 1, 2)
     num_edge_types = int(np.max(edge_types)) + 1
-    edge_mean, edge_std = compute_edge_attr_stats(edge_attr)
+    edge_mean = edge_std = None
     X_raw = np.load(args.x_path, allow_pickle=True)
     Y_raw = np.load(args.y_path, allow_pickle=True)
     seq_mode = X_raw.ndim == 4
+    edge_attr_train_seq = edge_attr_val_seq = edge_attr_test_seq = None
+    if seq_mode:
+        if os.path.exists(args.edge_attr_train_seq_path):
+            edge_attr_train_seq = np.load(args.edge_attr_train_seq_path, allow_pickle=True)
+        elif isinstance(Y_raw[0], dict) and "edge_attr_seq" in Y_raw[0]:
+            edge_attr_train_seq = np.stack([y["edge_attr_seq"] for y in Y_raw]).astype(np.float32)
+        if args.x_val_path and os.path.exists(args.edge_attr_val_seq_path):
+            edge_attr_val_seq = np.load(args.edge_attr_val_seq_path, allow_pickle=True)
+        elif args.x_val_path and os.path.exists(args.x_val_path):
+            Y_val_tmp = np.load(args.y_val_path, allow_pickle=True)
+            if isinstance(Y_val_tmp[0], dict) and "edge_attr_seq" in Y_val_tmp[0]:
+                edge_attr_val_seq = np.stack([y["edge_attr_seq"] for y in Y_val_tmp]).astype(np.float32)
+        if args.x_test_path and os.path.exists(args.edge_attr_test_seq_path):
+            edge_attr_test_seq = np.load(args.edge_attr_test_seq_path, allow_pickle=True)
+        if edge_attr_train_seq is not None:
+            edge_attr_train_seq = np.asarray(edge_attr_train_seq, dtype=np.float32)
+        if edge_attr_val_seq is not None:
+            edge_attr_val_seq = np.asarray(edge_attr_val_seq, dtype=np.float32)
+        if edge_attr_test_seq is not None:
+            edge_attr_test_seq = np.asarray(edge_attr_test_seq, dtype=np.float32)
+        if edge_attr_train_seq is not None:
+            flat = edge_attr_train_seq.reshape(-1, edge_attr_train_seq.shape[-1])
+            edge_mean = torch.tensor(flat.mean(axis=0), dtype=torch.float32)
+            edge_std = torch.tensor(flat.std(axis=0) + 1e-8, dtype=torch.float32)
+    if edge_mean is None or edge_std is None:
+        edge_mean, edge_std = compute_edge_attr_stats(edge_attr)
 
     if seq_mode:
         data_ds = SequenceDataset(
@@ -2191,6 +2256,7 @@ def main(args: argparse.Namespace):
             edge_attr,
             node_type=node_types,
             edge_type=edge_types,
+            edge_attr_seq=edge_attr_train_seq,
         )
         loader = TorchLoader(
             data_ds,
@@ -2235,6 +2301,7 @@ def main(args: argparse.Namespace):
                 edge_attr,
                 node_type=node_types,
                 edge_type=edge_types,
+                edge_attr_seq=edge_attr_val_seq,
             )
             val_loader = TorchLoader(
                 val_ds,
@@ -3111,6 +3178,7 @@ def main(args: argparse.Namespace):
                 edge_attr,
                 node_type=node_types,
                 edge_type=edge_types,
+                edge_attr_seq=edge_attr_test_seq,
             )
             if args.normalize:
                 apply_sequence_normalization(
@@ -3188,10 +3256,17 @@ def main(args: argparse.Namespace):
                 ea = test_ds.edge_attr.to(device) if test_ds.edge_attr is not None else None
                 nt = test_ds.node_type.to(device) if test_ds.node_type is not None else None
                 et = test_ds.edge_type.to(device) if test_ds.edge_type is not None else None
-                for X_seq, Y_seq in test_loader:
+                for batch in test_loader:
+                    if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                        X_seq, edge_attr_batch, Y_seq = batch
+                    else:
+                        X_seq, Y_seq = batch
+                        edge_attr_batch = None
                     X_seq = X_seq.to(device)
+                    attr = edge_attr_batch.to(device) if isinstance(edge_attr_batch, torch.Tensor) else ea
+
                     def _model_forward():
-                        return model(X_seq, ei, ea, nt, et)
+                        return model(X_seq, ei, attr, nt, et)
                     with autocast(device_type=device.type, enabled=args.amp):
                         out = _forward_with_auto_checkpoint(model, _model_forward)
                     if isinstance(out, dict):
@@ -3456,6 +3531,21 @@ if __name__ == "__main__":
         "--edge-attr-path",
         default=os.path.join(DATA_DIR, "edge_attr.npy"),
         help="File with edge attributes from data_generation.py",
+    )
+    parser.add_argument(
+        "--edge-attr-train-seq-path",
+        default=os.path.join(DATA_DIR, "edge_attr_train_seq.npy"),
+        help="File with time-varying training edge attributes",
+    )
+    parser.add_argument(
+        "--edge-attr-val-seq-path",
+        default=os.path.join(DATA_DIR, "edge_attr_val_seq.npy"),
+        help="File with time-varying validation edge attributes",
+    )
+    parser.add_argument(
+        "--edge-attr-test-seq-path",
+        default=os.path.join(DATA_DIR, "edge_attr_test_seq.npy"),
+        help="File with time-varying test edge attributes",
     )
     parser.add_argument(
         "--pump-coeffs-path",
