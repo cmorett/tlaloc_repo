@@ -12,7 +12,7 @@ from scripts.train_gnn import (
 )
 
 
-def test_train_sequence_with_physics_losses():
+def _build_sequence_training_components():
     edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
     edge_attr = torch.tensor(
         [[1.0, 0.5, 100.0, 1.0, 0.0], [1.0, 0.5, 100.0, 1.0, 0.0]], dtype=torch.float32
@@ -46,8 +46,13 @@ def test_train_sequence_with_physics_losses():
         residual=False,
         rnn_hidden_dim=4,
     )
-    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     pairs = [(0, 1)]
+    return loader, ds, model, optimizer, pairs, edge_attr
+
+
+def test_train_sequence_with_physics_losses():
+    loader, ds, model, opt, pairs, edge_attr = _build_sequence_training_components()
     loss_tuple = train_sequence(
         model,
         loader,
@@ -66,3 +71,26 @@ def test_train_sequence_with_physics_losses():
     # mass and head losses should be finite numbers
     assert torch.isfinite(torch.tensor(loss_tuple[3]))
     assert torch.isfinite(torch.tensor(loss_tuple[4]))
+
+
+def test_train_sequence_small_mass_scale_gradient_finite():
+    loader, ds, model, opt, pairs, edge_attr = _build_sequence_training_components()
+    loss_tuple = train_sequence(
+        model,
+        loader,
+        ds.edge_index,
+        ds.edge_attr,
+        edge_attr,
+        None,
+        None,
+        pairs,
+        opt,
+        torch.device("cpu"),
+        physics_loss=True,
+        pressure_loss=True,
+        node_mask=None,
+        mass_scale=1e-12,
+    )
+    grad_norm = loss_tuple[-1]
+    assert grad_norm is not None
+    assert np.isfinite(grad_norm)
