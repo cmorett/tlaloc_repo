@@ -509,6 +509,66 @@ class MultiTaskGNNSurrogate(nn.Module):
             if not hasattr(self, "tank_levels") or self.tank_levels.size(0) != batch_size:
                 self.tank_levels = torch.zeros(batch_size, len(self.tank_indices), device=device)
             flows = edge_pred[..., 0]
+            edge_mean = edge_std = None
+            if getattr(self, "y_mean", None) is not None and getattr(self, "y_std", None) is not None:
+                if isinstance(self.y_mean, dict):
+                    edge_mean = self.y_mean.get("edge_outputs")
+                    edge_std = (
+                        self.y_std.get("edge_outputs")
+                        if isinstance(self.y_std, dict)
+                        else None
+                    )
+                else:
+                    edge_mean = self.y_mean
+                    edge_std = self.y_std
+            if edge_mean is not None and edge_std is not None:
+                if not isinstance(edge_mean, torch.Tensor):
+                    edge_mean_t = torch.as_tensor(edge_mean, device=device, dtype=flows.dtype)
+                else:
+                    edge_mean_t = edge_mean.to(device=device, dtype=flows.dtype)
+                if not isinstance(edge_std, torch.Tensor):
+                    edge_std_t = torch.as_tensor(edge_std, device=device, dtype=flows.dtype)
+                else:
+                    edge_std_t = edge_std.to(device=device, dtype=flows.dtype)
+                if edge_mean_t.ndim > 1 and edge_mean_t.shape[-1] != flows.shape[-1]:
+                    edge_mean_t = edge_mean_t.select(-1, 0)
+                    edge_std_t = edge_std_t.select(-1, 0)
+                mean_flat = edge_mean_t.reshape(-1)
+                std_flat = edge_std_t.reshape(-1)
+                if mean_flat.numel() == flows.shape[-1]:
+                    view_shape = [1] * (flows.dim() - 1) + [flows.shape[-1]]
+                    flows = flows * std_flat.view(*view_shape) + mean_flat.view(*view_shape)
+                else:
+                    flows = flows * std_flat.reshape(-1)[0] + mean_flat.reshape(-1)[0]
+
+            tank_std = None
+            if getattr(self, "y_std", None) is not None:
+                if isinstance(self.y_std, dict):
+                    node_std = self.y_std.get("node_outputs")
+                else:
+                    node_std = self.y_std
+                if node_std is not None:
+                    if not isinstance(node_std, torch.Tensor):
+                        node_std_t = torch.as_tensor(node_std, device=device, dtype=node_pred.dtype)
+                    else:
+                        node_std_t = node_std.to(device=device, dtype=node_pred.dtype)
+                    if node_std_t.ndim == 0 or node_std_t.numel() == 1:
+                        tank_std = node_std_t.reshape(())
+                    elif node_std_t.ndim == 1:
+                        if node_std_t.shape[0] == 1:
+                            tank_std = node_std_t.reshape(())
+                        else:
+                            tank_std = node_std_t[0]
+                    else:
+                        press_std = node_std_t.select(-1, 0)
+                        if press_std.ndim == 0 or press_std.numel() == 1:
+                            tank_std = press_std.reshape(())
+                        else:
+                            idx = self.tank_indices.to(device=device, dtype=torch.long)
+                            if press_std.size(0) >= idx.numel():
+                                tank_std = press_std.index_select(0, idx)
+                            else:
+                                tank_std = press_std.reshape(-1)[0]
             updates = torch.zeros(batch_size, T, num_nodes, device=device)
             for t in range(T):
                 net = []
@@ -522,8 +582,26 @@ class MultiTaskGNNSurrogate(nn.Module):
                 self.tank_levels += delta_vol
                 self.tank_levels = self.tank_levels.clamp(min=0.0)
                 delta_h = delta_vol / self.tank_areas
+                delta_update = delta_h
+                if tank_std is not None:
+                    if not isinstance(tank_std, torch.Tensor):
+                        std_local = torch.as_tensor(
+                            tank_std, device=device, dtype=delta_h.dtype
+                        )
+                    else:
+                        std_local = tank_std.to(device=device, dtype=delta_h.dtype)
+                    if std_local.ndim == 0:
+                        std_local = std_local.clamp_min(1e-6)
+                        delta_update = delta_h / std_local
+                    else:
+                        while std_local.dim() < delta_h.dim():
+                            std_local = std_local.unsqueeze(0)
+                        std_local = std_local.clamp_min(1e-6)
+                        delta_update = delta_h / std_local
+                else:
+                    delta_update = delta_h
                 for i, tank_idx in enumerate(self.tank_indices):
-                    updates[:, t, tank_idx] = delta_h[:, i]
+                    updates[:, t, tank_idx] = delta_update[:, i]
             update_tensor = torch.zeros_like(node_pred)
             update_tensor[..., 0] = updates
             node_pred = node_pred + update_tensor

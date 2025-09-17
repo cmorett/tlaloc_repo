@@ -208,6 +208,56 @@ def _denormalize_pressures(
     return values * std.view(*view_shape) + mean.view(*view_shape)
 
 
+def _denormalize_feature(
+    values: torch.Tensor,
+    mean: Optional[torch.Tensor],
+    std: Optional[torch.Tensor],
+    feature_idx: int,
+    *,
+    node_indices: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Undo normalisation for ``feature_idx`` on ``values`` if stats exist."""
+
+    if mean is None or std is None:
+        return values
+
+    if not isinstance(mean, torch.Tensor):
+        mean_t = torch.as_tensor(mean, device=values.device, dtype=values.dtype)
+    else:
+        mean_t = mean.to(device=values.device, dtype=values.dtype)
+
+    if not isinstance(std, torch.Tensor):
+        std_t = torch.as_tensor(std, device=values.device, dtype=values.dtype)
+    else:
+        std_t = std.to(device=values.device, dtype=values.dtype)
+
+    if mean_t.ndim == 0 or mean_t.numel() == 1:
+        mean_sel = mean_t.reshape(())
+        std_sel = std_t.reshape(())
+    elif mean_t.ndim == 1:
+        if feature_idx >= mean_t.shape[0]:
+            raise IndexError(f"feature_idx {feature_idx} out of bounds for mean of shape {mean_t.shape}")
+        mean_sel = mean_t[feature_idx]
+        std_sel = std_t[feature_idx]
+    else:
+        mean_sel = mean_t.select(-1, feature_idx)
+        std_sel = std_t.select(-1, feature_idx)
+        if node_indices is not None and mean_sel.dim() >= 1:
+            idx = node_indices.to(device=values.device, dtype=torch.long)
+            if mean_sel.size(0) < idx.numel():
+                raise IndexError(
+                    "Normalization statistics do not cover all requested node indices"
+                )
+            mean_sel = mean_sel.index_select(0, idx)
+            std_sel = std_sel.index_select(0, idx)
+
+    while mean_sel.dim() < values.dim():
+        mean_sel = mean_sel.unsqueeze(0)
+        std_sel = std_sel.unsqueeze(0)
+
+    return values * std_sel + mean_sel
+
+
 def ramp_weight(target: float, epoch: int, anneal_epochs: int) -> float:
     """Linearly ramp a weight from zero to ``target``.
 
@@ -1525,6 +1575,16 @@ def train_sequence(
         et = edge_type
         if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
             init_press = X_seq[:, 0, model.tank_indices, 1]
+            x_mean = getattr(model, "x_mean", None)
+            x_std = getattr(model, "x_std", None)
+            if x_mean is not None and x_std is not None:
+                init_press = _denormalize_feature(
+                    init_press,
+                    x_mean,
+                    x_std,
+                    1,
+                    node_indices=model.tank_indices,
+                )
             init_levels = init_press * model.tank_areas
             model.reset_tank_levels(init_levels)
         optimizer.zero_grad()
@@ -1985,6 +2045,16 @@ def evaluate_sequence(
             et = edge_type
             if hasattr(model, "reset_tank_levels") and hasattr(model, "tank_indices"):
                 init_press = X_seq[:, 0, model.tank_indices, 1]
+                x_mean = getattr(model, "x_mean", None)
+                x_std = getattr(model, "x_std", None)
+                if x_mean is not None and x_std is not None:
+                    init_press = _denormalize_feature(
+                        init_press,
+                        x_mean,
+                        x_std,
+                        1,
+                        node_indices=model.tank_indices,
+                    )
                 init_levels = init_press * model.tank_areas
                 model.reset_tank_levels(init_levels)
             def _model_forward():
