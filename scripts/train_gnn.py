@@ -1759,16 +1759,24 @@ def train_sequence(
                     head_loss.detach().item(),
                     pump_loss_val.detach().item(),
                 )
-                mass_loss, head_loss, pump_loss_val = scale_physics_losses(
+                (
+                    mass_loss,
+                    head_loss,
+                    pump_loss_val,
+                    mass_denom,
+                    _,
+                    _,
+                ) = scale_physics_losses(
                     mass_loss,
                     head_loss,
                     pump_loss_val,
                     mass_scale=mass_scale,
                     head_scale=head_scale,
                     pump_scale=pump_scale,
+                    return_denominators=True,
                 )
                 if mass_scale > 0:
-                    sym_loss = sym_loss / mass_scale
+                    sym_loss = sym_loss / mass_denom
                 if physics_loss:
                     loss = loss + w_mass * (mass_loss + sym_loss)
                 if pressure_loss:
@@ -2251,16 +2259,24 @@ def evaluate_sequence(
                         head_loss.detach().item(),
                         pump_loss_val.detach().item(),
                     )
-                    mass_loss, head_loss, pump_loss_val = scale_physics_losses(
+                    (
+                        mass_loss,
+                        head_loss,
+                        pump_loss_val,
+                        mass_denom,
+                        _,
+                        _,
+                    ) = scale_physics_losses(
                         mass_loss,
                         head_loss,
                         pump_loss_val,
                         mass_scale=mass_scale,
                         head_scale=head_scale,
                         pump_scale=pump_scale,
+                        return_denominators=True,
                     )
                     if mass_scale > 0:
-                        sym_loss = sym_loss / mass_scale
+                        sym_loss = sym_loss / mass_denom
                     if physics_loss:
                         loss = loss + w_mass * (mass_loss + sym_loss)
                     if pressure_loss:

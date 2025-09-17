@@ -219,7 +219,11 @@ def scale_physics_losses(
     mass_scale: float = 1.0,
     head_scale: float = 1.0,
     pump_scale: float = 1.0,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_denominators: bool = False,
+) -> Union[
+    Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    Tuple[torch.Tensor, torch.Tensor, torch.Tensor, float, float, float],
+]:
     """Normalise physics-based losses by baseline magnitudes.
 
     Parameters
@@ -227,19 +231,41 @@ def scale_physics_losses(
     mass_loss, head_loss, pump_loss: torch.Tensor
         Raw physics loss values.
     mass_scale, head_scale, pump_scale: float, optional
-        Baseline magnitudes for each loss. Values ``\le 0`` disable scaling.
+        Baseline magnitudes for each loss. Values ``<= 0`` disable scaling.
+    return_denominators: bool, optional
+        When ``True`` the denominators applied to each loss are also
+        returned so callers can reuse the safeguarded scaling factors.
 
     Returns
     -------
     Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        Scaled ``mass_loss``, ``head_loss`` and ``pump_loss``.
+        Scaled ``mass_loss``, ``head_loss`` and ``pump_loss`` when
+        ``return_denominators`` is ``False``.
+    Tuple[torch.Tensor, torch.Tensor, torch.Tensor, float, float, float]
+        Scaled losses followed by the denominators ``(mass, head, pump)``
+        when ``return_denominators`` is ``True``.
     """
     scale_floor = 1e-3
-    if mass_scale > 0:
-        mass_loss = mass_loss / max(mass_scale, scale_floor)
-    if head_scale > 0:
-        head_loss = head_loss / max(head_scale, scale_floor)
-    if pump_scale > 0:
-        pump_loss = pump_loss / max(pump_scale, scale_floor)
+
+    def _scale(loss: torch.Tensor, scale: float) -> Tuple[torch.Tensor, float]:
+        if scale > 0:
+            denom = max(scale, scale_floor)
+            return loss / denom, denom
+        return loss, 1.0
+
+    mass_loss, mass_denom = _scale(mass_loss, mass_scale)
+    head_loss, head_denom = _scale(head_loss, head_scale)
+    pump_loss, pump_denom = _scale(pump_loss, pump_scale)
+
+    if return_denominators:
+        return (
+            mass_loss,
+            head_loss,
+            pump_loss,
+            mass_denom,
+            head_denom,
+            pump_denom,
+        )
+
     return mass_loss, head_loss, pump_loss
 
