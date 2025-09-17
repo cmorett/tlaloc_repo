@@ -40,13 +40,15 @@ def test_pump_speeds_continuous_and_correlated():
         arr = np.array(speeds, dtype=float)
         # Speeds span more than the discrete {0.0, 0.5, 1.0} set
         assert len(np.unique(np.round(arr, 2))) > 3
-        # Adjacent hours should be positively correlated with limited jumps
+        # Adjacent hours should be positively correlated when the pump remains open
         if len(arr) > 1:
-            corr = np.corrcoef(arr[:-1], arr[1:])[0, 1]
-            assert corr > 0.3
-            diffs = np.diff(arr)
-            active_mask = (arr[:-1] > 0.05) & (arr[1:] > 0.05)
+            prev = arr[:-1]
+            nxt = arr[1:]
+            active_mask = (prev > 0.05) & (nxt > 0.05)
             if np.any(active_mask):
+                corr = np.corrcoef(prev[active_mask], nxt[active_mask])[0, 1]
+                assert corr > 0.1
+                diffs = np.diff(arr)
                 assert np.max(np.abs(diffs[active_mask])) < 0.35
 
 

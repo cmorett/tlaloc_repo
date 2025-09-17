@@ -254,32 +254,51 @@ def _apply_simulated_pump_speeds(
 
     for pump_name, commands in pump_controls.items():
         sampled = np.asarray(commands, dtype=np.float64)
-        actual: Optional[np.ndarray] = None
-
         setting_values = _extract_series_array(setting_df, pump_name)
+        status_values = _extract_series_array(status_df, pump_name)
+
+        base: np.ndarray
         if setting_values is not None:
-            actual = _to_numeric_array(setting_values)
+            base = _to_numeric_array(setting_values)
         else:
-            status_values = _extract_series_array(status_df, pump_name)
-            if status_values is not None:
-                status_numeric = _to_numeric_array(status_values)
-                actual = sampled * status_numeric
+            base = sampled.copy()
 
-        if actual is None:
-            actual = sampled.copy()
+        base = np.asarray(base, dtype=np.float64)
+        base = np.nan_to_num(base, nan=0.0)
+        base[~np.isfinite(base)] = 0.0
+        if base.size == 0:
+            base = sampled.copy()
+        elif base.shape[0] > sampled.shape[0]:
+            base = base[: sampled.shape[0]]
+        elif base.shape[0] < sampled.shape[0]:
+            pad = sampled[base.shape[0] :]
+            if pad.size:
+                base = np.concatenate([base, pad])
+
+        actual: np.ndarray
+        if status_values is not None:
+            status_numeric = _to_numeric_array(status_values)
+            status_numeric = np.asarray(status_numeric, dtype=np.float64)
+            status_numeric = np.nan_to_num(status_numeric, nan=0.0)
+            status_numeric[~np.isfinite(status_numeric)] = 0.0
+            if status_numeric.size == 0:
+                status_numeric = np.ones_like(sampled)
+            elif status_numeric.shape[0] > sampled.shape[0]:
+                status_numeric = status_numeric[: sampled.shape[0]]
+            elif status_numeric.shape[0] < sampled.shape[0]:
+                pad_len = sampled.shape[0] - status_numeric.shape[0]
+                if pad_len:
+                    pad = np.ones(pad_len, dtype=np.float64)
+                    status_numeric = np.concatenate([status_numeric, pad])
+            actual = base * status_numeric
         else:
-            actual = np.nan_to_num(actual, nan=0.0)
-            actual[~np.isfinite(actual)] = 0.0
-            if actual.size == 0:
-                actual = sampled.copy()
-            elif actual.shape[0] > sampled.shape[0]:
-                actual = actual[: sampled.shape[0]]
-            elif actual.shape[0] < sampled.shape[0]:
-                pad = sampled[actual.shape[0] :]
-                if pad.size:
-                    actual = np.concatenate([actual, pad])
+            actual = base
 
-        pump_controls[pump_name] = actual.astype(np.float64).tolist()
+        actual = np.asarray(actual, dtype=np.float64)
+        actual = np.nan_to_num(actual, nan=0.0)
+        actual[~np.isfinite(actual)] = 0.0
+
+        pump_controls[pump_name] = actual.tolist()
 
 
 def simulate_extreme_event(
