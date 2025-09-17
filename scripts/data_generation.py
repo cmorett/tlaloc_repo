@@ -7,11 +7,12 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple, Optional, Union
+from typing import Dict, Iterable, List, Tuple, Optional, Union, Any
 from functools import partial
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
 from contextlib import contextmanager
+import math
 try:  # Optional progress bar
     from tqdm import tqdm
 except Exception:  # pragma: no cover - handled gracefully if unavailable
@@ -145,6 +146,140 @@ def log_array_stats(name: str, arr: np.ndarray) -> None:
             inf_count,
         )
         raise ValueError(f"{name} contains invalid values")
+
+
+def _get_link_output(container: Optional[Any], key: str) -> Optional[Any]:
+    """Safely retrieve a link-level output from the simulation results."""
+
+    if container is None:
+        return None
+    getter = getattr(container, "get", None)
+    if callable(getter):
+        try:
+            value = getter(key)
+        except Exception:
+            value = None
+        else:
+            if value is not None:
+                return value
+    try:
+        return container[key]
+    except Exception:
+        return None
+
+
+def _extract_series_array(frame: Optional[Any], column: str) -> Optional[np.ndarray]:
+    """Return a NumPy array for ``column`` from a pandas-like frame."""
+
+    if frame is None:
+        return None
+    series = None
+    try:
+        series = frame[column]
+    except Exception:
+        getter = getattr(frame, "get", None)
+        if callable(getter):
+            try:
+                series = getter(column)
+            except Exception:
+                series = None
+    if series is None:
+        return None
+    if hasattr(series, "to_numpy"):
+        values = series.to_numpy()
+    else:
+        values = np.asarray(series)
+    return np.asarray(values, dtype=object)
+
+
+def _coerce_value(value: object) -> float:
+    """Convert EPANET status/setting values to floats while handling enums."""
+
+    if value is None:
+        return 0.0
+    if isinstance(value, (np.floating, float)):
+        if np.isnan(value):
+            return 0.0
+        return float(value)
+    if isinstance(value, (np.integer, int)):
+        return float(value)
+    if isinstance(value, (bool, np.bool_)):
+        return float(value)
+    if isinstance(value, LinkStatus):
+        return 1.0 if value == LinkStatus.Open else 0.0
+    maybe_value = getattr(value, "value", None)
+    if isinstance(maybe_value, (np.floating, float)):
+        if np.isnan(maybe_value):
+            return 0.0
+        return float(maybe_value)
+    if isinstance(maybe_value, (np.integer, int)):
+        return float(maybe_value)
+    if isinstance(value, str):
+        text = value.strip().upper()
+        if text in {"OPEN", "OPENED", "ON"}:
+            return 1.0
+        if text in {"CLOSED", "CLOSE", "OFF"}:
+            return 0.0
+        try:
+            numeric = float(value)
+        except ValueError:
+            return 0.0
+        return 0.0 if math.isnan(numeric) else numeric
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if math.isnan(numeric) else numeric
+
+
+def _to_numeric_array(values: np.ndarray) -> np.ndarray:
+    """Vectorised conversion of status/setting arrays to float."""
+
+    arr = np.asarray(values, dtype=object)
+    out = np.empty(arr.shape, dtype=np.float64)
+    for idx, val in np.ndenumerate(arr):
+        out[idx] = _coerce_value(val)
+    return out
+
+
+def _apply_simulated_pump_speeds(
+    pump_controls: Dict[str, List[float]],
+    status_df: Optional[Any],
+    setting_df: Optional[Any],
+) -> None:
+    """Overwrite sampled pump commands with the speeds enforced by EPANET."""
+
+    if not pump_controls:
+        return
+
+    for pump_name, commands in pump_controls.items():
+        sampled = np.asarray(commands, dtype=np.float64)
+        actual: Optional[np.ndarray] = None
+
+        setting_values = _extract_series_array(setting_df, pump_name)
+        if setting_values is not None:
+            actual = _to_numeric_array(setting_values)
+        else:
+            status_values = _extract_series_array(status_df, pump_name)
+            if status_values is not None:
+                status_numeric = _to_numeric_array(status_values)
+                actual = sampled * status_numeric
+
+        if actual is None:
+            actual = sampled.copy()
+        else:
+            actual = np.nan_to_num(actual, nan=0.0)
+            actual[~np.isfinite(actual)] = 0.0
+            if actual.size == 0:
+                actual = sampled.copy()
+            elif actual.shape[0] > sampled.shape[0]:
+                actual = actual[: sampled.shape[0]]
+            elif actual.shape[0] < sampled.shape[0]:
+                pad = sampled[actual.shape[0] :]
+                if pad.size:
+                    actual = np.concatenate([actual, pad])
+
+        pump_controls[pump_name] = actual.astype(np.float64).tolist()
 
 
 def simulate_extreme_event(
@@ -382,6 +517,9 @@ def _run_single_scenario(
 
     idx, inp_file, seed = args
 
+    status_df = None
+    setting_df = None
+
     for attempt in range(3):
         if seed is not None:
             random.seed(seed + idx + attempt)
@@ -423,6 +561,9 @@ def _run_single_scenario(
                 sim = wntr.sim.EpanetSimulator(wn)
                 sim_results = sim.run_sim(file_prefix=str(pf))
                 sim_results.scenario_type = scenario_label
+                link_outputs = getattr(sim_results, "link", None)
+                status_df = _get_link_output(link_outputs, "status")
+                setting_df = _get_link_output(link_outputs, "setting")
             break
         except wntr.epanet.exceptions.EpanetException:
             if attempt == 2:
@@ -439,6 +580,8 @@ def _run_single_scenario(
     for df in [flows, heads, sim_results.node["pressure"], sim_results.node["quality"]]:
         if df.isna().any().any() or np.isinf(df.values).any():
             raise ValueError("invalid values detected in simulation results")
+
+    _apply_simulated_pump_speeds(pump_controls, status_df, setting_df)
 
     return sim_results, scale_dict, pump_controls
 
