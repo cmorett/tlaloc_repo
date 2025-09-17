@@ -144,6 +144,70 @@ def summarize_target_norm_stats(y_mean, y_std, has_chlorine: bool):
     return pressure, chlorine
 
 
+def _as_tensor(value, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Ensure ``value`` is a tensor on ``device`` with ``dtype``."""
+
+    if isinstance(value, torch.Tensor):
+        return value.to(device=device, dtype=dtype)
+    return torch.as_tensor(value, device=device, dtype=dtype)
+
+
+def _pressure_norm_stats(
+    model: nn.Module,
+    device: torch.device,
+    dtype: torch.dtype,
+    node_mask: Optional[torch.Tensor] = None,
+) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+    """Return pressure normalisation statistics broadcastable to predictions."""
+
+    if not hasattr(model, "y_mean") or model.y_mean is None:
+        return None, None
+    if isinstance(model.y_mean, dict):
+        mean_val = model.y_mean.get("node_outputs")
+        std_val = model.y_std.get("node_outputs")
+    else:
+        mean_val = model.y_mean
+        std_val = model.y_std
+    if mean_val is None or std_val is None:
+        return None, None
+
+    mean = _as_tensor(mean_val, device, dtype)
+    std = _as_tensor(std_val, device, dtype)
+
+    if mean.ndim == 1:
+        return mean[0], std[0]
+    if mean.ndim == 2:
+        press_mean = mean[..., 0]
+        press_std = std[..., 0]
+        if node_mask is not None:
+            if not isinstance(node_mask, torch.Tensor):
+                mask = torch.as_tensor(node_mask, dtype=torch.bool, device=device)
+            else:
+                mask = node_mask.to(device=device, dtype=torch.bool)
+            press_mean = press_mean[mask]
+            press_std = press_std[mask]
+        return press_mean, press_std
+
+    scalar_mean = mean.reshape(-1)[0]
+    scalar_std = std.reshape(-1)[0]
+    return scalar_mean, scalar_std
+
+
+def _denormalize_pressures(
+    values: torch.Tensor,
+    mean: Optional[torch.Tensor],
+    std: Optional[torch.Tensor],
+) -> torch.Tensor:
+    """Apply ``mean`` and ``std`` statistics to ``values`` if available."""
+
+    if mean is None or std is None:
+        return values
+    if mean.dim() == 0:
+        return values * std + mean
+    view_shape = [1] * (values.dim() - 1) + [-1]
+    return values * std.view(*view_shape) + mean.view(*view_shape)
+
+
 def ramp_weight(target: float, epoch: int, anneal_epochs: int) -> float:
     """Linearly ramp a weight from zero to ``target``.
 
@@ -1237,8 +1301,13 @@ def evaluate(
                         press_pred = press_pred * p_std.view(1, -1) + p_mean.view(1, -1)
                         press_true = press_true * p_std.view(1, -1) + p_mean.view(1, -1)
                     elif not isinstance(model.y_mean, dict):
-                        press_pred = press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                        press_true = press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                        mean, std = _pressure_norm_stats(
+                            model,
+                            device,
+                            press_pred.dtype,
+                        )
+                        press_pred = _denormalize_pressures(press_pred, mean, std)
+                        press_true = _denormalize_pressures(press_true, mean, std)
                 if abs_err_total is None:
                     total_nodes = node_mask.numel() if node_mask is not None else node_count
                     abs_err_total = torch.zeros(total_nodes, device=device)
@@ -1283,8 +1352,13 @@ def evaluate(
                         press_pred = press_pred * p_std.view(1, -1) + p_mean.view(1, -1)
                         press_true = press_true * p_std.view(1, -1) + p_mean.view(1, -1)
                     elif not isinstance(model.y_mean, dict):
-                        press_pred = press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                        press_true = press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                        mean, std = _pressure_norm_stats(
+                            model,
+                            device,
+                            press_pred.dtype,
+                        )
+                        press_pred = _denormalize_pressures(press_pred, mean, std)
+                        press_true = _denormalize_pressures(press_true, mean, std)
                 if abs_err_total is None:
                     total_nodes = node_mask.numel() if node_mask is not None else node_count
                     abs_err_total = torch.zeros(total_nodes, device=device)
@@ -1501,12 +1575,14 @@ def train_sequence(
                         press_pred = press_pred * p_std.view(-1)[0] + p_mean.view(-1)[0]
                         press_true = press_true * p_std.view(-1)[0] + p_mean.view(-1)[0]
                 elif not isinstance(model.y_mean, dict):
-                    press_pred = (
-                        press_pred * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                    mean, std = _pressure_norm_stats(
+                        model,
+                        device,
+                        press_pred.dtype,
+                        node_mask=node_mask,
                     )
-                    press_true = (
-                        press_true * model.y_std[0].to(device) + model.y_mean[0].to(device)
-                    )
+                    press_pred = _denormalize_pressures(press_pred, mean, std)
+                    press_true = _denormalize_pressures(press_true, mean, std)
             press_mae = torch.mean(torch.abs(press_pred - press_true))
             for name, val in [
                 ("pressure", loss_press),
@@ -1570,7 +1646,12 @@ def train_sequence(
                         q_std = model.y_std['edge_outputs'].to(device)
                         flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                     else:
-                        press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                        mean, std = _pressure_norm_stats(
+                            model,
+                            device,
+                            press.dtype,
+                        )
+                        press = _denormalize_pressures(press, mean, std)
                     elevation = None
                     use_head_local = use_head
                     elev_idx = 3 if has_chlorine else 2
@@ -1746,9 +1827,12 @@ def estimate_physics_scales_from_data(
                     q_std = model.y_std["edge_outputs"].to(device)
                     flows = flows * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                 else:
-                    press = (
-                        press * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                    mean, std = _pressure_norm_stats(
+                        model,
+                        device,
+                        press.dtype,
                     )
+                    press = _denormalize_pressures(press, mean, std)
 
             flows_mb = flows.permute(2, 0, 1).reshape(edge_index.size(1), -1)
             demand_mb = _extract_next_demand(
@@ -1934,13 +2018,20 @@ def evaluate_sequence(
                             + p_mean_full.view(1, 1, -1)
                         )
                     elif not isinstance(model.y_mean, dict):
-                        press_pred_full = (
-                            press_pred_full * model.y_std[0].to(device)
-                            + model.y_mean[0].to(device)
+                        mean, std = _pressure_norm_stats(
+                            model,
+                            device,
+                            press_pred_full.dtype,
                         )
-                        press_true_full = (
-                            press_true_full * model.y_std[0].to(device)
-                            + model.y_mean[0].to(device)
+                        press_pred_full = _denormalize_pressures(
+                            press_pred_full,
+                            mean,
+                            std,
+                        )
+                        press_true_full = _denormalize_pressures(
+                            press_true_full,
+                            mean,
+                            std,
                         )
                     if node_mask is not None:
                         pred_nodes = pred_nodes_full[:, :, node_mask, :]
@@ -2032,7 +2123,12 @@ def evaluate_sequence(
                                 q_std = model.y_std['edge_outputs'].to(device)
                                 flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
                             else:
-                                press = press * model.y_std[0].to(device) + model.y_mean[0].to(device)
+                                mean, std = _pressure_norm_stats(
+                                    model,
+                                    device,
+                                    press.dtype,
+                                )
+                                press = _denormalize_pressures(press, mean, std)
                         elevation = None
                         use_head_local = use_head
                         elev_idx = 3 if has_chlorine else 2
