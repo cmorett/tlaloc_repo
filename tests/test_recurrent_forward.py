@@ -4,13 +4,17 @@ from scripts.train_gnn import RecurrentGNNSurrogate, MultiTaskGNNSurrogate
 def test_recurrent_gnn_forward_shape_with_pump_edges():
     edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
     edge_attr = torch.tensor(
-        [[1.0, 1.0, 1.0, 1.0, 0.0], [1.0, 1.0, 1.0, 0.0, 0.0]], dtype=torch.float32
+        [
+            [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
     )
     edge_type = torch.tensor([1, 1], dtype=torch.long)  # pump edges
     model = RecurrentGNNSurrogate(
         in_channels=2,
         hidden_channels=4,
-        edge_dim=5,
+        edge_dim=10,
         output_dim=1,
         num_layers=2,
         use_attention=False,
@@ -28,13 +32,17 @@ def test_recurrent_gnn_forward_shape_with_pump_edges():
 def test_multitask_gnn_forward_shapes_with_pump_edges():
     edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
     edge_attr = torch.tensor(
-        [[1.0, 1.0, 1.0, 1.0, 0.0], [1.0, 1.0, 1.0, 0.0, 0.0]], dtype=torch.float32
+        [
+            [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
     )
     edge_type = torch.tensor([1, 1], dtype=torch.long)
     model = MultiTaskGNNSurrogate(
         in_channels=2,
         hidden_channels=4,
-        edge_dim=5,
+        edge_dim=10,
         node_output_dim=2,
         edge_output_dim=1,
         num_layers=2,

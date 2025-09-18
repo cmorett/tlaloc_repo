@@ -15,7 +15,11 @@ from scripts.train_gnn import (
 def _build_sequence_training_components():
     edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
     edge_attr = torch.tensor(
-        [[1.0, 0.5, 100.0, 1.0, 0.0], [1.0, 0.5, 100.0, 1.0, 0.0]], dtype=torch.float32
+        [
+            [1.0, 0.5, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [1.0, 0.5, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        ],
+        dtype=torch.float32,
     )
     T = 2
     N = 2
@@ -36,7 +40,7 @@ def _build_sequence_training_components():
     model = MultiTaskGNNSurrogate(
         in_channels=4,
         hidden_channels=8,
-        edge_dim=5,
+        edge_dim=10,
         node_output_dim=2,
         edge_output_dim=1,
         num_layers=2,

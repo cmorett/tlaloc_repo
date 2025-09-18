@@ -36,7 +36,7 @@ def test_evaluate_sequence_per_node_pressure_denorm():
         }
     ], dtype=object)
     edge_index = np.array([[0, 1], [1, 0]])
-    edge_attr = np.zeros((2, 5), dtype=np.float32)
+    edge_attr = np.zeros((2, 10), dtype=np.float32)
     dataset = SequenceDataset(X, Y, edge_index=edge_index, edge_attr=edge_attr)
     loader = DataLoader(dataset, batch_size=1)
 

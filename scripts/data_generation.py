@@ -23,6 +23,11 @@ try:
 except ImportError:  # pragma: no cover
     from reproducibility import configure_seeds, save_config
 
+try:
+    from .feature_utils import build_edge_attr
+except ImportError:  # pragma: no cover
+    from feature_utils import build_edge_attr
+
 logger = logging.getLogger(__name__)
 
 # Minimum allowed pressure [m].  Values below this threshold are clipped
@@ -791,21 +796,23 @@ def build_sequence_dataset(
     pump_index_map = {name: idx for idx, name in enumerate(pumps)}
     node_names = wn_template.node_name_list
 
-    base_edge_attr: List[List[float]] = []
+    node_index_map = {name: idx for idx, name in enumerate(node_names)}
     pump_edge_indices: Dict[str, Tuple[int, int]] = {}
+    directed_edges: List[Tuple[int, int]] = []
     for link_name in wn_template.link_name_list:
         link = wn_template.get_link(link_name)
-        length = float(getattr(link, "length", 0.0) or 0.0)
-        diam = float(getattr(link, "diameter", 0.0) or 0.0)
-        rough = float(getattr(link, "roughness", 0.0) or 0.0)
-        is_pump = link_name in wn_template.pump_name_list
-        base_edge_attr.append([length, diam, rough, 1.0, 0.0])
-        rev_dir = 0.0 if is_pump else 1.0
-        base_edge_attr.append([length, diam, rough, rev_dir, 0.0])
-        if is_pump:
-            pump_edge_indices[link_name] = (len(base_edge_attr) - 2, len(base_edge_attr) - 1)
-    base_edge_attr_arr = np.array(base_edge_attr, dtype=np.float64)
+        i = node_index_map[link.start_node.name]
+        j = node_index_map[link.end_node.name]
+        directed_edges.append((i, j))
+        directed_edges.append((j, i))
+        if link_name in wn_template.pump_name_list:
+            pump_edge_indices[link_name] = (len(directed_edges) - 2, len(directed_edges) - 1)
+    edge_index_template = np.array(directed_edges, dtype=np.int64).T
+    base_edge_attr_arr = build_edge_attr(wn_template, edge_index_template).astype(np.float64)
     base_edge_attr_arr[:, 2] = np.log1p(base_edge_attr_arr[:, 2])
+    for idx_fwd, idx_rev in pump_edge_indices.values():
+        base_edge_attr_arr[idx_fwd, -1] = 0.0
+        base_edge_attr_arr[idx_rev, -1] = 0.0
 
     for sim_results, _scale_dict, pump_ctrl in results:
         scenario_types.append(getattr(sim_results, "scenario_type", "normal"))
@@ -1087,7 +1094,6 @@ def build_edge_index(
 
     node_index_map = {name: idx for idx, name in enumerate(wn.node_name_list)}
     edges: List[List[int]] = []
-    attrs: List[List[float]] = []
     coeffs: List[List[float]] = []
     types: List[int] = []
     for link_name in wn.link_name_list:
@@ -1096,17 +1102,7 @@ def build_edge_index(
         i2 = node_index_map[link.end_node.name]
         edges.append([i1, i2])
         edges.append([i2, i1])
-        length = float(getattr(link, "length", 0.0) or 0.0)
-        diam = float(getattr(link, "diameter", 0.0) or 0.0)
-        rough = float(getattr(link, "roughness", 0.0) or 0.0)
         is_pump = link_name in wn.pump_name_list
-        speed = 1.0
-        if is_pump and pump_speeds is not None:
-            speed = float(pump_speeds.get(link_name, 1.0))
-        pump_col = speed if is_pump else 0.0
-        attrs.append([length, diam, rough, 1.0, pump_col])
-        rev_dir = 0.0 if is_pump else 1.0
-        attrs.append([length, diam, rough, rev_dir, pump_col])
         if link_name in wn.pipe_name_list:
             t = 0
             a = b = c = 0.0
@@ -1123,7 +1119,7 @@ def build_edge_index(
         types.extend([t, t])
 
     edge_index = np.array(edges, dtype=np.int64).T
-    edge_attr = np.array(attrs, dtype=np.float32)
+    edge_attr = build_edge_attr(wn, edge_index, pump_speeds).astype(np.float32)
     # log-normalise roughness to keep the scale consistent with previous
     # datasets.  Downstream normalisation handles the remaining features.
     edge_attr[:, 2] = np.log1p(edge_attr[:, 2])

@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from typing import Dict, List, Tuple, Optional, Sequence
 import wntr
+from wntr.network.base import LinkStatus
 
 EPS = 1e-8
 
@@ -295,7 +296,45 @@ def build_edge_attr(
     edge_index: np.ndarray,
     pump_speeds: Optional[Dict[str, float]] = None,
 ) -> np.ndarray:
-    """Return edge attribute matrix ``[E,5]`` for given edge index."""
+    """Return edge attribute matrix ``[E,10]`` for given edge index."""
+
+    def _safe_float(value: Optional[float]) -> float:
+        if value is None:
+            return 0.0
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if np.isnan(value_f) or np.isinf(value_f):
+            return 0.0
+        return value_f
+
+    def _status_flags(status: object) -> Tuple[float, float, float]:
+        if status is None:
+            return 0.0, 0.0, 0.0
+        if isinstance(status, LinkStatus):
+            status_enum = status
+        elif isinstance(status, str):
+            status_upper = status.strip().upper()
+            if status_upper == "OPEN":
+                status_enum = LinkStatus.Open
+            elif status_upper == "CLOSED":
+                status_enum = LinkStatus.Closed
+            elif status_upper == "ACTIVE":
+                status_enum = LinkStatus.Active
+            else:
+                return 0.0, 0.0, 0.0
+        else:
+            try:
+                status_enum = LinkStatus(status)
+            except Exception:
+                return 0.0, 0.0, 0.0
+        return (
+            1.0 if status_enum == LinkStatus.Open else 0.0,
+            1.0 if status_enum == LinkStatus.Closed else 0.0,
+            1.0 if status_enum == LinkStatus.Active else 0.0,
+        )
+
     node_map = {n: i for i, n in enumerate(wn.node_name_list)}
     attr_dict: Dict[Tuple[int, int], List[float]] = {}
     for link_name in wn.link_name_list:
@@ -306,15 +345,37 @@ def build_edge_attr(
         diam = getattr(link, "diameter", 0.0) or 0.0
         rough = getattr(link, "roughness", 0.0) or 0.0
         is_pump = link_name in wn.pump_name_list
+        is_valve = link_name in wn.valve_name_list
         speed = 1.0
         if is_pump and pump_speeds is not None:
             speed = float(pump_speeds.get(link_name, 1.0))
         pump_col = float(speed if is_pump else 0.0)
-        attr_fwd = [float(length), float(diam), float(rough), 1.0, pump_col]
-        if link_name in wn.pump_name_list:
-            attr_rev = [float(length), float(diam), float(rough), 0.0, pump_col]
-        else:
-            attr_rev = attr_fwd
+        valve_setting = 0.0
+        valve_open = 0.0
+        valve_closed = 0.0
+        valve_active = 0.0
+        valve_minor_loss = 0.0
+        if is_valve:
+            valve_setting = _safe_float(getattr(link, "initial_setting", 0.0))
+            valve_open, valve_closed, valve_active = _status_flags(
+                getattr(link, "status", None)
+            )
+            valve_minor_loss = _safe_float(getattr(link, "minor_loss", 0.0))
+        attr_fwd = [
+            float(length),
+            float(diam),
+            float(rough),
+            valve_setting,
+            valve_open,
+            valve_closed,
+            valve_active,
+            valve_minor_loss,
+            1.0,
+            pump_col,
+        ]
+        attr_rev = attr_fwd.copy()
+        if is_pump:
+            attr_rev[-2] = 0.0
         attr_dict[(i, j)] = attr_fwd
         attr_dict[(j, i)] = attr_rev
     return np.array([
