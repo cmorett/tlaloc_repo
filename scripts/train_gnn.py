@@ -1061,7 +1061,7 @@ def build_loss_mask(wn: wntr.network.WaterNetworkModel) -> torch.Tensor:
 
     mask = torch.ones(len(wn.node_name_list), dtype=torch.bool)
     for i, name in enumerate(wn.node_name_list):
-        if name in wn.reservoir_name_list or name in wn.tank_name_list:
+        if name in wn.reservoir_name_list:
             mask[i] = False
     return mask
 
@@ -3441,7 +3441,7 @@ def main(args: argparse.Namespace):
         sample_preds_c: List[float] = []
         sample_true_c: List[float] = []
 
-        exclude = set(wn.reservoir_name_list) | set(wn.tank_name_list)
+        exclude = set(wn.reservoir_name_list)
         node_mask_np = np.array([n not in exclude for n in wn.node_name_list])
         node_mask = torch.tensor(node_mask_np, dtype=torch.bool, device=device)
 
