@@ -1265,16 +1265,21 @@ def train(
             loss.backward()
         # Clip gradients to mitigate exploding gradients that could otherwise
         # result in ``NaN`` loss values when the optimizer updates the weights.
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        grad_norm = float(grad_norm)
+        grad_norm_t = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = float(grad_norm_t)
         if not math.isfinite(grad_norm):
-            logger.warning("Non‑finite grad norm detected; skipping value")
+            logger.warning(
+                "Non‑finite grad norm detected; skipping optimizer step"
+            )
             grad_norm = None
+            optimizer.zero_grad()
         if amp:
-            scaler.step(optimizer)
+            if grad_norm is not None:
+                scaler.step(optimizer)
             scaler.update()
         else:
-            optimizer.step()
+            if grad_norm is not None:
+                optimizer.step()
         if grad_norm is not None:
             grad_total += grad_norm
             grad_count += 1
@@ -1797,21 +1802,23 @@ def train_sequence(
         if amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            grad_norm = float(grad_norm)
-            if not math.isfinite(grad_norm):
-                logger.warning("Non‑finite grad norm detected; skipping value")
-                grad_norm = None
-            scaler.step(optimizer)
-            scaler.update()
         else:
             loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            grad_norm = float(grad_norm)
-            if not math.isfinite(grad_norm):
-                logger.warning("Non‑finite grad norm detected; skipping value")
-                grad_norm = None
-            optimizer.step()
+        grad_norm_t = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = float(grad_norm_t)
+        if not math.isfinite(grad_norm):
+            logger.warning(
+                "Non‑finite grad norm detected; skipping optimizer step"
+            )
+            grad_norm = None
+            optimizer.zero_grad()
+        if amp:
+            if grad_norm is not None:
+                scaler.step(optimizer)
+            scaler.update()
+        else:
+            if grad_norm is not None:
+                optimizer.step()
         if grad_norm is not None:
             grad_total += grad_norm
             grad_count += 1
