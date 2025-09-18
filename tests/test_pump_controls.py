@@ -60,9 +60,13 @@ def test_closed_pumps_reflected_in_features(monkeypatch):
             self.base_head = base_head
 
     class DummyLink:
-        length = 100.0
-        diameter = 0.5
-        roughness = 100.0
+        def __init__(self):
+            self.length = 100.0
+            self.diameter = 0.5
+            self.roughness = 100.0
+            node_ref = SimpleNamespace(name="J1")
+            self.start_node = node_ref
+            self.end_node = node_ref
 
         def get_head_curve_coefficients(self):
             return (0.0, 0.0, 0.0)

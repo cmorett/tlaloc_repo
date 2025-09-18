@@ -13,7 +13,11 @@ from scripts.train_gnn import SequenceDataset, MultiTaskGNNSurrogate, train_sequ
 def test_train_sequence_dataloader_interrupt():
     edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
     edge_attr = torch.tensor(
-        [[1.0, 0.5, 100.0, 1.0, 0.0], [1.0, 0.5, 100.0, 1.0, 0.0]], dtype=torch.float32
+        [
+            [1.0, 0.5, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [1.0, 0.5, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        ],
+        dtype=torch.float32,
     )
     T, N, E = 1, 2, 2
     X = np.ones((1, T, N, 4), dtype=np.float32)
@@ -39,7 +43,7 @@ def test_train_sequence_dataloader_interrupt():
     model = MultiTaskGNNSurrogate(
         in_channels=4,
         hidden_channels=4,
-        edge_dim=5,
+        edge_dim=10,
         node_output_dim=2,
         edge_output_dim=1,
         num_layers=1,

@@ -96,7 +96,7 @@ def test_plot_error_histograms(tmp_path: Path):
 
 def test_plot_sequence_prediction(tmp_path: Path):
     edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
-    edge_attr = torch.zeros((2, 5), dtype=torch.float32)
+    edge_attr = torch.zeros((2, 10), dtype=torch.float32)
     X = np.zeros((1, 2, 2, 4), dtype=np.float32)
     Y = np.array(
         [
@@ -128,7 +128,7 @@ def test_plot_sequence_prediction(tmp_path: Path):
 
 def test_plot_sequence_prediction_single_step(tmp_path: Path):
     edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
-    edge_attr = torch.zeros((2, 5), dtype=torch.float32)
+    edge_attr = torch.zeros((2, 10), dtype=torch.float32)
     X = np.zeros((1, 1, 2, 4), dtype=np.float32)
     Y = np.array(
         [

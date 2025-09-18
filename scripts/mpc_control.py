@@ -252,7 +252,6 @@ def load_network(
 
     node_to_index = {n: i for i, n in enumerate(wn.node_name_list)}
     edges = []
-    attrs = []
     etypes = []
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
@@ -260,16 +259,9 @@ def load_network(
         j = node_to_index[link.end_node.name]
         edges.append([i, j])
         edges.append([j, i])
-        length = getattr(link, "length", 0.0) or 0.0
-        diam = getattr(link, "diameter", 0.0) or 0.0
-        rough = getattr(link, "roughness", 0.0) or 0.0
         if link_name in wn.pump_name_list:
-            attrs.append([length, diam, rough, 1.0])
-            attrs.append([length, diam, rough, 0.0])
             t = 1
         else:
-            attrs.append([length, diam, rough, 1.0])
-            attrs.append([length, diam, rough, 1.0])
             if link_name in wn.pipe_name_list:
                 t = 0
             elif link_name in wn.valve_name_list:
