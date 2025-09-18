@@ -1753,12 +1753,15 @@ def train_sequence(
                     edge_index,
                     et,
                 )
+            if physics_loss or pressure_loss or pump_loss:
                 logger.debug(
                     'Raw physics losses - mass: %.6e, head: %.6e, pump: %.6e',
                     mass_loss.detach().item(),
                     head_loss.detach().item(),
                     pump_loss_val.detach().item(),
                 )
+            mass_denom = 1.0
+            if physics_loss or pressure_loss or pump_loss:
                 (
                     mass_loss,
                     head_loss,
@@ -1777,12 +1780,12 @@ def train_sequence(
                 )
                 if mass_scale > 0:
                     sym_loss = sym_loss / mass_denom
-                if physics_loss:
-                    loss = loss + w_mass * (mass_loss + sym_loss)
-                if pressure_loss:
-                    loss = loss + w_head * head_loss
-                if pump_loss:
-                    loss = loss + w_pump * pump_loss_val
+            if physics_loss:
+                loss = loss + w_mass * (mass_loss + sym_loss)
+            if pressure_loss:
+                loss = loss + w_head * head_loss
+            if pump_loss:
+                loss = loss + w_pump * pump_loss_val
         else:
             Y_seq = Y_seq.to(device)
             loss_press = loss_cl = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
@@ -2253,30 +2256,33 @@ def evaluate_sequence(
                         )
                     else:
                         pump_loss_val = torch.tensor(0.0, device=device)
-                    logger.debug(
-                        "Raw physics losses - mass: %.6e, head: %.6e, pump: %.6e",
-                        mass_loss.detach().item(),
-                        head_loss.detach().item(),
-                        pump_loss_val.detach().item(),
-                    )
-                    (
-                        mass_loss,
-                        head_loss,
-                        pump_loss_val,
-                        mass_denom,
-                        _,
-                        _,
-                    ) = scale_physics_losses(
-                        mass_loss,
-                        head_loss,
-                        pump_loss_val,
-                        mass_scale=mass_scale,
-                        head_scale=head_scale,
-                        pump_scale=pump_scale,
-                        return_denominators=True,
-                    )
-                    if mass_scale > 0:
-                        sym_loss = sym_loss / mass_denom
+                    if physics_loss or pressure_loss or pump_loss:
+                        logger.debug(
+                            "Raw physics losses - mass: %.6e, head: %.6e, pump: %.6e",
+                            mass_loss.detach().item(),
+                            head_loss.detach().item(),
+                            pump_loss_val.detach().item(),
+                        )
+                    mass_denom = 1.0
+                    if physics_loss or pressure_loss or pump_loss:
+                        (
+                            mass_loss,
+                            head_loss,
+                            pump_loss_val,
+                            mass_denom,
+                            _,
+                            _,
+                        ) = scale_physics_losses(
+                            mass_loss,
+                            head_loss,
+                            pump_loss_val,
+                            mass_scale=mass_scale,
+                            head_scale=head_scale,
+                            pump_scale=pump_scale,
+                            return_denominators=True,
+                        )
+                        if mass_scale > 0:
+                            sym_loss = sym_loss / mass_denom
                     if physics_loss:
                         loss = loss + w_mass * (mass_loss + sym_loss)
                     if pressure_loss:
