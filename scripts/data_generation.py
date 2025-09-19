@@ -28,11 +28,6 @@ try:
 except ImportError:  # pragma: no cover
     from feature_utils import build_edge_attr
 
-try:
-    from .wntr_compat import make_simulator
-except ImportError:  # pragma: no cover
-    from wntr_compat import make_simulator
-
 logger = logging.getLogger(__name__)
 
 # Minimum allowed pressure [m].  Values below this threshold are clipped
@@ -84,10 +79,19 @@ def temp_simulation_files(prefix: Union[Path, str]):
 
 import numpy as np
 import wntr
+import wntr.sim
 from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
 import networkx as nx
 import json
+
+
+def _create_epanet_simulator(
+    wn: wntr.network.WaterNetworkModel,
+) -> wntr.sim.EpanetSimulator:
+    """Create the platform-appropriate EPANET simulator instance."""
+
+    return wntr.sim.EpanetSimulator(wn)
 
 
 def log_array_stats(name: str, arr: np.ndarray) -> None:
@@ -573,7 +577,7 @@ def _run_single_scenario(
         prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}_{attempt}"
         try:
             with temp_simulation_files(prefix) as pf:
-                sim = make_simulator(wn)
+                sim = _create_epanet_simulator(wn)
                 sim_results = sim.run_sim(file_prefix=str(pf))
                 sim_results.scenario_type = scenario_label
                 link_outputs = getattr(sim_results, "link", None)

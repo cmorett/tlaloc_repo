@@ -17,10 +17,10 @@ def test_temp_files_cleanup_on_failure(tmp_path, monkeypatch):
             Path(f"{file_prefix}.rpt").touch()
             raise dg.wntr.epanet.exceptions.EpanetException("fail")
 
-    def fake_make_simulator(wn, **_):
+    def fake_create_simulator(wn, **_):
         return FailingSim(wn)
 
-    monkeypatch.setattr(dg, "make_simulator", fake_make_simulator)
+    monkeypatch.setattr(dg, "_create_epanet_simulator", fake_create_simulator)
 
     res = dg._run_single_scenario((0, str(dg.REPO_ROOT / "CTown.inp"), 42))
     assert res is None
