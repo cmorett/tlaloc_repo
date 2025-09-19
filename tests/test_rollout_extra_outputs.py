@@ -10,6 +10,7 @@ sys.path.append(str(REPO_ROOT))
 sys.path.append(str(REPO_ROOT / "scripts"))
 TEMP_DIR = REPO_ROOT / "data" / "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
+from scripts.wntr_compat import make_simulator
 from scripts.mpc_control import load_network
 from scripts.experiments_validation import rollout_surrogate
 
@@ -37,7 +38,7 @@ def test_rollout_surrogate_ignores_excess_outputs():
     wn.options.time.duration = 3 * 3600
     wn.options.time.hydraulic_timestep = wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "extra_outputs"))
 
     p_df = res.node["pressure"].clip(lower=5.0)

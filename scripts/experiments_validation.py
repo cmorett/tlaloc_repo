@@ -45,6 +45,11 @@ try:
 except ImportError:  # pragma: no cover
     from feature_utils import build_static_node_features, prepare_node_features
 
+try:
+    from .wntr_compat import make_simulator
+except ImportError:  # pragma: no cover
+    from wntr_compat import make_simulator
+
 # Compute absolute path to the repository's data directory so that results are
 # always written inside the project regardless of the current working
 # directory.
@@ -739,7 +744,7 @@ def run_all_pumps_on(
         wn.options.time.start_clocktime = hour * 3600
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
-        sim = wntr.sim.EpanetSimulator(wn)
+        sim = make_simulator(wn)
         results = sim.run_sim(str(TEMP_DIR / "temp"))
         pressures = results.node["pressure"].iloc[-1].to_dict()
         chlorine = results.node["quality"].iloc[-1].to_dict()
@@ -780,7 +785,7 @@ def run_heuristic_baseline(
     wn.options.time.start_clocktime = 0
     wn.options.time.duration = 3600
     wn.options.time.report_timestep = 3600
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     results = sim.run_sim(str(TEMP_DIR / "temp"))
     pressures = results.node["pressure"].iloc[-1].to_dict()
     chlorine = results.node["quality"].iloc[-1].to_dict()
@@ -803,7 +808,7 @@ def run_heuristic_baseline(
         wn.options.time.start_clocktime = (hour + 1) * 3600
         wn.options.time.duration = 3600
         wn.options.time.report_timestep = 3600
-        sim = wntr.sim.EpanetSimulator(wn)
+        sim = make_simulator(wn)
         results = sim.run_sim(str(TEMP_DIR / "temp"))
         pressures = results.node["pressure"].iloc[-1].to_dict()
         chlorine = results.node["quality"].iloc[-1].to_dict()
