@@ -534,6 +534,8 @@ def _run_single_scenario(
     setting_df = None
 
     for attempt in range(3):
+        status_df = None
+        setting_df = None
         if seed is not None:
             random.seed(seed + idx + attempt)
             np.random.seed(seed + idx + attempt)
@@ -577,12 +579,28 @@ def _run_single_scenario(
                 link_outputs = getattr(sim_results, "link", None)
                 status_df = _get_link_output(link_outputs, "status")
                 setting_df = _get_link_output(link_outputs, "setting")
+            pressure_df = None
+            node_outputs = getattr(sim_results, "node", None)
+            if node_outputs is not None:
+                pressure_df = _get_link_output(node_outputs, "pressure")
+            num_rows = 0 if pressure_df is None else getattr(pressure_df, "shape", (0,))[0]
+            if num_rows == 0:
+                logger.warning(
+                    "Scenario %d attempt %d produced no hydraulic timesteps; retrying",
+                    idx,
+                    attempt + 1,
+                )
+                if attempt == 2:
+                    return None
+                continue
             break
         except wntr.epanet.exceptions.EpanetException:
             if attempt == 2:
                 return None
             else:
                 continue
+    else:  # pragma: no cover - defensive safeguard
+        return None
 
     flows = sim_results.link["flowrate"]
     heads = sim_results.node["head"]
