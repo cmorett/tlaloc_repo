@@ -349,6 +349,9 @@ def _build_randomized_network(
     """
 
     wn = wntr.network.WaterNetworkModel(inp_file)
+    # Remove existing EPANET controls so random walk speeds are not overridden
+    for control_name in list(wn.control_name_list):
+        wn.remove_control(control_name)
     wn.options.time.duration = 24 * 3600
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.quality_timestep = 3600
