@@ -54,6 +54,11 @@ except ImportError:  # pragma: no cover - executed when run as a script
         build_static_node_features,
         prepare_node_features,
     )
+
+try:
+    from .wntr_compat import make_simulator
+except ImportError:  # pragma: no cover
+    from wntr_compat import make_simulator
 import wntr
 from wntr.metrics.economic import pump_energy
 
@@ -1589,7 +1594,7 @@ def simulate_closed_loop(
     # obtain hydraulic state at time zero
     wn.options.time.duration = 0
     wn.options.time.report_timestep = 0
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     results = sim.run_sim(str(TEMP_DIR / "temp"))
     p_arr = results.node["pressure"].iloc[0].to_numpy(dtype=np.float32)
     c_arr = results.node["quality"].iloc[0].to_numpy(dtype=np.float32)
@@ -1705,7 +1710,7 @@ def simulate_closed_loop(
             wn.options.time.start_clocktime = t
             wn.options.time.duration = 3600
             wn.options.time.report_timestep = 3600
-            sim = wntr.sim.EpanetSimulator(wn)
+            sim = make_simulator(wn)
             results = sim.run_sim(str(TEMP_DIR / "temp"))
             p_arr = results.node["pressure"].iloc[-1].to_numpy(dtype=np.float32)
             c_arr = results.node["quality"].iloc[-1].to_numpy(dtype=np.float32)

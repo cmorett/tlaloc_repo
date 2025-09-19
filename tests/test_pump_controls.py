@@ -17,6 +17,7 @@ from scripts.data_generation import (
     build_sequence_dataset,
     build_edge_index,
 )
+from scripts.wntr_compat import make_simulator
 from scripts.feature_utils import (
     SequenceDataset,
     compute_sequence_norm_stats,
@@ -138,7 +139,11 @@ def test_closed_pumps_reflected_in_features(monkeypatch):
 
     monkeypatch.setattr(data_generation, "_build_randomized_network", fake_build)
     monkeypatch.setattr(data_generation, "pump_energy", fake_pump_energy)
-    monkeypatch.setattr(data_generation.wntr.sim, "EpanetSimulator", DummySim)
+
+    def fake_make_simulator(wn, **_):
+        return DummySim(wn)
+
+    monkeypatch.setattr(data_generation, "make_simulator", fake_make_simulator)
 
     result = data_generation._run_single_scenario((0, "fake.inp", None))
     assert result is not None
@@ -175,7 +180,7 @@ def test_tank_rollout_matches_epanet_when_pump_toggles(tmp_path):
     wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
 
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     results = sim.run_sim(str(tmp_path / "toggle"))
 
     pump_name = "PU7"

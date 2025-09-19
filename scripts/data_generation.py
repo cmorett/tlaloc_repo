@@ -28,6 +28,11 @@ try:
 except ImportError:  # pragma: no cover
     from feature_utils import build_edge_attr
 
+try:
+    from .wntr_compat import make_simulator
+except ImportError:  # pragma: no cover
+    from wntr_compat import make_simulator
+
 logger = logging.getLogger(__name__)
 
 # Minimum allowed pressure [m].  Values below this threshold are clipped
@@ -566,7 +571,7 @@ def _run_single_scenario(
         prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}_{attempt}"
         try:
             with temp_simulation_files(prefix) as pf:
-                sim = wntr.sim.EpanetSimulator(wn)
+                sim = make_simulator(wn)
                 sim_results = sim.run_sim(file_prefix=str(pf))
                 sim_results.scenario_type = scenario_label
                 link_outputs = getattr(sim_results, "link", None)

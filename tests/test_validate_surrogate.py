@@ -11,6 +11,7 @@ sys.path.append(str(REPO_ROOT))
 sys.path.append(str(REPO_ROOT / "scripts"))
 TEMP_DIR = REPO_ROOT / "data" / "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
+from scripts.wntr_compat import make_simulator
 from scripts.mpc_control import load_network
 from scripts.experiments_validation import validate_surrogate
 
@@ -34,7 +35,7 @@ def test_validate_surrogate_accepts_tuple():
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp"))
     model = DummyModel().to(device)
     metrics, arr, times = validate_surrogate(
@@ -59,7 +60,7 @@ def test_validate_surrogate_clips_low_pressure():
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp_clip"))
     # create an unrealistic negative pressure for the next timestep
     res.node["pressure"].iloc[1] = -1.0
@@ -88,7 +89,7 @@ def test_validate_surrogate_respects_node_mask():
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp_mask"))
     model = DummyModel().to(device)
     custom_types = [0] + [1] * (len(node_types) - 1)
@@ -136,7 +137,7 @@ def test_validate_surrogate_pressure_only():
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp_pressure_only"))
     model = DummyModel(out_dim=1).to(device)
     metrics, arr, times = validate_surrogate(
@@ -161,7 +162,7 @@ def test_validate_surrogate_dict_stats():
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp_dict"))
     model = DummyModel().to(device)
     model.y_mean = {"node_outputs": torch.tensor([1.0, 0.1])}
@@ -200,7 +201,7 @@ def test_validate_surrogate_handles_extra_output_dim():
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     res = sim.run_sim(str(TEMP_DIR / "temp_extra"))
     model = DummyModel(out_dim=4).to(device)
     model.y_mean = torch.zeros(2)
@@ -235,7 +236,7 @@ def test_validate_surrogate_edge_dim_check():
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     res = sim.run_sim(str(TEMP_DIR / 'temp_edge'))
 
     class EdgeModel(DummyModel):
@@ -273,7 +274,7 @@ def test_validate_surrogate_normalizes_edge_attr():
     wn.options.time.hydraulic_timestep = 3600
     wn.options.time.quality_timestep = 3600
     wn.options.time.report_timestep = 3600
-    sim = wntr.sim.EpanetSimulator(wn)
+    sim = make_simulator(wn)
     res = sim.run_sim(str(TEMP_DIR / 'temp_edge_norm'))
 
     class EdgeNormModel(DummyModel):
