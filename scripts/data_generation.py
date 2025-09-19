@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # Minimum allowed pressure [m].  Values below this threshold are clipped
 # in both data generation and validation to keep preprocessing consistent.
-MIN_PRESSURE = 0.0
+MIN_PRESSURE = 5.0
 
 # Default pump speed bounds and step size for the random walk process.
 # These values can be overridden via CLI arguments.
