@@ -788,11 +788,37 @@ def build_sequence_dataset(
     seq_len: int,
     *,
     include_chlorine: bool = True,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Construct a dataset of sequences from simulation results.
 
-    When ``include_chlorine`` is ``False`` the node feature vectors exclude
-    chlorine concentrations and the targets only contain next-step pressure.
+    Parameters
+    ----------
+    results
+        Iterable of EPANET simulation outputs paired with scaling metadata
+        and pump controls for each scenario.
+    wn_template
+        Water network template that defines node ordering and static
+        attributes.
+    seq_len
+        Number of timesteps per sequence. Each scenario must contain at least
+        ``seq_len + 1`` hydraulic timesteps to provide next-step targets.
+    include_chlorine
+        When ``False`` the node feature vectors exclude chlorine
+        concentrations and the targets only contain next-step pressure.
+
+    Returns
+    -------
+    X
+        Array of shape ``(num_scenarios, seq_len, num_nodes, num_features)``
+        containing sequential node features and pump controls.
+    Y
+        Object array where each element stores node and edge targets, pump
+        energy and next-step demand for a scenario.
+    scenario_types
+        Array of scenario labels identifying normal versus extreme conditions.
+    edge_attr_seq
+        Array of per-timestep edge attributes with pump speeds embedded for
+        each scenario.
     """
 
     X_list: List[np.ndarray] = []
