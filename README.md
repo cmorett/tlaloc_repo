@@ -48,7 +48,12 @@ Each node feature vector has the layout
 on/off flag. Reservoir nodes use their constant hydraulic head in the
 ``pressure`` slot so the model is given the correct supply level. The helper
 script `scripts/data_generation.py`
-generates these arrays as well as the graph ``edge_index``.  Two dataset formats
+generates these arrays as well as the graph ``edge_index``. Beginning with this
+update the generator strips all legacy controls embedded in the INP file before
+assigning random-walk pump speeds so CTown's level rules no longer override the
+sampled commands. Because the resulting pump schedules differ from previously
+generated datasets, regenerate any training data created with older versions of
+the repository to take advantage of the expanded speed range. Two dataset formats
 are
 supported:
 
