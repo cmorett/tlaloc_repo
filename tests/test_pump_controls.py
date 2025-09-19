@@ -140,10 +140,12 @@ def test_closed_pumps_reflected_in_features(monkeypatch):
     monkeypatch.setattr(data_generation, "_build_randomized_network", fake_build)
     monkeypatch.setattr(data_generation, "pump_energy", fake_pump_energy)
 
-    def fake_make_simulator(wn, **_):
+    def fake_create_simulator(wn, **_):
         return DummySim(wn)
 
-    monkeypatch.setattr(data_generation, "make_simulator", fake_make_simulator)
+    monkeypatch.setattr(
+        data_generation, "_create_epanet_simulator", fake_create_simulator
+    )
 
     result = data_generation._run_single_scenario((0, "fake.inp", None))
     assert result is not None
