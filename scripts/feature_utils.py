@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from typing import Dict, List, Tuple, Optional, Sequence
+from typing import Dict, List, Tuple, Optional, Sequence, Union
 import wntr
 from wntr.network.base import LinkStatus
 
@@ -488,7 +488,7 @@ def build_node_type(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
 
 def build_pump_node_matrix(
     wn: wntr.network.WaterNetworkModel,
-    dtype: np.dtype | type = np.float32,
+    dtype: Union[np.dtype, type] = np.float32,
 ) -> np.ndarray:
     """Return a ``(num_nodes, num_pumps)`` matrix encoding pump incidence."""
 
