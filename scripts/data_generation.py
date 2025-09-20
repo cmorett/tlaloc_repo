@@ -97,12 +97,19 @@ def _create_epanet_simulator(
     """Create the platform-appropriate EPANET simulator instance."""
 
     # The ``make_simulator`` helper wraps :class:`~wntr.sim.EpanetSimulator`
-    # with a double-precision hydraulics binary reader.  Windows EPANET
-    # toolkits only emit single-precision binaries which causes the double
-    # reader to fail, so bypass it on ``os.name == "nt"``.
-    if os.name == "nt":
+    # with a double-precision hydraulics binary reader and automatically
+    # falls back to the legacy float32 reader if the results look corrupt.
+    # Some Windows configurations raise while constructing the compatibility
+    # reader itself, so attempt to build it first and only fall back to the
+    # plain simulator when that setup step fails.
+    try:
+        return make_simulator(wn)
+    except Exception:  # pragma: no cover - defensive guard for Windows toolkits
+        logger.debug(
+            "Falling back to legacy EPANET simulator after compatibility reader setup failure",
+            exc_info=True,
+        )
         return wntr.sim.EpanetSimulator(wn)
-    return make_simulator(wn)
 
 
 def log_array_stats(name: str, arr: np.ndarray) -> None:
