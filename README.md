@@ -44,8 +44,9 @@ The repository provides a simple training script `scripts/train_gnn.py` which
 expects feature and label data saved in the `data/` directory as NumPy arrays.
 Each node feature vector has the layout
 ``[base_demand, pressure, chlorine, elevation, pump_1, ..., pump_N]`` where each
-``pump_i`` denotes the fractional pump speed in ``[0, 1]`` rather than a binary
-on/off flag. Reservoir nodes use their constant hydraulic head in the
+``pump_i`` stores the signed contribution of pump ``i`` for that node: discharge
+nodes receive ``+speed`` and suction nodes ``-speed`` while unrelated nodes
+store ``0``. Reservoir nodes use their constant hydraulic head in the
 ``pressure`` slot so the model is given the correct supply level. The helper
 script `scripts/data_generation.py`
 generates these arrays as well as the graph ``edge_index``.  Two dataset formats
@@ -297,7 +298,8 @@ relative speeds and the maximum hourly change (defaults 0.6, 1.2 and
 0.05).
 Use ``--no-include-chlorine`` to omit chlorine concentration from the
 generated node features and targets. The resulting node features become
-``[d_t, p_t, elev, pump_speeds...]`` and the targets only contain next-step
+``[d_t, p_t, elev, pump_contribs...]`` where the pump slots retain the signed
+contribution convention described above, and the targets only contain next-step
 pressure. The training script automatically detects this layout and adjusts
 its output dimension accordingly.
 The script logs to stdout and ``logs/data_generation.log`` by default. Use

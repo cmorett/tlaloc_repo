@@ -24,9 +24,9 @@ except ImportError:  # pragma: no cover
     from reproducibility import configure_seeds, save_config
 
 try:
-    from .feature_utils import build_edge_attr
+    from .feature_utils import build_edge_attr, build_pump_node_matrix
 except ImportError:  # pragma: no cover
-    from feature_utils import build_edge_attr
+    from feature_utils import build_edge_attr, build_pump_node_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -793,6 +793,7 @@ def build_sequence_dataset(
     edge_attr_seq_list: List[np.ndarray] = []
 
     pumps = np.array(wn_template.pump_name_list)
+    num_pumps = len(pumps)
     pump_index_map = {name: idx for idx, name in enumerate(pumps)}
     node_names = wn_template.node_name_list
 
@@ -813,6 +814,8 @@ def build_sequence_dataset(
     for idx_fwd, idx_rev in pump_edge_indices.values():
         base_edge_attr_arr[idx_fwd, -1] = 0.0
         base_edge_attr_arr[idx_rev, -1] = 0.0
+
+    pump_layout = build_pump_node_matrix(wn_template, dtype=np.float64)
 
     for sim_results, _scale_dict, pump_ctrl in results:
         scenario_types.append(getattr(sim_results, "scenario_type", "normal"))
@@ -850,7 +853,10 @@ def build_sequence_dataset(
         p_arr = pressures.to_numpy(dtype=np.float64)
         q_arr = quality.to_numpy(dtype=np.float64) if quality is not None else None
         d_arr = demands.to_numpy(dtype=np.float64)
-        pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
+        if num_pumps:
+            pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
+        else:
+            pump_ctrl_arr = np.zeros((0, len(times)), dtype=np.float64)
 
         X_seq: List[np.ndarray] = []
         node_out_seq: List[np.ndarray] = []
@@ -860,6 +866,7 @@ def build_sequence_dataset(
         edge_attr_seq: List[np.ndarray] = []
         for t in range(seq_len):
             pump_vector = pump_ctrl_arr[:, t]
+            node_pump = pump_layout * pump_vector
             edge_attr_t = base_edge_attr_arr.copy()
             if pump_edge_indices:
                 for pump_name, (idx_fwd, idx_rev) in pump_edge_indices.items():
@@ -873,6 +880,7 @@ def build_sequence_dataset(
             feat_nodes = []
             for node in node_names:
                 idx = node_idx[node]
+                layout_idx = node_index_map[node]
                 if node in wn_template.reservoir_name_list:
                     # Reservoir nodes report ~0 pressure from EPANET. Use their
                     # fixed hydraulic head instead so the surrogate is aware of
@@ -904,7 +912,8 @@ def build_sequence_dataset(
                 if include_chlorine:
                     feat.append(c_t)
                 feat.append(elev)
-                feat.extend(pump_vector.tolist())
+                if num_pumps:
+                    feat.extend(node_pump[layout_idx].tolist())
                 feat_nodes.append(feat)
             X_seq.append(np.array(feat_nodes, dtype=np.float64))
 
@@ -971,7 +980,10 @@ def build_dataset(
     Y_list: List[dict] = []
 
     pumps = np.array(wn_template.pump_name_list)
+    num_pumps = len(pumps)
     node_names = wn_template.node_name_list
+    node_index_map = {name: idx for idx, name in enumerate(node_names)}
+    pump_layout = build_pump_node_matrix(wn_template, dtype=np.float64)
 
     for sim_results, _scale_dict, pump_ctrl in results:
         # Enforce a 5 m lower bound while keeping the upper range unrestricted
@@ -1001,14 +1013,19 @@ def build_dataset(
         p_arr = pressures.to_numpy(dtype=np.float64)
         q_arr = quality.to_numpy(dtype=np.float64) if quality is not None else None
         d_arr = demands.to_numpy(dtype=np.float64)
-        pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
+        if num_pumps:
+            pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
+        else:
+            pump_ctrl_arr = np.zeros((0, len(times)), dtype=np.float64)
 
         for i in range(len(times) - 1):
             pump_vector = pump_ctrl_arr[:, i]
+            node_pump = pump_layout * pump_vector
 
             feat_nodes = []
             for node in node_names:
                 idx = node_idx[node]
+                layout_idx = node_index_map[node]
                 if node in wn_template.reservoir_name_list:
                     # Use the reservoir's constant head as the pressure input
                     p_t = float(wn_template.get_node(node).base_head)
@@ -1038,7 +1055,8 @@ def build_dataset(
                 if include_chlorine:
                     feat.append(c_t)
                 feat.append(elev)
-                feat.extend(pump_vector.tolist())
+                if num_pumps:
+                    feat.extend(node_pump[layout_idx].tolist())
                 feat_nodes.append(feat)
             X_list.append(np.array(feat_nodes, dtype=np.float64))
 

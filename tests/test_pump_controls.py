@@ -79,9 +79,8 @@ def test_closed_pumps_reflected_in_features(monkeypatch):
             self.length = 100.0
             self.diameter = 0.5
             self.roughness = 100.0
-            node_ref = SimpleNamespace(name="J1")
-            self.start_node = node_ref
-            self.end_node = node_ref
+            self.start_node = SimpleNamespace(name="J1")
+            self.end_node = SimpleNamespace(name="J2")
 
         def get_head_curve_coefficients(self):
             return (0.0, 0.0, 0.0)
@@ -92,13 +91,16 @@ def test_closed_pumps_reflected_in_features(monkeypatch):
             self.options = SimpleNamespace(quality=quality)
             self.pump_name_list = ["P1"]
             self.link_name_list = ["P1"]
-            self.junction_name_list = ["J1"]
+            self.junction_name_list = ["J1", "J2"]
             self.tank_name_list = []
             self.reservoir_name_list = []
             self.valve_name_list = []
             self.pipe_name_list = []
-            self.node_name_list = ["J1"]
-            self._nodes = {"J1": DummyNode(elevation=10.0)}
+            self.node_name_list = ["J1", "J2"]
+            self._nodes = {
+                "J1": DummyNode(elevation=10.0),
+                "J2": DummyNode(elevation=12.0),
+            }
             self._links = {"P1": DummyLink()}
 
         def get_node(self, name):
@@ -129,10 +131,18 @@ def test_closed_pumps_reflected_in_features(monkeypatch):
                 "setting": pd.DataFrame({"P1": [0.8, 0.0, 0.7]}, index=index),
             }
             node = {
-                "head": pd.DataFrame({"J1": [60.0, 60.0, 60.0]}, index=index),
-                "pressure": pd.DataFrame({"J1": [52.0, 51.0, 50.0]}, index=index),
-                "quality": pd.DataFrame({"J1": [0.2, 0.2, 0.2]}, index=index),
-                "demand": pd.DataFrame({"J1": [1.0, 1.1, 1.2]}, index=index),
+                "head": pd.DataFrame(
+                    {"J1": [60.0, 60.0, 60.0], "J2": [55.0, 55.0, 55.0]}, index=index
+                ),
+                "pressure": pd.DataFrame(
+                    {"J1": [52.0, 51.0, 50.0], "J2": [45.0, 44.0, 43.0]}, index=index
+                ),
+                "quality": pd.DataFrame(
+                    {"J1": [0.2, 0.2, 0.2], "J2": [0.1, 0.1, 0.1]}, index=index
+                ),
+                "demand": pd.DataFrame(
+                    {"J1": [1.0, 1.1, 1.2], "J2": [0.0, 0.0, 0.0]}, index=index
+                ),
             }
             return SimpleNamespace(link=link, node=node)
 
@@ -152,7 +162,8 @@ def test_closed_pumps_reflected_in_features(monkeypatch):
     )
 
     pump_feature_start = X_seq.shape[-1] - len(wn_instance.pump_name_list)
-    assert np.isclose(X_seq[0, 0, 0, pump_feature_start], 0.8)
+    assert np.isclose(X_seq[0, 0, 0, pump_feature_start], -0.8)
+    assert np.isclose(X_seq[0, 0, 1, pump_feature_start], 0.8)
     assert np.allclose(X_seq[0, 1, :, pump_feature_start:], 0.0)
     assert np.allclose(edge_attr_seq[0, 1, :, -1], 0.0)
 
@@ -162,7 +173,8 @@ def test_closed_pumps_reflected_in_features(monkeypatch):
     )
 
     pump_feature_start_single = X_single.shape[-1] - len(wn_instance.pump_name_list)
-    assert np.isclose(X_single[0, 0, pump_feature_start_single], 0.8)
+    assert np.isclose(X_single[0, 0, pump_feature_start_single], -0.8)
+    assert np.isclose(X_single[0, 1, pump_feature_start_single], 0.8)
     assert np.allclose(X_single[1, :, pump_feature_start_single:], 0.0)
 
 

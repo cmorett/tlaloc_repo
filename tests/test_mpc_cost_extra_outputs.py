@@ -40,11 +40,13 @@ def test_compute_mpc_cost_handles_extra_outputs():
     pump_speeds = torch.zeros(1, 1, dtype=torch.float32)
     edge_index = torch.zeros((2, 0), dtype=torch.long)
     edge_attr = torch.zeros((0, 0))
-    node_types = torch.zeros(1, dtype=torch.long)
+    num_nodes = 2
+    node_types = torch.zeros(num_nodes, dtype=torch.long)
     edge_types = torch.zeros(0, dtype=torch.long)
-    template = torch.zeros(1, 5)
-    pressures = torch.tensor([10.0])
-    chlorine = torch.tensor([0.0])
+    template = torch.zeros(num_nodes, 5)
+    template[:, 4] = torch.tensor([-1.0, 1.0])
+    pressures = torch.tensor([10.0, 10.0])
+    chlorine = torch.tensor([0.0, 0.0])
 
     cost, _ = compute_mpc_cost(
         pump_speeds,

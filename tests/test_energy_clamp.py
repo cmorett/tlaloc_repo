@@ -14,6 +14,7 @@ def test_negative_flow_headloss_clamped():
     edge_types = torch.zeros(1, dtype=torch.long)
     feature_template = torch.zeros((2, 5))
     feature_template[:, 3] = torch.tensor([10.0, 0.0])
+    feature_template[:, 4] = torch.tensor([-1.0, 1.0])
     pressures = torch.zeros(2)
     chlorine = torch.zeros(2)
 
