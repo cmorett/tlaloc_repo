@@ -151,22 +151,57 @@ class DoublePrecisionBinFile(wntr.epanet.io.BinFile):
                 return 0.0
             return float(np.nanmax(np.abs(values[finite])))
 
+        def _row_count(df) -> Optional[int]:
+            if df is None:
+                return None
+            shape = getattr(df, "shape", None)
+            if shape is not None and len(shape) > 0:
+                rows = shape[0]
+                try:
+                    return None if rows is None else int(rows)
+                except (TypeError, ValueError):
+                    pass
+            try:
+                return int(len(df))  # type: ignore[arg-type]
+            except Exception:
+                return None
+
         limit = 1e9
-        node_frames = [
-            self.results.node.get("pressure"),
-            self.results.node.get("head"),
+        frames = [
+            ("node.pressure", self.results.node.get("pressure")),
+            ("node.head", self.results.node.get("head")),
+            ("link.flowrate", self.results.link.get("flowrate")),
+            ("link.velocity", self.results.link.get("velocity")),
+            ("link.headloss", self.results.link.get("headloss")),
+            ("link.setting", self.results.link.get("setting")),
+            ("link.reaction_rate", self.results.link.get("reaction_rate")),
+            ("link.friction_factor", self.results.link.get("friction_factor")),
         ]
-        link_frames = [
-            self.results.link.get("flowrate"),
-            self.results.link.get("velocity"),
-            self.results.link.get("headloss"),
-            self.results.link.get("setting"),
-            self.results.link.get("reaction_rate"),
-            self.results.link.get("friction_factor"),
-        ]
-        for df in node_frames + link_frames:
+
+        expected_rows = getattr(self, "num_periods", None)
+        if expected_rows:
+            try:
+                expected_rows = int(expected_rows)
+            except (TypeError, ValueError):  # pragma: no cover - defensive guard
+                expected_rows = None
+        if expected_rows and expected_rows > 0:
+            for name, df in frames:
+                row_count = _row_count(df)
+                if row_count is not None and row_count < expected_rows:
+                    _LOGGER.debug(
+                        "Detected truncated results while using double precision reader; triggering fallback because %s has %d rows (expected %d)",
+                        name,
+                        row_count,
+                        expected_rows,
+                    )
+                    return True
+
+        for name, df in frames:
             if _max_abs(df) > limit:
-                _LOGGER.debug("Detected implausible values while using double precision reader; triggering fallback")
+                _LOGGER.debug(
+                    "Detected implausible values while using double precision reader; triggering fallback for %s",
+                    name,
+                )
                 return True
         return False
 
