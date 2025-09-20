@@ -28,6 +28,11 @@ try:
 except ImportError:  # pragma: no cover
     from feature_utils import build_edge_attr
 
+try:
+    from .wntr_compat import make_simulator
+except ImportError:  # pragma: no cover
+    from wntr_compat import make_simulator
+
 logger = logging.getLogger(__name__)
 
 # Minimum allowed pressure [m].  Values below this threshold are clipped
@@ -91,7 +96,7 @@ def _create_epanet_simulator(
 ) -> wntr.sim.EpanetSimulator:
     """Create the platform-appropriate EPANET simulator instance."""
 
-    return wntr.sim.EpanetSimulator(wn)
+    return make_simulator(wn)
 
 
 def log_array_stats(name: str, arr: np.ndarray) -> None:
