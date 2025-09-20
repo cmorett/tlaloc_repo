@@ -68,6 +68,7 @@ try:
         SequenceDataset,
         compute_sequence_norm_stats,
         apply_sequence_normalization,
+        sanitize_edge_attr_stats,
         build_edge_attr,
         build_pump_coeffs,
         build_edge_type,
@@ -81,6 +82,7 @@ except ImportError:  # pragma: no cover
         SequenceDataset,
         compute_sequence_norm_stats,
         apply_sequence_normalization,
+        sanitize_edge_attr_stats,
         build_edge_attr,
         build_pump_coeffs,
         build_edge_type,
@@ -2386,6 +2388,9 @@ def main(args: argparse.Namespace):
             [edge_attr_phys_np, np.zeros((edge_attr_phys_np.shape[0], 1), dtype=edge_attr_phys_np.dtype)],
             axis=1,
         )
+    skip_edge_attr_cols: Optional[List[int]] = None
+    if edge_attr_phys_np.shape[1] >= 2:
+        skip_edge_attr_cols = [edge_attr_phys_np.shape[1] - 2, edge_attr_phys_np.shape[1] - 1]
     edge_attr_phys = torch.tensor(edge_attr_phys_np.copy(), dtype=torch.float32)
     if os.path.exists(args.pump_coeffs_path):
         pump_coeffs_np = np.load(args.pump_coeffs_path)
@@ -2440,8 +2445,12 @@ def main(args: argparse.Namespace):
             flat = edge_attr_train_seq.reshape(-1, edge_attr_train_seq.shape[-1])
             edge_mean = torch.tensor(flat.mean(axis=0), dtype=torch.float32)
             edge_std = torch.tensor(flat.std(axis=0) + 1e-8, dtype=torch.float32)
+            edge_mean, edge_std = sanitize_edge_attr_stats(
+                edge_mean, edge_std, skip_edge_attr_cols
+            )
     if edge_mean is None or edge_std is None:
         edge_mean, edge_std = compute_edge_attr_stats(edge_attr)
+    edge_mean, edge_std = sanitize_edge_attr_stats(edge_mean, edge_std, skip_edge_attr_cols)
 
     if seq_mode:
         data_ds = SequenceDataset(
@@ -2565,6 +2574,7 @@ def main(args: argparse.Namespace):
                 edge_std,
                 per_node=args.per_node_norm,
                 static_cols=static_cols,
+                skip_edge_attr_cols=skip_edge_attr_cols,
             )
             if isinstance(val_list, SequenceDataset):
                 apply_sequence_normalization(
@@ -2577,6 +2587,7 @@ def main(args: argparse.Namespace):
                     edge_std,
                     per_node=args.per_node_norm,
                     static_cols=static_cols,
+                    skip_edge_attr_cols=skip_edge_attr_cols,
                 )
         else:
             x_mean, x_std, y_mean, y_std = compute_norm_stats(
@@ -2594,6 +2605,7 @@ def main(args: argparse.Namespace):
                 edge_mean,
                 edge_std,
                 per_node=args.per_node_norm,
+                skip_edge_attr_cols=skip_edge_attr_cols,
             )
             if val_list:
                 apply_normalization(
@@ -2605,6 +2617,7 @@ def main(args: argparse.Namespace):
                     edge_mean,
                     edge_std,
                     per_node=args.per_node_norm,
+                    skip_edge_attr_cols=skip_edge_attr_cols,
                 )
         print("Target normalization stats:")
         pressure_stats, chlorine_stats = summarize_target_norm_stats(
@@ -3386,6 +3399,7 @@ def main(args: argparse.Namespace):
                     edge_std,
                     per_node=args.per_node_norm,
                     static_cols=static_cols,
+                    skip_edge_attr_cols=skip_edge_attr_cols,
                 )
             test_loader = TorchLoader(
                 test_ds,
@@ -3415,6 +3429,7 @@ def main(args: argparse.Namespace):
                     edge_mean,
                     edge_std,
                     per_node=args.per_node_norm,
+                    skip_edge_attr_cols=skip_edge_attr_cols,
                 )
             test_loader = DataLoader(
                 test_list,
