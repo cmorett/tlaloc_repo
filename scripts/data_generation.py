@@ -96,6 +96,12 @@ def _create_epanet_simulator(
 ) -> wntr.sim.EpanetSimulator:
     """Create the platform-appropriate EPANET simulator instance."""
 
+    # The ``make_simulator`` helper wraps :class:`~wntr.sim.EpanetSimulator`
+    # with a double-precision hydraulics binary reader.  Windows EPANET
+    # toolkits only emit single-precision binaries which causes the double
+    # reader to fail, so bypass it on ``os.name == "nt"``.
+    if os.name == "nt":
+        return wntr.sim.EpanetSimulator(wn)
     return make_simulator(wn)
 
 
