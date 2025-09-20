@@ -7,6 +7,52 @@ from wntr.network.base import LinkStatus
 EPS = 1e-8
 
 
+def sanitize_edge_attr_stats(
+    mean: Optional[torch.Tensor],
+    std: Optional[torch.Tensor],
+    skip_cols: Optional[Sequence[int]] = None,
+):
+    """Return copies of ``mean`` and ``std`` with ``skip_cols`` set to (0, 1).
+
+    Parameters
+    ----------
+    mean, std:
+        Edge attribute statistics. ``None`` values are returned unchanged.
+    skip_cols:
+        Column indices that should remain in raw units. These indices are
+        normalised relative to the last dimension of the tensors.
+    """
+
+    if mean is None or std is None or not skip_cols:
+        return mean, std
+
+    mean_tensor = torch.as_tensor(mean).clone()
+    std_tensor = torch.as_tensor(std).clone()
+    if mean_tensor.ndim == 0:
+        mean_tensor = mean_tensor.unsqueeze(0)
+    if std_tensor.ndim == 0:
+        std_tensor = std_tensor.unsqueeze(0)
+
+    num_cols = mean_tensor.shape[-1]
+    valid_idx: List[int] = []
+    for col in skip_cols:
+        idx = int(col)
+        if idx < 0:
+            idx += num_cols
+        if 0 <= idx < num_cols:
+            valid_idx.append(idx)
+    if not valid_idx:
+        return mean_tensor, std_tensor
+
+    idx_tensor = torch.tensor(sorted(set(valid_idx)), dtype=torch.long, device=mean_tensor.device)
+    dim = mean_tensor.dim() - 1
+    mean_tensor = mean_tensor.clone()
+    std_tensor = std_tensor.clone()
+    mean_tensor.index_fill_(dim, idx_tensor, 0.0)
+    std_tensor.index_fill_(dim, idx_tensor, 1.0)
+    return mean_tensor, std_tensor
+
+
 def compute_norm_stats(
     data_list,
     per_node: bool = False,
@@ -89,8 +135,17 @@ def apply_normalization(
     edge_attr_mean=None,
     edge_attr_std=None,
     per_node: bool = False,
+    skip_edge_attr_cols: Optional[Sequence[int]] = None,
 ):
     del per_node  # unused but kept for API symmetry
+    sanitized_edge_mean = sanitized_edge_std = None
+    if edge_attr_mean is not None and edge_attr_std is not None:
+        sanitized_edge_mean, sanitized_edge_std = sanitize_edge_attr_stats(
+            edge_attr_mean, edge_attr_std, skip_edge_attr_cols
+        )
+    else:
+        sanitized_edge_mean = edge_attr_mean
+        sanitized_edge_std = edge_attr_std
     for d in data_list:
         d.x = (d.x - x_mean) / x_std
         if isinstance(y_mean, dict):
@@ -99,8 +154,22 @@ def apply_normalization(
                 d.edge_y = (d.edge_y - y_mean["edge_outputs"]) / y_std["edge_outputs"]
         else:
             d.y = (d.y - y_mean) / y_std
-        if edge_attr_mean is not None and getattr(d, "edge_attr", None) is not None:
-            d.edge_attr = (d.edge_attr - edge_attr_mean) / edge_attr_std
+        if (
+            sanitized_edge_mean is not None
+            and sanitized_edge_std is not None
+            and getattr(d, "edge_attr", None) is not None
+        ):
+            mean = sanitized_edge_mean
+            std = sanitized_edge_std
+            if not isinstance(mean, torch.Tensor):
+                mean = torch.as_tensor(mean, dtype=d.edge_attr.dtype, device=d.edge_attr.device)
+            else:
+                mean = mean.to(device=d.edge_attr.device, dtype=d.edge_attr.dtype)
+            if not isinstance(std, torch.Tensor):
+                std = torch.as_tensor(std, dtype=d.edge_attr.dtype, device=d.edge_attr.device)
+            else:
+                std = std.to(device=d.edge_attr.device, dtype=d.edge_attr.dtype)
+            d.edge_attr = (d.edge_attr - mean) / std
 
 
 class SequenceDataset(torch.utils.data.Dataset):
@@ -271,8 +340,17 @@ def apply_sequence_normalization(
     edge_attr_std: Optional[torch.Tensor] = None,
     per_node: bool = False,
     static_cols: Optional[Sequence[int]] = None,
+    skip_edge_attr_cols: Optional[Sequence[int]] = None,
 ) -> None:
     del per_node, static_cols  # parameters kept for API symmetry
+    sanitized_edge_mean = sanitized_edge_std = None
+    if edge_attr_mean is not None and edge_attr_std is not None:
+        sanitized_edge_mean, sanitized_edge_std = sanitize_edge_attr_stats(
+            edge_attr_mean, edge_attr_std, skip_edge_attr_cols
+        )
+    else:
+        sanitized_edge_mean = edge_attr_mean
+        sanitized_edge_std = edge_attr_std
     dataset.X = (dataset.X - x_mean) / x_std
     if dataset.multi:
         for k in dataset.Y:
@@ -280,11 +358,21 @@ def apply_sequence_normalization(
                 dataset.Y[k] = (dataset.Y[k] - y_mean[k]) / y_std[k]
     else:
         dataset.Y = (dataset.Y - y_mean) / y_std
-    if edge_attr_mean is not None and dataset.edge_attr is not None:
-        dataset.edge_attr = (dataset.edge_attr - edge_attr_mean) / edge_attr_std
-    if edge_attr_mean is not None and dataset.edge_attr_seq is not None:
-        mean = edge_attr_mean
-        std = edge_attr_std
+    if (
+        sanitized_edge_mean is not None
+        and sanitized_edge_std is not None
+        and dataset.edge_attr is not None
+    ):
+        mean = sanitized_edge_mean.to(device=dataset.edge_attr.device, dtype=dataset.edge_attr.dtype)
+        std = sanitized_edge_std.to(device=dataset.edge_attr.device, dtype=dataset.edge_attr.dtype)
+        dataset.edge_attr = (dataset.edge_attr - mean) / std
+    if (
+        sanitized_edge_mean is not None
+        and sanitized_edge_std is not None
+        and dataset.edge_attr_seq is not None
+    ):
+        mean = sanitized_edge_mean.to(device=dataset.edge_attr_seq.device, dtype=dataset.edge_attr_seq.dtype)
+        std = sanitized_edge_std.to(device=dataset.edge_attr_seq.device, dtype=dataset.edge_attr_seq.dtype)
         while mean.dim() < dataset.edge_attr_seq.dim():
             mean = mean.unsqueeze(0)
             std = std.unsqueeze(0)
