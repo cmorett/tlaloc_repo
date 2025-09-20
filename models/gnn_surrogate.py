@@ -577,7 +577,7 @@ class MultiTaskGNNSurrogate(nn.Module):
                         net.append(torch.zeros(batch_size, device=device))
                     else:
                         net.append((flows[:, t, edges] * signs).sum(dim=1))
-                net_flow = torch.stack(net, dim=1)
+                net_flow = torch.stack(net, dim=1) / 2.0
                 delta_vol = net_flow * 3600.0 * 0.001
                 self.tank_levels += delta_vol
                 self.tank_levels = self.tank_levels.clamp(min=0.0)

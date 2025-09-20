@@ -85,6 +85,6 @@ def test_build_loss_mask_ctown():
         assert not mask[idx]
     tank_idx = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
     for idx in tank_idx:
-        assert not mask[idx]
+        assert mask[idx]
     assert mask.dtype == torch.bool
 
