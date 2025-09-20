@@ -38,6 +38,7 @@ def test_compute_mpc_cost_handles_per_node_norm():
     node_types = torch.zeros(num_nodes, dtype=torch.long)
     edge_types = torch.zeros(0, dtype=torch.long)
     template = torch.zeros(num_nodes, 4 + num_pumps)
+    template[:, 4] = torch.tensor([-1.0, 1.0, 0.0])
     pressures = torch.full((num_nodes,), 50.0)
     chlorine = torch.zeros(num_nodes)
 

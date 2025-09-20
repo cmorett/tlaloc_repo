@@ -2550,11 +2550,9 @@ def main(args: argparse.Namespace):
             f"Dataset provides {sample_dim} features per node but the network has {pump_count} pumps."
         )
     args.output_dim = 2 if has_chlorine else 1
-    pump_cols = list(range(base_dim, base_dim + pump_count))
-
     norm_md5 = None
     if args.normalize:
-        static_cols = pump_cols if args.per_node_norm else None
+        static_cols = None
         norm_mask = loss_mask.cpu()
         if seq_mode:
             x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(

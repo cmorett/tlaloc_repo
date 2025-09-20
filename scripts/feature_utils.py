@@ -486,18 +486,42 @@ def build_node_type(wn: wntr.network.WaterNetworkModel) -> np.ndarray:
     return np.array(types, dtype=np.int64)
 
 
+def build_pump_node_matrix(
+    wn: wntr.network.WaterNetworkModel,
+    dtype: np.dtype | type = np.float32,
+) -> np.ndarray:
+    """Return a ``(num_nodes, num_pumps)`` matrix encoding pump incidence."""
+
+    node_map = {name: idx for idx, name in enumerate(wn.node_name_list)}
+    layout = np.zeros((len(node_map), len(wn.pump_name_list)), dtype=np.float32)
+    for pump_idx, pump_name in enumerate(wn.pump_name_list):
+        pump = wn.get_link(pump_name)
+        start = pump.start_node.name if hasattr(pump.start_node, "name") else pump.start_node
+        end = pump.end_node.name if hasattr(pump.end_node, "name") else pump.end_node
+        if start in node_map:
+            layout[node_map[start], pump_idx] -= 1.0
+        if end in node_map:
+            layout[node_map[end], pump_idx] += 1.0
+    return layout.astype(dtype, copy=False)
+
+
 def build_static_node_features(
     wn: wntr.network.WaterNetworkModel,
     num_pumps: int,
     include_chlorine: bool = True,
 ) -> torch.Tensor:
-    """Return per-node static features.
+    """Return per-node static features including pump incidence signs.
 
     When ``include_chlorine`` is ``True`` the feature layout is
-    ``[demand, 0, 0, elevation, pumps...]`` where the second and third
-    entries are placeholders for pressure and chlorine.  If chlorine is not
-    included the layout becomes ``[demand, 0, elevation, pumps...]``.
+    ``[demand, 0, 0, elevation, pump_1, ..., pump_N]`` where the second and
+    third entries are placeholders for pressure and chlorine respectively.
+    If chlorine is not included the layout becomes
+    ``[demand, 0, elevation, pump_1, ..., pump_N]``. Pump columns store the
+    signed incidence of each pump: ``+1`` for discharge nodes, ``-1`` for
+    suction nodes and ``0`` otherwise. Runtime feature assembly multiplies
+    these values by the current pump speeds.
     """
+
     num_nodes = len(wn.node_name_list)
     base_dim = 4 if include_chlorine else 3
     feats = torch.zeros(num_nodes, base_dim + num_pumps, dtype=torch.float32)
@@ -518,6 +542,13 @@ def build_static_node_features(
             feats[idx, 3] = float(elev or 0.0)
         else:
             feats[idx, 2] = float(elev or 0.0)
+
+    if num_pumps > 0:
+        pump_layout = torch.from_numpy(
+            build_pump_node_matrix(wn, dtype=np.float32)
+        )
+        offset = 4 if include_chlorine else 3
+        feats[:, offset : offset + num_pumps] = pump_layout
     return feats
 
 
@@ -537,8 +568,8 @@ def prepare_node_features(
     chlorine target and whether a chlorine tensor was supplied.
     """
     num_nodes = template.size(0)
+
     num_pumps = pump_speeds.size(-1)
-    pump_speeds = pump_speeds.to(dtype=torch.float32, device=template.device)
 
     if include_chlorine is None:
         include_chlorine = chlorine is not None and (
@@ -546,19 +577,38 @@ def prepare_node_features(
             or template.size(1) >= 4 + num_pumps
         )
 
+    pump_offset = 4 if include_chlorine else 3
+    if template.size(1) < pump_offset + num_pumps:
+        raise ValueError(
+            "Static feature template does not include pump columns consistent with pump speeds"
+        )
+    pump_layout = template[:, pump_offset : pump_offset + num_pumps]
+    pump_layout = pump_layout.to(dtype=torch.float32, device=template.device)
+    pump_speeds = pump_speeds.to(dtype=torch.float32, device=template.device)
+
     if pressures.dim() == 2:
         batch_size = pressures.size(0)
         feats = template.expand(batch_size, num_nodes, template.size(1)).clone()
         if demands is not None:
             feats[:, :, 0] = demands
         feats[:, :, 1] = pressures
-        offset = 2
         if include_chlorine:
             feats[:, :, 2] = torch.log1p(chlorine / 1000.0)
-            offset = 4
-        feats[:, :, offset : offset + num_pumps] = pump_speeds.view(batch_size, 1, -1).expand(
-            batch_size, num_nodes, num_pumps
-        )
+        if num_pumps:
+            speeds = pump_speeds
+            if speeds.dim() == 1:
+                speeds = speeds.view(1, -1).expand(batch_size, -1)
+            elif speeds.dim() == 2:
+                if speeds.size(0) == 1 and batch_size > 1:
+                    speeds = speeds.expand(batch_size, -1)
+                elif speeds.size(0) != batch_size:
+                    raise ValueError(
+                        f"Pump speed batch dimension mismatch: expected {batch_size}, got {speeds.size(0)}"
+                    )
+            else:
+                raise ValueError("Pump speeds must be 1D or 2D tensor")
+            pump_vals = pump_layout.unsqueeze(0) * speeds.unsqueeze(1)
+            feats[:, :, pump_offset : pump_offset + num_pumps] = pump_vals
         in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
         if in_dim is not None:
             feats = feats[:, :, :in_dim]
@@ -583,11 +633,15 @@ def prepare_node_features(
     if demands is not None:
         feats[:, 0] = demands
     feats[:, 1] = pressures
-    offset = 2
     if include_chlorine:
         feats[:, 2] = torch.log1p(chlorine / 1000.0)
-        offset = 4
-    feats[:, offset : offset + num_pumps] = pump_speeds.view(1, -1).expand(num_nodes, num_pumps)
+    if num_pumps:
+        speeds = pump_speeds.reshape(-1)
+        if speeds.numel() != num_pumps:
+            raise ValueError(
+                f"Pump speed dimension mismatch: expected {num_pumps}, got {speeds.numel()}"
+            )
+        feats[:, pump_offset : pump_offset + num_pumps] = pump_layout * speeds
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
     if in_dim is not None:
         feats = feats[:, :in_dim]

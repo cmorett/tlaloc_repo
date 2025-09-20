@@ -12,6 +12,7 @@ def test_mpc_normalization_round_trip_and_consistency():
     num_nodes = 2
     num_pumps = 1
     template = torch.zeros(num_nodes, 4 + num_pumps)
+    template[:, 4] = torch.tensor([-1.0, 1.0])
     pressures = torch.tensor([1.0, 2.0])
     chlorine = torch.tensor([10.0, 20.0])
     pump_speed = torch.tensor([0.5])
@@ -27,7 +28,7 @@ def test_mpc_normalization_round_trip_and_consistency():
     feats = template.clone()
     feats[:, 1] = pressures
     feats[:, 2] = torch.log1p(chlorine / 1000.0)
-    feats[:, 4] = pump_speed
+    feats[:, 4] = template[:, 4] * pump_speed
 
     x_norm = prepare_node_features(template, pressures, chlorine, pump_speed, model)
     x_round = x_norm * (model.x_std + EPS) + model.x_mean
@@ -49,6 +50,7 @@ def test_prepare_node_features_per_node_batch_norm():
     num_nodes = 2
     num_pumps = 1
     template = torch.zeros(num_nodes, 4 + num_pumps)
+    template[:, 4] = torch.tensor([-1.0, 1.0])
     pressures = torch.randn(batch_size, num_nodes)
     chlorine = torch.rand(batch_size, num_nodes)
     pump_speed = torch.rand(batch_size, num_pumps)
@@ -61,8 +63,9 @@ def test_prepare_node_features_per_node_batch_norm():
     feats = template.expand(batch_size, num_nodes, template.size(1)).clone()
     feats[:, :, 1] = pressures
     feats[:, :, 2] = torch.log1p(chlorine / 1000.0)
-    feats[:, :, 4:4 + num_pumps] = pump_speed.view(batch_size, 1, -1).expand(
-        batch_size, num_nodes, num_pumps
+    pump_layout = template[:, 4:4 + num_pumps]
+    feats[:, :, 4:4 + num_pumps] = pump_layout.unsqueeze(0) * pump_speed.view(
+        batch_size, 1, -1
     )
 
     x_norm = prepare_node_features(template, pressures, chlorine, pump_speed, model)
@@ -78,6 +81,7 @@ def test_prepare_node_features_flattened_stats():
     num_nodes = 2
     num_pumps = 1
     template = torch.zeros(num_nodes, 4 + num_pumps)
+    template[:, 4] = torch.tensor([-1.0, 1.0])
     pressures = torch.randn(batch_size, num_nodes)
     chlorine = torch.rand(batch_size, num_nodes)
     pump_speed = torch.rand(batch_size, num_pumps)
@@ -93,8 +97,9 @@ def test_prepare_node_features_flattened_stats():
     feats = template.expand(batch_size, num_nodes, template.size(1)).clone()
     feats[:, :, 1] = pressures
     feats[:, :, 2] = torch.log1p(chlorine / 1000.0)
-    feats[:, :, 4:4 + num_pumps] = pump_speed.view(batch_size, 1, -1).expand(
-        batch_size, num_nodes, num_pumps
+    pump_layout = template[:, 4:4 + num_pumps]
+    feats[:, :, 4:4 + num_pumps] = pump_layout.unsqueeze(0) * pump_speed.view(
+        batch_size, 1, -1
     )
     expected = (feats - mean2d.view(1, num_nodes, -1)) / (
         std2d.view(1, num_nodes, -1) + EPS

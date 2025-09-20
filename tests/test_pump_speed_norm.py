@@ -19,63 +19,59 @@ def _sample_inputs():
     X = np.array(
         [
             [
-                [[0, 0, 0, 1, 10], [0, 0, 0, 4, 40]],
-                [[0, 0, 0, 2, 20], [0, 0, 0, 5, 50]],
+                [[0, 0, 0, 0, -10], [0, 0, 0, 0, 10]],
+                [[0, 0, 0, 0, -20], [0, 0, 0, 0, 20]],
             ]
         ],
         dtype=np.float32,
     )
     Y = np.zeros((1, 2, 2, 1), dtype=np.float32)
     edge_index = np.zeros((2, 0), dtype=np.int64)
-    pump_cols = [3, 4]
-    return X, Y, edge_index, pump_cols
+    pump_col = 4
+    return X, Y, edge_index, pump_col
 
 
-def test_pump_speed_global_stats_sequence():
-    X, Y, edge_index, pump_cols = _sample_inputs()
+def test_pump_speed_per_node_stats_sequence():
+    X, Y, edge_index, pump_col = _sample_inputs()
     x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
-        X, Y, per_node=True, static_cols=pump_cols
+        X, Y, per_node=True
     )
-    for col in pump_cols:
-        assert torch.allclose(
-            x_mean[:, col], x_mean[0, col].repeat(x_mean.size(0))
-        )
-        assert torch.allclose(
-            x_std[:, col], x_std[0, col].repeat(x_std.size(0))
-        )
+    expected_mean = torch.tensor([-15.0, 15.0])
+    expected_std = torch.tensor([5.0, 5.0])
+    assert torch.allclose(x_mean[:, pump_col], expected_mean, atol=1e-6)
+    assert torch.allclose(x_std[:, pump_col], expected_std, atol=1e-6)
+
     ds = SequenceDataset(X, Y, edge_index, None)
     apply_sequence_normalization(
-        ds, x_mean, x_std, y_mean, y_std, per_node=True, static_cols=pump_cols
+        ds, x_mean, x_std, y_mean, y_std, per_node=True
     )
-    col = ds.X[..., pump_cols]
-    assert torch.allclose(col.mean(dim=(0, 1, 2)), torch.zeros(len(pump_cols)), atol=1e-6)
+    pump_vals = ds.X[..., pump_col]
+    assert torch.allclose(pump_vals.mean(dim=(0, 1)), torch.zeros(2), atol=1e-6)
     assert torch.allclose(
-        col.std(dim=(0, 1, 2), unbiased=False), torch.ones(len(pump_cols)), atol=1e-6
+        pump_vals.std(dim=(0, 1), unbiased=False), torch.ones(2), atol=1e-6
     )
 
 
-def test_pump_speed_global_stats_data_list():
-    X, Y, _, pump_cols = _sample_inputs()
+def test_pump_speed_per_node_stats_data_list():
+    X, Y, _, pump_col = _sample_inputs()
     edge = torch.empty((2, 0), dtype=torch.long)
     data_list = [
         Data(x=torch.tensor(X[0, 0], dtype=torch.float32), edge_index=edge, y=torch.zeros((2, 1))),
         Data(x=torch.tensor(X[0, 1], dtype=torch.float32), edge_index=edge, y=torch.zeros((2, 1))),
     ]
     x_mean, x_std, y_mean, y_std = compute_norm_stats(
-        data_list, per_node=True, static_cols=pump_cols
+        data_list, per_node=True
     )
-    for col in pump_cols:
-        assert torch.allclose(
-            x_mean[:, col], x_mean[0, col].repeat(x_mean.size(0))
-        )
-        assert torch.allclose(
-            x_std[:, col], x_std[0, col].repeat(x_std.size(0))
-        )
+    expected_mean = torch.tensor([-15.0, 15.0])
+    expected_std = torch.sqrt(torch.tensor([50.0, 50.0]))
+    assert torch.allclose(x_mean[:, pump_col], expected_mean, atol=1e-6)
+    assert torch.allclose(x_std[:, pump_col], expected_std, atol=1e-6)
+
     apply_normalization(data_list, x_mean, x_std, y_mean, y_std, per_node=True)
-    cols = torch.stack([d.x for d in data_list], dim=0)[..., pump_cols]
-    assert torch.allclose(cols.mean(dim=(0, 1)), torch.zeros(len(pump_cols)), atol=1e-6)
+    cols = torch.stack([d.x for d in data_list], dim=0)[..., pump_col]
+    assert torch.allclose(cols.mean(dim=0), torch.zeros(2), atol=1e-6)
     assert torch.allclose(
-        cols.std(dim=(0, 1), unbiased=True), torch.ones(len(pump_cols)), atol=1e-6
+        cols.std(dim=0, unbiased=True), torch.ones(2), atol=1e-6
     )
 
 
