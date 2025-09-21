@@ -25,3 +25,23 @@ def test_pump_curve_loss_clamps_flow():
     violation = torch.clamp(-head, min=0.0).view(1, 1)
     expected = F.smooth_l1_loss(violation, torch.zeros_like(violation))
     assert torch.allclose(loss, expected)
+
+
+def test_pump_curve_loss_speed_scaling():
+    coeffs = torch.tensor([[70.0, 909.8618175228993, 1.3569154488567239]], dtype=torch.float32)
+    edge_index = torch.tensor([[0], [1]], dtype=torch.long)
+    edge_type = torch.tensor([1], dtype=torch.long)
+    a, b, c = coeffs[0]
+    q_max = (a / b).pow(1.0 / c) * 1.2
+    flow = q_max.view(1, 1)
+    base_speed = torch.ones_like(flow)
+    fast_speed = torch.full_like(flow, 1.5)
+    slow_speed = torch.full_like(flow, 0.5)
+
+    base_loss = pump_curve_loss(flow, coeffs, edge_index, edge_type, pump_speeds=base_speed)
+    fast_loss = pump_curve_loss(flow, coeffs, edge_index, edge_type, pump_speeds=fast_speed)
+    slow_loss = pump_curve_loss(flow, coeffs, edge_index, edge_type, pump_speeds=slow_speed)
+
+    assert torch.allclose(fast_loss, torch.tensor(0.0), atol=1e-6)
+    assert fast_loss.item() <= base_loss.item()
+    assert base_loss.item() < slow_loss.item()
