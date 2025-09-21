@@ -536,6 +536,8 @@ def load_surrogate_model(
                     edge_key = f"{base}.edge_mlp.0.weight"
                 elif f"{base}.edge_mlps.0.0.weight" in state:
                     edge_key = f"{base}.edge_mlps.0.0.weight"
+                elif f"{base}.edge_mlps.0.weight" in state:
+                    edge_key = f"{base}.edge_mlps.0.weight"
 
                 if edge_key is not None:
                     e_dim = state[edge_key].shape[1]

@@ -10,6 +10,8 @@ import torch.utils.checkpoint
 class HydroConv(MessagePassing):
     """Mass-conserving convolution supporting heterogeneous components."""
 
+    PUMP_EDGE_TYPE = 1
+
     def __init__(
         self,
         in_channels: int,
@@ -28,9 +30,15 @@ class HydroConv(MessagePassing):
             [nn.Linear(in_channels, out_channels) for _ in range(num_node_types)]
         )
 
-        self.edge_mlps = nn.ModuleList(
-            [nn.Sequential(nn.Linear(edge_dim, 1), nn.Softplus()) for _ in range(num_edge_types)]
-        )
+        self.edge_mlps = nn.ModuleList()
+        for t in range(num_edge_types):
+            out_dim = 2 if t == self.PUMP_EDGE_TYPE else 1
+            mlp = nn.Linear(edge_dim, out_dim)
+            if out_dim > 1:
+                with torch.no_grad():
+                    mlp.weight[out_dim - 1].zero_()
+                    mlp.bias[out_dim - 1].zero_()
+            self.edge_mlps.append(mlp)
 
         self.edge_type_emb = (
             nn.Embedding(num_edge_types, edge_dim) if num_edge_types > 1 else None
@@ -71,17 +79,84 @@ class HydroConv(MessagePassing):
         pump_speed = edge_attr[:, -1:].clone()
         if self.edge_type_emb is not None:
             edge_attr = edge_attr + self.edge_type_emb(edge_type)
-        weight = edge_attr.new_zeros(edge_attr.size(0), 1)
+        gain = edge_attr.new_zeros(edge_attr.size(0), 1)
+        bias = edge_attr.new_zeros(edge_attr.size(0), 1)
         for t, mlp in enumerate(self.edge_mlps):
             idx = torch.where(edge_type == t)[0]
             if idx.numel() == 0:
                 continue
-            w_t = mlp(edge_attr.index_select(0, idx)).to(weight.dtype)
-            if t == 1:
-                w_t = w_t * pump_speed.index_select(0, idx)
-            weight.index_copy_(0, idx, w_t)
+            raw = mlp(edge_attr.index_select(0, idx))
+            if t == self.PUMP_EDGE_TYPE and raw.size(1) >= 2:
+                gain_t = F.softplus(raw[:, :1]).to(gain.dtype)
+                gain_t = gain_t * pump_speed.index_select(0, idx)
+                bias_t = raw[:, 1:2].to(bias.dtype)
+                bias_t = bias_t * pump_speed.index_select(0, idx)
+                gain.index_copy_(0, idx, gain_t)
+                bias.index_copy_(0, idx, bias_t)
+            else:
+                gain_t = F.softplus(raw).to(gain.dtype)
+                gain.index_copy_(0, idx, gain_t)
         sign = direction * 2.0 - 1.0
-        return weight * sign * (x_j - x_i)
+        return sign * (gain * (x_j - x_i) + bias)
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        for idx in range(self.num_edge_types):
+            new_weight_key = f"{prefix}edge_mlps.{idx}.weight"
+            new_bias_key = f"{prefix}edge_mlps.{idx}.bias"
+            for legacy_prefix in ("edge_mlps", "edge_mlp"):
+                old_weight_key = f"{prefix}{legacy_prefix}.{idx}.0.weight"
+                old_bias_key = f"{prefix}{legacy_prefix}.{idx}.0.bias"
+                if old_weight_key in state_dict:
+                    value = state_dict.pop(old_weight_key)
+                    if new_weight_key not in state_dict:
+                        state_dict[new_weight_key] = value
+                if old_bias_key in state_dict:
+                    value = state_dict.pop(old_bias_key)
+                    if new_bias_key not in state_dict:
+                        state_dict[new_bias_key] = value
+
+        pump_idx = self.PUMP_EDGE_TYPE
+        if pump_idx < len(self.edge_mlps):
+            pump_weight_key = f"{prefix}edge_mlps.{pump_idx}.weight"
+            pump_bias_key = f"{prefix}edge_mlps.{pump_idx}.bias"
+            expected_out = self.edge_mlps[pump_idx].out_features
+            if pump_weight_key in state_dict:
+                weight = state_dict[pump_weight_key]
+                if (
+                    weight.dim() == 2
+                    and weight.size(0) < expected_out
+                    and expected_out > weight.size(0)
+                ):
+                    pad = weight.new_zeros((expected_out - weight.size(0), weight.size(1)))
+                    state_dict[pump_weight_key] = torch.cat([weight, pad], dim=0)
+            if pump_bias_key in state_dict:
+                bias_param = state_dict[pump_bias_key]
+                if (
+                    bias_param.dim() == 1
+                    and bias_param.size(0) < expected_out
+                    and expected_out > bias_param.size(0)
+                ):
+                    pad = bias_param.new_zeros(expected_out - bias_param.size(0))
+                    state_dict[pump_bias_key] = torch.cat([bias_param, pad], dim=0)
+
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
 
 class EnhancedGNNEncoder(nn.Module):
