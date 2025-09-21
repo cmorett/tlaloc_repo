@@ -2597,6 +2597,9 @@ def main(args: argparse.Namespace):
     norm_md5 = None
     if args.normalize:
         static_cols = None
+        if args.per_node_norm:
+            elev_idx = 3 if has_chlorine else 2
+            static_cols = [elev_idx]
         norm_mask = loss_mask.cpu()
         if seq_mode:
             x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
