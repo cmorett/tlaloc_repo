@@ -1200,6 +1200,26 @@ def _apply_loss(pred: torch.Tensor, target: torch.Tensor, loss_fn: str) -> torch
     raise ValueError(f"Unknown loss function: {loss_fn}")
 
 
+def _select_pump_speeds(
+    edge_attr_batch: Optional[torch.Tensor],
+    edge_attr: Optional[torch.Tensor],
+    edge_attr_phys: Optional[torch.Tensor],
+    edge_type: Optional[torch.Tensor],
+    device: torch.device,
+) -> Optional[torch.Tensor]:
+    """Return pump speed tensor aligned with ``edge_type`` mask."""
+
+    if edge_type is None:
+        return None
+    if isinstance(edge_attr_batch, torch.Tensor):
+        return edge_attr_batch.to(device)[..., -1]
+    if edge_attr is not None:
+        return edge_attr[..., -1]
+    if edge_attr_phys is not None:
+        return edge_attr_phys[..., -1]
+    return None
+
+
 def train(
     model,
     loader,
@@ -1754,11 +1774,19 @@ def train_sequence(
                         flow_pc = flow_pc * q_std + q_mean
                     else:
                         flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
+                pump_speed_tensor = _select_pump_speeds(
+                    edge_attr_batch,
+                    edge_attr,
+                    edge_attr_phys,
+                    et,
+                    device,
+                )
                 pump_loss_val = pump_curve_loss(
                     flow_pc,
                     pump_coeffs,
                     edge_index,
                     et,
+                    pump_speeds=pump_speed_tensor,
                 )
             if physics_loss or pressure_loss or pump_loss:
                 logger.debug(
@@ -1965,11 +1993,19 @@ def estimate_physics_scales_from_data(
                         flow_pc = (
                             flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
                         )
+                pump_speed_tensor = _select_pump_speeds(
+                    _edge_attr_batch,
+                    None,
+                    edge_attr_phys,
+                    edge_type,
+                    device,
+                )
                 pump_loss_val = pump_curve_loss(
                     flow_pc,
                     pump_coeffs,
                     edge_index,
                     edge_type,
+                    pump_speeds=pump_speed_tensor,
                 )
             else:
                 pump_loss_val = torch.tensor(0.0, device=device)
@@ -2257,11 +2293,19 @@ def evaluate_sequence(
                                 flow_pc = flow_pc * q_std + q_mean
                             else:
                                 flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
+                        pump_speed_tensor = _select_pump_speeds(
+                            edge_attr_batch,
+                            edge_attr,
+                            edge_attr_phys,
+                            et,
+                            device,
+                        )
                         pump_loss_val = pump_curve_loss(
                             flow_pc,
                             pump_coeffs,
                             edge_index,
                             et,
+                            pump_speeds=pump_speed_tensor,
                         )
                     else:
                         pump_loss_val = torch.tensor(0.0, device=device)
