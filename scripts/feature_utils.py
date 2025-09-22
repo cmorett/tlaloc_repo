@@ -513,17 +513,19 @@ def build_static_node_features(
     """Return per-node static features including pump incidence signs.
 
     When ``include_chlorine`` is ``True`` the feature layout is
-    ``[demand, 0, 0, elevation, pump_1, ..., pump_N]`` where the second and
-    third entries are placeholders for pressure and chlorine respectively.
-    If chlorine is not included the layout becomes
-    ``[demand, 0, elevation, pump_1, ..., pump_N]``. Pump columns store the
+    ``[demand, 0, 0, 0, elevation, pump_1, ..., pump_N]`` corresponding to
+    demand, pressure, chlorine, hydraulic head and elevation respectively.
+    Without chlorine the layout becomes
+    ``[demand, 0, 0, elevation, pump_1, ..., pump_N]``. Pump columns store the
     signed incidence of each pump: ``+1`` for discharge nodes, ``-1`` for
     suction nodes and ``0`` otherwise. Runtime feature assembly multiplies
     these values by the current pump speeds.
     """
 
     num_nodes = len(wn.node_name_list)
-    base_dim = 4 if include_chlorine else 3
+    base_dim = 5 if include_chlorine else 4
+    head_idx = 3 if include_chlorine else 2
+    elev_idx = head_idx + 1
     feats = torch.zeros(num_nodes, base_dim + num_pumps, dtype=torch.float32)
     for idx, name in enumerate(wn.node_name_list):
         node = wn.get_node(name)
@@ -538,16 +540,13 @@ def build_static_node_features(
         else:
             elev = node.head
         feats[idx, 0] = float(demand)
-        if include_chlorine:
-            feats[idx, 3] = float(elev or 0.0)
-        else:
-            feats[idx, 2] = float(elev or 0.0)
+        feats[idx, elev_idx] = float(elev or 0.0)
 
     if num_pumps > 0:
         pump_layout = torch.from_numpy(
             build_pump_node_matrix(wn, dtype=np.float32)
         )
-        offset = 4 if include_chlorine else 3
+        offset = base_dim
         feats[:, offset : offset + num_pumps] = pump_layout
     return feats
 
@@ -559,6 +558,7 @@ def prepare_node_features(
     pump_speeds: torch.Tensor,
     model: torch.nn.Module,
     demands: Optional[torch.Tensor] = None,
+    node_type: Optional[torch.Tensor] = None,
     skip_normalization: bool = False,
     include_chlorine: Optional[bool] = None,
 ) -> torch.Tensor:
@@ -577,7 +577,10 @@ def prepare_node_features(
             or template.size(1) >= 4 + num_pumps
         )
 
-    pump_offset = 4 if include_chlorine else 3
+    base_dim = 5 if include_chlorine else 4
+    head_idx = base_dim - 2
+    elev_idx = base_dim - 1
+    pump_offset = base_dim
     if template.size(1) < pump_offset + num_pumps:
         raise ValueError(
             "Static feature template does not include pump columns consistent with pump speeds"
@@ -585,6 +588,16 @@ def prepare_node_features(
     pump_layout = template[:, pump_offset : pump_offset + num_pumps]
     pump_layout = pump_layout.to(dtype=torch.float32, device=template.device)
     pump_speeds = pump_speeds.to(dtype=torch.float32, device=template.device)
+    pressures = pressures.to(dtype=torch.float32, device=template.device)
+    if chlorine is not None:
+        chlorine = chlorine.to(dtype=torch.float32, device=template.device)
+    if demands is not None:
+        demands = demands.to(dtype=torch.float32, device=template.device)
+    node_type_tensor = (
+        node_type.to(dtype=torch.long, device=template.device)
+        if node_type is not None
+        else None
+    )
 
     if pressures.dim() == 2:
         batch_size = pressures.size(0)
@@ -594,6 +607,13 @@ def prepare_node_features(
         feats[:, :, 1] = pressures
         if include_chlorine:
             feats[:, :, 2] = torch.log1p(chlorine / 1000.0)
+        elevations = feats[:, :, elev_idx]
+        head = pressures + elevations
+        if node_type_tensor is not None:
+            reservoir_mask = node_type_tensor == 2
+            if reservoir_mask.any():
+                head = torch.where(reservoir_mask.unsqueeze(0), pressures, head)
+        feats[:, :, head_idx] = head
         if num_pumps:
             speeds = pump_speeds
             if speeds.dim() == 1:
@@ -635,6 +655,13 @@ def prepare_node_features(
     feats[:, 1] = pressures
     if include_chlorine:
         feats[:, 2] = torch.log1p(chlorine / 1000.0)
+    elevations = feats[:, elev_idx]
+    head = pressures + elevations
+    if node_type_tensor is not None:
+        reservoir_mask = node_type_tensor == 2
+        if reservoir_mask.any():
+            head = torch.where(reservoir_mask, pressures, head)
+    feats[:, head_idx] = head
     if num_pumps:
         speeds = pump_speeds.reshape(-1)
         if speeds.numel() != num_pumps:

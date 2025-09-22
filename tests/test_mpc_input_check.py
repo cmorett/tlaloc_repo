@@ -70,7 +70,7 @@ def test_simulate_closed_loop_checks_edge_dim():
     class EdgeModel(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.layers = torch.nn.ModuleList([DummyConv(4 + len(pump_names))])
+            self.layers = torch.nn.ModuleList([DummyConv(template.size(1))])
             self.edge_dim = 2  # expect fewer edge attributes than provided
 
         def forward(self, x, edge_index, edge_attr=None, node_types=None, edge_types=None):

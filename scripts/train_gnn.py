@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import random
 from pathlib import Path
@@ -2536,8 +2537,8 @@ def main(args: argparse.Namespace):
 
     val_ds = None
     if args.x_val_path and os.path.exists(args.x_val_path):
+        Xv = np.load(args.x_val_path, allow_pickle=True)
         if seq_mode:
-            Xv = np.load(args.x_val_path, allow_pickle=True)
             Yv = np.load(args.y_val_path, allow_pickle=True)
             if Xv.ndim == 3:
                 Yv = np.array([{k: v[None, ...] for k, v in y.items()} for y in Yv], dtype=object)
@@ -2560,43 +2561,124 @@ def main(args: argparse.Namespace):
             )
             val_list = val_ds
         else:
-            val_list = load_dataset(
-                args.x_val_path,
-                args.y_val_path,
-                args.edge_index_path,
-                edge_attr=edge_attr,
-                node_type=node_types,
-                edge_type=edge_types,
-                expected_node_names=wn.node_name_list,
-            )
-            val_loader = DataLoader(
-                val_list,
-                batch_size=args.batch_size,
-                num_workers=args.workers,
-                pin_memory=torch.cuda.is_available(),
-                persistent_workers=args.workers > 0,
-            )
+            if Xv.ndim >= 4:
+                logger.warning(
+                    "Validation dataset at %s has %d dimensions but training data is static; skipping validation set",
+                    args.x_val_path,
+                    Xv.ndim,
+                )
+                val_list = []
+                val_loader = None
+            else:
+                Yv = np.load(args.y_val_path, allow_pickle=True)
+                val_list = load_dataset(
+                    args.x_val_path,
+                    args.y_val_path,
+                    args.edge_index_path,
+                    edge_attr=edge_attr,
+                    node_type=node_types,
+                    edge_type=edge_types,
+                    expected_node_names=wn.node_name_list,
+                )
+                val_loader = DataLoader(
+                    val_list,
+                    batch_size=args.batch_size,
+                    num_workers=args.workers,
+                    pin_memory=torch.cuda.is_available(),
+                    persistent_workers=args.workers > 0,
+                )
     else:
         val_list = []
         val_loader = None
     pump_count = len(wn.pump_name_list)
     if seq_mode:
         sample_dim = data_ds.X.shape[-1]
+        first_target = Y_raw[0]
+        if isinstance(first_target, dict):
+            node_out = first_target.get("node_outputs")
+            target_dim = int(node_out.shape[-1]) if node_out is not None else 1
+        else:
+            node_arr = np.asarray(first_target)
+            target_dim = int(node_arr.shape[-1]) if node_arr.ndim >= 2 else 1
     else:
         sample_dim = data_list[0].num_node_features
+        first_target = data_list[0].y
+        target_dim = int(first_target.size(-1)) if first_target.ndim >= 2 else 1
+    manifest = None
+    manifest_path = Path(args.x_path).with_name("manifest.json")
+    if manifest_path.exists():
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as handle:
+                manifest = json.load(handle)
+        except Exception as exc:  # pragma: no cover - diagnostics only
+            logger.warning("Failed to read manifest at %s: %s", manifest_path, exc)
+
+    feature_layout: Optional[List[str]] = None
+    include_head_feature = False
+    has_chlorine: Optional[bool] = None
+    head_idx: Optional[int] = None
+    if manifest is not None:
+        feature_layout = manifest.get("node_feature_layout")
+        include_head_feature = bool(manifest.get("include_head"))
+        if "include_chlorine" in manifest:
+            has_chlorine = bool(manifest["include_chlorine"])
+        if feature_layout:
+            include_head_feature = "head" in feature_layout
+            if include_head_feature:
+                try:
+                    head_idx = feature_layout.index("head")
+                except ValueError:
+                    head_idx = None
+            if has_chlorine is None:
+                has_chlorine = "chlorine" in feature_layout
+
     base_dim = sample_dim - pump_count
-    if base_dim == 4:
-        has_chlorine = True
-    elif base_dim == 3:
+    if target_dim <= 1:
         has_chlorine = False
-    else:
-        raise ValueError(
-            f"Dataset provides {sample_dim} features per node but the network has {pump_count} pumps."
+    if has_chlorine is None and target_dim > 1:
+        has_chlorine = True
+    if has_chlorine is None:
+        if base_dim == 5:
+            has_chlorine = True
+        elif base_dim == 4:
+            has_chlorine = False
+        else:
+            raise ValueError(
+                f"Dataset provides {sample_dim} features per node but the network has {pump_count} pumps."
+            )
+    if not include_head_feature:
+        expected_base = 5 if has_chlorine else 4
+        if base_dim >= expected_base:
+            include_head_feature = True
+    if target_dim <= 1 and has_chlorine:
+        logger.warning(
+            "Target dimension indicates pressure-only dataset; disabling chlorine outputs"
         )
+        has_chlorine = False
+    if feature_layout and len(feature_layout) != base_dim:
+        logger.warning(
+            "Manifest feature layout (%d entries) does not match dataset feature dimension (%d)",
+            len(feature_layout),
+            base_dim,
+        )
+    if feature_layout and "elevation" in feature_layout:
+        elev_idx = feature_layout.index("elevation")
+    else:
+        elev_idx = base_dim - 1
+    if head_idx is None:
+        if feature_layout and "head" in feature_layout:
+            head_idx = feature_layout.index("head")
+        elif include_head_feature and base_dim >= 2:
+            head_idx = base_dim - 2
     args.output_dim = 2 if has_chlorine else 1
     norm_md5 = None
     if args.normalize:
         static_cols = None
+        if args.per_node_norm:
+            static_cols = [elev_idx]
+            if include_head_feature and head_idx is not None:
+                if head_idx not in static_cols:
+                    static_cols.append(head_idx)
         norm_mask = loss_mask.cpu()
         if seq_mode:
             x_mean, x_std, y_mean, y_std = compute_sequence_norm_stats(
@@ -2770,7 +2852,7 @@ def main(args: argparse.Namespace):
                     persistent_workers=args.workers > 0,
                 )
 
-    expected_in_dim = (4 if has_chlorine else 3) + len(wn.pump_name_list)
+    expected_in_dim = (5 if has_chlorine else 4) + len(wn.pump_name_list)
 
     if seq_mode:
         sample_dim = data_ds.X.shape[-1]
@@ -3452,34 +3534,43 @@ def main(args: argparse.Namespace):
             )
         else:
             X_test_raw = np.load(args.x_test_path, allow_pickle=True)
-            test_list = load_dataset(
-                args.x_test_path,
-                args.y_test_path,
-                args.edge_index_path,
-                edge_attr=edge_attr,
-                node_type=node_types,
-                edge_type=edge_types,
-                expected_node_names=wn.node_name_list,
-            )
-            if args.normalize:
-                apply_normalization(
-                    test_list,
-                    x_mean,
-                    x_std,
-                    y_mean,
-                    y_std,
-                    edge_mean,
-                    edge_std,
-                    per_node=args.per_node_norm,
-                    skip_edge_attr_cols=skip_edge_attr_cols,
+            if X_test_raw.ndim >= 4:
+                logger.warning(
+                    "Test dataset at %s has %d dimensions but training data is static; skipping test set",
+                    args.x_test_path,
+                    X_test_raw.ndim,
                 )
-            test_loader = DataLoader(
-                test_list,
-                batch_size=args.batch_size,
-                num_workers=args.workers,
-                pin_memory=torch.cuda.is_available(),
-                persistent_workers=args.workers > 0,
-            )
+                test_list = []
+                test_loader = None
+            else:
+                test_list = load_dataset(
+                    args.x_test_path,
+                    args.y_test_path,
+                    args.edge_index_path,
+                    edge_attr=edge_attr,
+                    node_type=node_types,
+                    edge_type=edge_types,
+                    expected_node_names=wn.node_name_list,
+                )
+                if args.normalize:
+                    apply_normalization(
+                        test_list,
+                        x_mean,
+                        x_std,
+                        y_mean,
+                        y_std,
+                        edge_mean,
+                        edge_std,
+                        per_node=args.per_node_norm,
+                        skip_edge_attr_cols=skip_edge_attr_cols,
+                    )
+                test_loader = DataLoader(
+                    test_list,
+                    batch_size=args.batch_size,
+                    num_workers=args.workers,
+                    pin_memory=torch.cuda.is_available(),
+                    persistent_workers=args.workers > 0,
+                )
         checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         state = (
             checkpoint["model_state_dict"]
@@ -3493,6 +3584,7 @@ def main(args: argparse.Namespace):
         c_stats = RunningStats() if has_chlorine else None
         f_stats = RunningStats()
         sample_cap = int(max(args.eval_sample, 0))
+        sample_size = 0
         sample_preds_p: List[float] = []
         sample_true_p: List[float] = []
         sample_preds_c: List[float] = []
@@ -3502,131 +3594,137 @@ def main(args: argparse.Namespace):
         node_mask_np = np.array([n not in exclude for n in wn.node_name_list])
         node_mask = torch.tensor(node_mask_np, dtype=torch.bool, device=device)
 
-        with torch.no_grad():
-            if seq_mode:
-                ei = test_ds.edge_index.to(device)
-                ea = test_ds.edge_attr.to(device) if test_ds.edge_attr is not None else None
-                nt = test_ds.node_type.to(device) if test_ds.node_type is not None else None
-                et = test_ds.edge_type.to(device) if test_ds.edge_type is not None else None
-                for batch in test_loader:
-                    if isinstance(batch, (list, tuple)) and len(batch) == 3:
-                        X_seq, edge_attr_batch, Y_seq = batch
-                    else:
-                        X_seq, Y_seq = batch
-                        edge_attr_batch = None
-                    X_seq = X_seq.to(device)
-                    attr = edge_attr_batch.to(device) if isinstance(edge_attr_batch, torch.Tensor) else ea
-
-                    def _model_forward():
-                        return model(X_seq, ei, attr, nt, et)
-                    with autocast(device_type=device.type, enabled=args.amp):
-                        out = _forward_with_auto_checkpoint(model, _model_forward)
-                    if isinstance(out, dict):
-                        node_pred = out["node_outputs"]
-                        edge_pred = out.get("edge_outputs")
-                    else:
-                        node_pred = out
-                        edge_pred = None
-                    if isinstance(Y_seq, dict):
-                        Y_node = Y_seq["node_outputs"].to(node_pred.device)
-                        Y_edge = Y_seq.get("edge_outputs")
-                        if Y_edge is not None:
-                            Y_edge = Y_edge.to(node_pred.device)
-                    else:
-                        Y_node = Y_seq.to(node_pred.device)
-                        Y_edge = None
-                    if hasattr(model, "y_mean") and model.y_mean is not None:
-                        if isinstance(model.y_mean, dict):
-                            y_mean_node = model.y_mean['node_outputs'].to(node_pred.device)
-                            y_std_node = model.y_std['node_outputs'].to(node_pred.device)
-                            node_pred = node_pred * y_std_node + y_mean_node
-                            Y_node = Y_node * y_std_node + y_mean_node
-                            if edge_pred is not None and Y_edge is not None:
-                                y_mean_edge = model.y_mean['edge_outputs'].to(node_pred.device)
-                                y_std_edge = model.y_std['edge_outputs'].to(node_pred.device)
-                                edge_pred = edge_pred.squeeze(-1)
-                                edge_pred = edge_pred * y_std_edge + y_mean_edge
-                                Y_edge = Y_edge * y_std_edge + y_mean_edge
+        if test_loader is None:
+            logger.warning(
+                "Skipping test evaluation because no compatible test loader was created"
+            )
+        else:
+            with torch.no_grad():
+                if seq_mode:
+                    ei = test_ds.edge_index.to(device)
+                    ea = test_ds.edge_attr.to(device) if test_ds.edge_attr is not None else None
+                    nt = test_ds.node_type.to(device) if test_ds.node_type is not None else None
+                    et = test_ds.edge_type.to(device) if test_ds.edge_type is not None else None
+                    for batch in test_loader:
+                        if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                            X_seq, edge_attr_batch, Y_seq = batch
                         else:
-                            y_std = model.y_std.to(node_pred.device)
-                            y_mean = model.y_mean.to(node_pred.device)
-                            node_pred = node_pred * y_std + y_mean
-                            Y_node = Y_node * y_std + y_mean
+                            X_seq, Y_seq = batch
+                            edge_attr_batch = None
+                        X_seq = X_seq.to(device)
+                        attr = edge_attr_batch.to(device) if isinstance(edge_attr_batch, torch.Tensor) else ea
 
-                    pred_p = node_pred[..., 0].reshape(-1, node_mask.numel())
-                    true_p = Y_node[..., 0].reshape(-1, node_mask.numel())
-                    pred_p = pred_p[:, node_mask].reshape(-1)
-                    true_p = true_p[:, node_mask].reshape(-1)
-                    p_stats.update(pred_p.cpu().numpy(), true_p.cpu().numpy())
-                    if sample_cap and len(sample_preds_p) < sample_cap:
-                        take = min(sample_cap - len(sample_preds_p), pred_p.numel())
-                        sample_preds_p.extend(pred_p[:take].cpu().numpy())
-                        sample_true_p.extend(true_p[:take].cpu().numpy())
-
-                    if has_chlorine and node_pred.shape[-1] > 1:
-                        pred_c = node_pred[..., 1].reshape(-1, node_mask.numel())
-                        true_c = Y_node[..., 1].reshape(-1, node_mask.numel())
-                        pred_c = pred_c[:, node_mask].reshape(-1)
-                        true_c = true_c[:, node_mask].reshape(-1)
-                        if c_stats is not None:
-                            c_stats.update(pred_c.cpu().numpy(), true_c.cpu().numpy())
-                        if sample_cap and len(sample_preds_c) < sample_cap:
-                            take = min(sample_cap - len(sample_preds_c), pred_c.numel())
-                            sample_preds_c.extend(pred_c[:take].cpu().numpy())
-                            sample_true_c.extend(true_c[:take].cpu().numpy())
-
-                    if edge_pred is not None and Y_edge is not None:
-                        pred_f = edge_pred.reshape(-1)
-                        true_f = Y_edge.reshape(-1)
-                        f_stats.update(pred_f.cpu().numpy(), true_f.cpu().numpy())
-            else:
-                for batch in test_loader:
-                    batch = batch.to(device, non_blocking=True)
-                    def _model_forward():
-                        return model(
-                            batch.x,
-                            batch.edge_index,
-                            getattr(batch, "edge_attr", None),
-                            getattr(batch, "node_type", None),
-                            getattr(batch, "edge_type", None),
-                        )
-                    with autocast(device_type=device.type, enabled=args.amp):
-                        out = _forward_with_auto_checkpoint(model, _model_forward)
-                    if hasattr(model, "y_mean") and model.y_mean is not None:
-                        if isinstance(model.y_mean, dict):
-                            y_mean_node = model.y_mean['node_outputs'].to(out.device)
-                            y_std_node = model.y_std['node_outputs'].to(out.device)
-                            node_out = (
-                                out["node_outputs"] if isinstance(out, dict) else out
-                            )
-                            node_out = node_out * y_std_node + y_mean_node
-                            batch_y = batch.y * y_std_node + y_mean_node
-                            if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
-                                y_mean_edge = model.y_mean['edge_outputs'].to(out.device)
-                                y_std_edge = model.y_std['edge_outputs'].to(out.device)
-                                edge_out = out["edge_outputs"].squeeze(-1)
-                                edge_y = batch.edge_y.squeeze(-1)
-                                edge_out = edge_out * y_std_edge + y_mean_edge
-                                edge_y = edge_y * y_std_edge + y_mean_edge
+                        def _model_forward():
+                            return model(X_seq, ei, attr, nt, et)
+                        with autocast(device_type=device.type, enabled=args.amp):
+                            out = _forward_with_auto_checkpoint(model, _model_forward)
+                        if isinstance(out, dict):
+                            node_pred = out["node_outputs"]
+                            edge_pred = out.get("edge_outputs")
+                        else:
+                            node_pred = out
+                            edge_pred = None
+                        if isinstance(Y_seq, dict):
+                            Y_node = Y_seq["node_outputs"].to(node_pred.device)
+                            Y_edge = Y_seq.get("edge_outputs")
+                            if Y_edge is not None:
+                                Y_edge = Y_edge.to(node_pred.device)
+                        else:
+                            Y_node = Y_seq.to(node_pred.device)
+                            Y_edge = None
+                        if hasattr(model, "y_mean") and model.y_mean is not None:
+                            if isinstance(model.y_mean, dict):
+                                y_mean_node = model.y_mean['node_outputs'].to(node_pred.device)
+                                y_std_node = model.y_std['node_outputs'].to(node_pred.device)
+                                node_pred = node_pred * y_std_node + y_mean_node
+                                Y_node = Y_node * y_std_node + y_mean_node
+                                if edge_pred is not None and Y_edge is not None:
+                                    y_mean_edge = model.y_mean['edge_outputs'].to(node_pred.device)
+                                    y_std_edge = model.y_std['edge_outputs'].to(node_pred.device)
+                                    edge_pred = edge_pred.squeeze(-1)
+                                    edge_pred = edge_pred * y_std_edge + y_mean_edge
+                                    Y_edge = Y_edge * y_std_edge + y_mean_edge
                             else:
-                                edge_out = edge_y = None
-                        else:
-                            y_std = model.y_std.to(out.device)
-                            y_mean = model.y_mean.to(out.device)
-                            node_out = (
-                                out["node_outputs"] if isinstance(out, dict) else out
+                                y_std = model.y_std.to(node_pred.device)
+                                y_mean = model.y_mean.to(node_pred.device)
+                                node_pred = node_pred * y_std + y_mean
+                                Y_node = Y_node * y_std + y_mean
+
+                        pred_p = node_pred[..., 0].reshape(-1, node_mask.numel())
+                        true_p = Y_node[..., 0].reshape(-1, node_mask.numel())
+                        pred_p = pred_p[:, node_mask].reshape(-1)
+                        true_p = true_p[:, node_mask].reshape(-1)
+                        p_stats.update(pred_p.cpu().numpy(), true_p.cpu().numpy())
+                        if sample_cap and len(sample_preds_p) < sample_cap:
+                            take = min(sample_cap - len(sample_preds_p), pred_p.numel())
+                            sample_preds_p.extend(pred_p[:take].cpu().numpy())
+                            sample_true_p.extend(true_p[:take].cpu().numpy())
+
+                        if has_chlorine and node_pred.shape[-1] > 1:
+                            pred_c = node_pred[..., 1].reshape(-1, node_mask.numel())
+                            true_c = Y_node[..., 1].reshape(-1, node_mask.numel())
+                            pred_c = pred_c[:, node_mask].reshape(-1)
+                            true_c = true_c[:, node_mask].reshape(-1)
+                            if c_stats is not None:
+                                c_stats.update(pred_c.cpu().numpy(), true_c.cpu().numpy())
+                            if sample_cap and len(sample_preds_c) < sample_cap:
+                                take = min(sample_cap - len(sample_preds_c), pred_c.numel())
+                                sample_preds_c.extend(pred_c[:take].cpu().numpy())
+                                sample_true_c.extend(true_c[:take].cpu().numpy())
+
+                        if edge_pred is not None and Y_edge is not None:
+                            pred_f = edge_pred.reshape(-1)
+                            true_f = Y_edge.reshape(-1)
+                            f_stats.update(pred_f.cpu().numpy(), true_f.cpu().numpy())
+                else:
+                    for batch in test_loader:
+                        batch = batch.to(device, non_blocking=True)
+
+                        def _model_forward():
+                            return model(
+                                batch.x,
+                                batch.edge_index,
+                                getattr(batch, "edge_attr", None),
+                                getattr(batch, "node_type", None),
+                                getattr(batch, "edge_type", None),
                             )
-                            node_out = node_out * y_std + y_mean
-                            batch_y = batch.y * y_std + y_mean
+                        with autocast(device_type=device.type, enabled=args.amp):
+                            out = _forward_with_auto_checkpoint(model, _model_forward)
+                        if hasattr(model, "y_mean") and model.y_mean is not None:
+                            if isinstance(model.y_mean, dict):
+                                y_mean_node = model.y_mean['node_outputs'].to(out.device)
+                                y_std_node = model.y_std['node_outputs'].to(out.device)
+                                node_out = (
+                                    out["node_outputs"] if isinstance(out, dict) else out
+                                )
+                                node_out = node_out * y_std_node + y_mean_node
+                                batch_y = batch.y * y_std_node + y_mean_node
+                                if isinstance(out, dict) and getattr(batch, "edge_y", None) is not None:
+                                    y_mean_edge = model.y_mean['edge_outputs'].to(out.device)
+                                    y_std_edge = model.y_std['edge_outputs'].to(out.device)
+                                    edge_out = out["edge_outputs"].squeeze(-1)
+                                    edge_y = batch.edge_y.squeeze(-1)
+                                    edge_out = edge_out * y_std_edge + y_mean_edge
+                                    edge_y = edge_y * y_std_edge + y_mean_edge
+                                else:
+                                    edge_out = edge_y = None
+                            else:
+                                y_std = model.y_std.to(out.device)
+                                y_mean = model.y_mean.to(out.device)
+                                node_out = (
+                                    out["node_outputs"] if isinstance(out, dict) else out
+                                )
+                                node_out = node_out * y_std + y_mean
+                                batch_y = batch.y * y_std + y_mean
+                                edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
+                                edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
+                        else:
+                            node_out = out["node_outputs"] if isinstance(out, dict) else out
+                            batch_y = batch.y
                             edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
                             edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
-                    else:
-                        node_out = out["node_outputs"] if isinstance(out, dict) else out
-                        batch_y = batch.y
-                        edge_out = out.get("edge_outputs") if isinstance(out, dict) else None
-                        edge_y = batch.edge_y if getattr(batch, "edge_y", None) is not None else None
-                        if edge_out is not None:
-                            edge_out = edge_out.squeeze(-1)
+                            if edge_out is not None:
+                                edge_out = edge_out.squeeze(-1)
                         if edge_y is not None:
                             edge_y = edge_y.squeeze(-1)
 

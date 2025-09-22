@@ -864,6 +864,7 @@ def build_sequence_dataset(
         energy_seq: List[np.ndarray] = []
         demand_seq: List[np.ndarray] = []
         edge_attr_seq: List[np.ndarray] = []
+        reservoir_names = set(wn_template.reservoir_name_list)
         for t in range(seq_len):
             pump_vector = pump_ctrl_arr[:, t]
             node_pump = pump_layout * pump_vector
@@ -881,6 +882,7 @@ def build_sequence_dataset(
             for node in node_names:
                 idx = node_idx[node]
                 layout_idx = node_index_map[node]
+                is_reservoir = node in reservoir_names
                 if node in wn_template.reservoir_name_list:
                     # Reservoir nodes report ~0 pressure from EPANET. Use their
                     # fixed hydraulic head instead so the surrogate is aware of
@@ -911,6 +913,8 @@ def build_sequence_dataset(
                 feat = [d_t, p_t]
                 if include_chlorine:
                     feat.append(c_t)
+                head_t = p_t if is_reservoir else p_t + elev
+                feat.append(head_t)
                 feat.append(elev)
                 if num_pumps:
                     feat.extend(node_pump[layout_idx].tolist())
@@ -985,6 +989,7 @@ def build_dataset(
     node_index_map = {name: idx for idx, name in enumerate(node_names)}
     pump_layout = build_pump_node_matrix(wn_template, dtype=np.float64)
 
+    reservoir_names = set(wn_template.reservoir_name_list)
     for sim_results, _scale_dict, pump_ctrl in results:
         # Enforce a 5 m lower bound while keeping the upper range unrestricted
         # to capture extreme pressure values.
@@ -1026,6 +1031,7 @@ def build_dataset(
             for node in node_names:
                 idx = node_idx[node]
                 layout_idx = node_index_map[node]
+                is_reservoir = node in reservoir_names
                 if node in wn_template.reservoir_name_list:
                     # Use the reservoir's constant head as the pressure input
                     p_t = float(wn_template.get_node(node).base_head)
@@ -1054,6 +1060,8 @@ def build_dataset(
                 feat = [d_t, p_t]
                 if include_chlorine:
                     feat.append(c_t)
+                head_t = p_t if is_reservoir else p_t + elev
+                feat.append(head_t)
                 feat.append(elev)
                 if num_pumps:
                     feat.extend(node_pump[layout_idx].tolist())
@@ -1479,11 +1487,17 @@ def main() -> None:
     log_array_stats("node_names", node_names)
     np.save(os.path.join(out_dir, "node_names.npy"), node_names)
 
+    base_layout = ["demand", "pressure"]
+    if args.include_chlorine:
+        base_layout.append("chlorine")
+    base_layout.extend(["head", "elevation"])
     manifest = {
         "num_extreme": int(extreme_count),
         "total_scenarios": len(manifest_records),
         "include_chlorine": bool(args.include_chlorine),
+        "include_head": True,
         "node_target_dim": 2 if args.include_chlorine else 1,
+        "node_feature_layout": base_layout,
         "scenarios": manifest_records,
     }
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
