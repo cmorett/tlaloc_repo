@@ -211,6 +211,100 @@ def _denormalize_pressures(
     return values * std.view(*view_shape) + mean.view(*view_shape)
 
 
+def _resolve_elevation_index(
+    head_idx: Optional[int],
+    elev_idx: Optional[int],
+    has_chlorine: Optional[bool],
+) -> Optional[int]:
+    """Return the column index holding elevation features.
+
+    Prefers ``head_idx + 1`` so elevation follows head in the layout.
+    Falls back to ``elev_idx`` and finally the historical offsets based on
+    chlorine availability when explicit indices are not provided.
+    """
+
+    if head_idx is not None:
+        return head_idx + 1
+    if elev_idx is not None:
+        return elev_idx
+    if has_chlorine is not None:
+        return 3 if has_chlorine else 2
+    return None
+
+
+def _compute_head_loss_from_preds(
+    node_outputs: torch.Tensor,
+    edge_outputs: torch.Tensor,
+    X_seq: torch.Tensor,
+    model: nn.Module,
+    device: torch.device,
+    edge_index: torch.Tensor,
+    edge_attr_phys: torch.Tensor,
+    edge_type: Optional[torch.Tensor],
+    node_type: Optional[torch.Tensor],
+    *,
+    head_sign_weight: float,
+    use_head: bool,
+    head_idx: Optional[int],
+    elev_idx: Optional[int],
+    has_chlorine: Optional[bool],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return head loss and violation using model predictions."""
+
+    press = node_outputs[..., 0].float()
+    flow = edge_outputs.squeeze(-1)
+
+    if hasattr(model, "y_mean") and model.y_mean is not None:
+        if isinstance(model.y_mean, dict):
+            p_mean = model.y_mean["node_outputs"].to(device)
+            p_std = model.y_std["node_outputs"].to(device)
+            if p_mean.ndim == 2:
+                p_mean = p_mean[..., 0]
+                p_std = p_std[..., 0]
+            press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
+            q_mean = model.y_mean["edge_outputs"].to(device)
+            q_std = model.y_std["edge_outputs"].to(device)
+            flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+        else:
+            mean, std = _pressure_norm_stats(
+                model,
+                device,
+                press.dtype,
+            )
+            press = _denormalize_pressures(press, mean, std)
+
+    elevation = None
+    use_head_local = use_head
+    elevation_col = _resolve_elevation_index(head_idx, elev_idx, has_chlorine)
+    if use_head and elevation_col is not None and X_seq.size(-1) > elevation_col:
+        elevation = X_seq[..., elevation_col].float()
+        if hasattr(model, "x_mean") and model.x_mean is not None:
+            x_mean = model.x_mean.to(device)
+            x_std = model.x_std.to(device)
+            if x_mean.ndim == 1:
+                elevation = elevation * x_std[elevation_col] + x_mean[elevation_col]
+            else:
+                elevation = (
+                    elevation * x_std[:, elevation_col].view(1, 1, -1)
+                    + x_mean[:, elevation_col].view(1, 1, -1)
+                )
+    else:
+        use_head_local = False
+
+    return pressure_headloss_consistency_loss(
+        press,
+        flow,
+        edge_index,
+        edge_attr_phys,
+        elevation=elevation,
+        edge_type=edge_type,
+        node_type=node_type,
+        return_violation=True,
+        sign_weight=head_sign_weight,
+        use_head=use_head_local,
+    )
+
+
 def _denormalize_feature(
     values: torch.Tensor,
     mean: Optional[torch.Tensor],
@@ -1539,6 +1633,8 @@ def train_sequence(
     head_sign_weight: float = 0.5,
     has_chlorine: bool = True,
     use_head: bool = True,
+    head_idx: Optional[int] = None,
+    elev_idx: Optional[int] = None,
 ) -> Tuple[
     float,
     float,
@@ -1720,52 +1816,22 @@ def train_sequence(
             head_violation = torch.tensor(0.0, device=device)
             pump_loss_val = torch.tensor(0.0, device=device)
             if pressure_loss:
-                press = preds['node_outputs'][..., 0].float()
-                flow = edge_preds.squeeze(-1)
-                if hasattr(model, 'y_mean') and model.y_mean is not None:
-                    if isinstance(model.y_mean, dict):
-                        p_mean = model.y_mean['node_outputs'].to(device)
-                        p_std = model.y_std['node_outputs'].to(device)
-                        if p_mean.ndim == 2:
-                            p_mean = p_mean[..., 0]
-                            p_std = p_std[..., 0]
-                        press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
-                        q_mean = model.y_mean['edge_outputs'].to(device)
-                        q_std = model.y_std['edge_outputs'].to(device)
-                        flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
-                    else:
-                        mean, std = _pressure_norm_stats(
-                            model,
-                            device,
-                            press.dtype,
-                        )
-                        press = _denormalize_pressures(press, mean, std)
-                    elevation = None
-                    use_head_local = use_head
-                    elev_idx = 3 if has_chlorine else 2
-                    if use_head and X_seq.size(-1) > elev_idx:
-                        elevation = X_seq[..., elev_idx].float()
-                        if hasattr(model, 'x_mean') and model.x_mean is not None:
-                            x_mean = model.x_mean.to(device)
-                            x_std = model.x_std.to(device)
-                            if x_mean.ndim == 1:
-                                elevation = elevation * x_std[elev_idx] + x_mean[elev_idx]
-                            else:
-                                elevation = elevation * x_std[:, elev_idx].view(1, 1, -1) + x_mean[:, elev_idx].view(1, 1, -1)
-                    else:
-                        use_head_local = False
-                    head_loss, head_violation = pressure_headloss_consistency_loss(
-                        press,
-                        flow,
-                        edge_index,
-                        edge_attr_phys,
-                        elevation=elevation,
-                        edge_type=et,
-                        node_type=nt,
-                        return_violation=True,
-                        sign_weight=head_sign_weight,
-                        use_head=use_head_local,
-                    )
+                head_loss, head_violation = _compute_head_loss_from_preds(
+                    preds['node_outputs'],
+                    edge_preds,
+                    X_seq,
+                    model,
+                    device,
+                    edge_index,
+                    edge_attr_phys,
+                    et,
+                    nt,
+                    head_sign_weight=head_sign_weight,
+                    use_head=use_head,
+                    head_idx=head_idx,
+                    elev_idx=elev_idx,
+                    has_chlorine=has_chlorine,
+                )
             if pump_loss and pump_coeffs is not None:
                 flow_pc = edge_preds.squeeze(-1)
                 if hasattr(model, 'y_mean') and model.y_mean is not None:
@@ -1896,6 +1962,8 @@ def estimate_physics_scales_from_data(
     head_sign_weight: float = 0.5,
     has_chlorine: bool = True,
     use_head: bool = True,
+    head_idx: Optional[int] = None,
+    elev_idx: Optional[int] = None,
 ) -> Tuple[float, float, float]:
     """Estimate baseline magnitudes using ground-truth flows and pressures."""
 
@@ -1958,16 +2026,25 @@ def estimate_physics_scales_from_data(
 
             elevation = None
             use_head_local = use_head
-            elev_idx = 3 if has_chlorine else 2
-            if use_head and X_seq.size(-1) > elev_idx:
-                elevation = X_seq[..., elev_idx].float()
+            elevation_col = _resolve_elevation_index(head_idx, elev_idx, has_chlorine)
+            if (
+                use_head
+                and elevation_col is not None
+                and X_seq.size(-1) > elevation_col
+            ):
+                elevation = X_seq[..., elevation_col].float()
                 if hasattr(model, 'x_mean') and model.x_mean is not None:
                     x_mean = model.x_mean.to(device)
                     x_std = model.x_std.to(device)
                     if x_mean.ndim == 1:
-                        elevation = elevation * x_std[elev_idx] + x_mean[elev_idx]
+                        elevation = (
+                            elevation * x_std[elevation_col] + x_mean[elevation_col]
+                        )
                     else:
-                        elevation = elevation * x_std[:, elev_idx].view(1, 1, -1) + x_mean[:, elev_idx].view(1, 1, -1)
+                        elevation = (
+                            elevation * x_std[:, elevation_col].view(1, 1, -1)
+                            + x_mean[:, elevation_col].view(1, 1, -1)
+                        )
             else:
                 use_head_local = False
             head_loss, _ = pressure_headloss_consistency_loss(
@@ -2050,21 +2127,24 @@ def evaluate_sequence(
     head_sign_weight: float = 0.5,
     has_chlorine: bool = True,
     use_head: bool = True,
-) -> Tuple[
-    float,
-    float,
-    float,
-    float,
-    float,
-    float,
-    float,
-    float,
-    float,
-    float,
-    float,
-]:
+    head_idx: Optional[int] = None,
+    elev_idx: Optional[int] = None,
+    ) -> Tuple[
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+    ]:
     global interrupted
     model.eval()
+    pressure_loss_flag = bool(pressure_loss)
     total_loss = 0.0
     press_total = cl_total = flow_total = 0.0
     mass_total = head_total = sym_total = pump_total = 0.0
@@ -2124,9 +2204,37 @@ def evaluate_sequence(
                 )
             with autocast(device_type=device.type, enabled=amp):
                 preds = _forward_with_auto_checkpoint(model, _model_forward)
+            loss = torch.tensor(0.0, device=device)
+            loss_press = torch.tensor(0.0, device=device)
+            loss_cl = torch.tensor(0.0, device=device)
+            loss_edge = torch.tensor(0.0, device=device)
+            mass_loss = torch.tensor(0.0, device=device)
+            sym_loss = torch.tensor(0.0, device=device)
+            mass_imb = torch.tensor(0.0, device=device)
+            head_loss = torch.tensor(0.0, device=device)
+            head_violation = torch.tensor(0.0, device=device)
+            pump_loss_val = torch.tensor(0.0, device=device)
+            press_mae = torch.tensor(0.0, device=device)
+            if pressure_loss_flag and isinstance(preds, dict):
+                head_loss, head_violation = _compute_head_loss_from_preds(
+                    preds["node_outputs"],
+                    preds["edge_outputs"].float(),
+                    X_seq,
+                    model,
+                    device,
+                    edge_index,
+                    edge_attr_phys,
+                    et,
+                    nt,
+                    head_sign_weight=head_sign_weight,
+                    use_head=use_head,
+                    head_idx=head_idx,
+                    elev_idx=elev_idx,
+                    has_chlorine=has_chlorine,
+                )
             if isinstance(Y_seq, dict):
-                target_nodes_full = Y_seq['node_outputs'].to(device)
-                pred_nodes_full = preds['node_outputs'].float()
+                target_nodes_full = Y_seq["node_outputs"].to(device)
+                pred_nodes_full = preds["node_outputs"].float()
                 press_pred_full = pred_nodes_full[..., 0]
                 press_true_full = target_nodes_full[..., 0]
                 if hasattr(model, "y_mean") and model.y_mean is not None:
@@ -2160,34 +2268,153 @@ def evaluate_sequence(
                             mean,
                             std,
                         )
-                    if node_mask is not None:
-                        pred_nodes = pred_nodes_full[:, :, node_mask, :]
-                        target_nodes = target_nodes_full[:, :, node_mask, :]
-                        press_pred = press_pred_full[:, :, node_mask]
-                        press_true = press_true_full[:, :, node_mask]
-                    else:
-                        pred_nodes = pred_nodes_full
-                        target_nodes = target_nodes_full
-                        press_pred = press_pred_full
-                        press_true = press_true_full
-                    edge_target = Y_seq['edge_outputs'].unsqueeze(-1).to(device)
-                    edge_preds = preds['edge_outputs'].float()
-                    loss, loss_press, loss_cl, loss_edge = weighted_mtl_loss(
-                        pred_nodes,
-                        target_nodes.float(),
-                        edge_preds,
-                        edge_target.float(),
-                        loss_fn=loss_fn,
-                        w_press=w_press,
-                        w_cl=w_cl,
-                        w_flow=w_flow,
+                if node_mask is not None:
+                    pred_nodes = pred_nodes_full[:, :, node_mask, :]
+                    target_nodes = target_nodes_full[:, :, node_mask, :]
+                    press_pred = press_pred_full[:, :, node_mask]
+                    press_true = press_true_full[:, :, node_mask]
+                else:
+                    pred_nodes = pred_nodes_full
+                    target_nodes = target_nodes_full
+                    press_pred = press_pred_full
+                    press_true = press_true_full
+                edge_target = Y_seq["edge_outputs"].unsqueeze(-1).to(device)
+                edge_preds = preds["edge_outputs"].float()
+                loss, loss_press, loss_cl, loss_edge = weighted_mtl_loss(
+                    pred_nodes,
+                    target_nodes.float(),
+                    edge_preds,
+                    edge_target.float(),
+                    loss_fn=loss_fn,
+                    w_press=w_press,
+                    w_cl=w_cl,
+                    w_flow=w_flow,
+                )
+                press_mae = torch.mean(torch.abs(press_pred - press_true))
+                if abs_err_total is None:
+                    total_nodes = node_mask.numel() if node_mask is not None else press_pred_full.size(2)
+                    abs_err_total = torch.zeros(total_nodes, device=device)
+                    sq_err_total = torch.zeros(total_nodes, device=device)
+                    count = torch.zeros(total_nodes, device=device)
+                diff_full = press_pred_full - press_true_full
+                if node_mask is not None:
+                    mask_vec = node_mask.to(device)
+                    abs_err_total[mask_vec] += diff_full[:, :, mask_vec].abs().sum(dim=(0, 1))
+                    sq_err_total[mask_vec] += diff_full[:, :, mask_vec].pow(2).sum(dim=(0, 1))
+                    count[mask_vec] += diff_full.shape[0] * diff_full.shape[1]
+                else:
+                    abs_err_total += diff_full.abs().sum(dim=(0, 1))
+                    sq_err_total += diff_full.pow(2).sum(dim=(0, 1))
+                    count += diff_full.shape[0] * diff_full.shape[1]
+                mass_loss = torch.tensor(0.0, device=device)
+                sym_loss = torch.tensor(0.0, device=device)
+                mass_imb = torch.tensor(0.0, device=device)
+                if physics_loss:
+                    flows_mb = edge_preds.squeeze(-1)
+                    if hasattr(model, "y_mean") and model.y_mean is not None:
+                        q_mean = model.y_mean["edge_outputs"].to(device)
+                        q_std = model.y_std["edge_outputs"].to(device)
+                        flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
+                    flows_mb = (
+                        flows_mb.permute(2, 0, 1)
+                        .reshape(edge_index.size(1), -1)
                     )
-                    press_mae = torch.mean(torch.abs(press_pred - press_true))
-                    if abs_err_total is None:
-                        total_nodes = node_mask.numel() if node_mask is not None else press_pred_full.size(2)
-                        abs_err_total = torch.zeros(total_nodes, device=device)
-                        sq_err_total = torch.zeros(total_nodes, device=device)
-                        count = torch.zeros(total_nodes, device=device)
+                    demand_mb = _extract_next_demand(
+                        X_seq, Y_seq, node_count, model, device
+                    )
+                    mass_loss, mass_imb = compute_mass_balance_loss(
+                        flows_mb,
+                        edge_index,
+                        node_count,
+                        demand=demand_mb,
+                        node_type=nt,
+                        return_imbalance=True,
+                    )
+                    sym_errors = []
+                    for i, j in edge_pairs:
+                        if et is not None:
+                            # only enforce symmetry for pipes (edge_type 0)
+                            if et[i] != 0 or et[j] != 0:
+                                continue
+                        sym_errors.append(flows_mb[i] + flows_mb[j])
+                    if sym_errors:
+                        sym_errors = torch.stack(sym_errors, dim=0)
+                        sym_loss = torch.mean(sym_errors ** 2)
+                else:
+                    mass_imb = torch.tensor(0.0, device=device)
+                if not pressure_loss_flag:
+                    head_violation = torch.tensor(0.0, device=device)
+                if pump_loss and pump_coeffs is not None:
+                    flow_pc = edge_preds.squeeze(-1)
+                    if hasattr(model, "y_mean") and model.y_mean is not None:
+                        if isinstance(model.y_mean, dict):
+                            q_mean = model.y_mean['edge_outputs'].to(device)
+                            q_std = model.y_std['edge_outputs'].to(device)
+                            flow_pc = flow_pc * q_std + q_mean
+                        else:
+                            flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
+                    pump_speed_tensor = _select_pump_speeds(
+                        edge_attr_batch,
+                        edge_attr,
+                        edge_attr_phys,
+                        et,
+                        device,
+                    )
+                    pump_loss_val = pump_curve_loss(
+                        flow_pc,
+                        pump_coeffs,
+                        edge_index,
+                        et,
+                        pump_speeds=pump_speed_tensor,
+                    )
+                if physics_loss or pressure_loss_flag or pump_loss:
+                    logger.debug(
+                        "Raw physics losses - mass: %.6e, head: %.6e, pump: %.6e",
+                        mass_loss.detach().item(),
+                        head_loss.detach().item(),
+                        pump_loss_val.detach().item(),
+                    )
+                mass_denom = 1.0
+                if physics_loss or pressure_loss_flag or pump_loss:
+                    (
+                        mass_loss,
+                        head_loss,
+                        pump_loss_val,
+                        mass_denom,
+                        _,
+                        _,
+                    ) = scale_physics_losses(
+                        mass_loss,
+                        head_loss,
+                        pump_loss_val,
+                        mass_scale=mass_scale,
+                        head_scale=head_scale,
+                        pump_scale=pump_scale,
+                        return_denominators=True,
+                    )
+                    if mass_scale > 0:
+                        sym_loss = sym_loss / mass_denom
+                if physics_loss:
+                    loss = loss + w_mass * (mass_loss + sym_loss)
+                if pressure_loss_flag:
+                    loss = loss + w_head * head_loss
+                if pump_loss:
+                    loss = loss + w_pump * pump_loss_val
+            else:
+                Y_seq = Y_seq.to(device)
+                loss_press = loss_cl = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
+                head_loss = pump_loss_val = torch.tensor(0.0, device=device)
+                mass_imb = head_violation = torch.tensor(0.0, device=device)
+                press_mae = torch.tensor(0.0, device=device)
+                loss = _apply_loss(preds, Y_seq.float(), loss_fn)
+                if abs_err_total is None and preds.dim() >= 3:
+                    total_nodes = node_mask.numel() if node_mask is not None else preds.size(2)
+                    abs_err_total = torch.zeros(total_nodes, device=device)
+                    sq_err_total = torch.zeros(total_nodes, device=device)
+                    count = torch.zeros(total_nodes, device=device)
+                if preds.dim() >= 3:
+                    press_pred_full = preds[..., 0]
+                    press_true_full = Y_seq[..., 0]
                     diff_full = press_pred_full - press_true_full
                     if node_mask is not None:
                         mask_vec = node_mask.to(device)
@@ -2198,177 +2425,6 @@ def evaluate_sequence(
                         abs_err_total += diff_full.abs().sum(dim=(0, 1))
                         sq_err_total += diff_full.pow(2).sum(dim=(0, 1))
                         count += diff_full.shape[0] * diff_full.shape[1]
-                    if physics_loss:
-                        flows_mb = edge_preds.squeeze(-1)
-                        if hasattr(model, "y_mean") and model.y_mean is not None:
-                            q_mean = model.y_mean["edge_outputs"].to(device)
-                            q_std = model.y_std["edge_outputs"].to(device)
-                            flows_mb = flows_mb * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
-                        flows_mb = (
-                            flows_mb.permute(2, 0, 1)
-                            .reshape(edge_index.size(1), -1)
-                        )
-                        demand_mb = _extract_next_demand(
-                            X_seq, Y_seq, node_count, model, device
-                        )
-                        mass_loss, mass_imb = compute_mass_balance_loss(
-                            flows_mb,
-                            edge_index,
-                            node_count,
-                            demand=demand_mb,
-                            node_type=nt,
-                            return_imbalance=True,
-                        )
-                        sym_errors = []
-                        for i, j in edge_pairs:
-                            if et is not None:
-                                # only enforce symmetry for pipes (edge_type 0)
-                                if et[i] != 0 or et[j] != 0:
-                                    continue
-                            sym_errors.append(flows_mb[i] + flows_mb[j])
-                        if sym_errors:
-                            sym_errors = torch.stack(sym_errors, dim=0)
-                            sym_loss = torch.mean(sym_errors ** 2)
-                        else:
-                            sym_loss = torch.tensor(0.0, device=device)
-                    else:
-                        mass_loss = torch.tensor(0.0, device=device)
-                        sym_loss = torch.tensor(0.0, device=device)
-                        mass_imb = torch.tensor(0.0, device=device)
-                    if pressure_loss:
-                        press = preds['node_outputs'][..., 0].float()
-                        flow = edge_preds.squeeze(-1)
-                        if hasattr(model, 'y_mean') and model.y_mean is not None:
-                            if isinstance(model.y_mean, dict):
-                                p_mean = model.y_mean['node_outputs'].to(device)
-                                p_std = model.y_std['node_outputs'].to(device)
-                                if p_mean.ndim == 2:
-                                    p_mean = p_mean[..., 0]
-                                    p_std = p_std[..., 0]
-                                press = press * p_std.view(1, 1, -1) + p_mean.view(1, 1, -1)
-                                q_mean = model.y_mean['edge_outputs'].to(device)
-                                q_std = model.y_std['edge_outputs'].to(device)
-                                flow = flow * q_std.view(1, 1, -1) + q_mean.view(1, 1, -1)
-                            else:
-                                mean, std = _pressure_norm_stats(
-                                    model,
-                                    device,
-                                    press.dtype,
-                                )
-                                press = _denormalize_pressures(press, mean, std)
-                        elevation = None
-                        use_head_local = use_head
-                        elev_idx = 3 if has_chlorine else 2
-                        if use_head and X_seq.size(-1) > elev_idx:
-                            elevation = X_seq[..., elev_idx].float()
-                            if hasattr(model, 'x_mean') and model.x_mean is not None:
-                                x_mean = model.x_mean.to(device)
-                                x_std = model.x_std.to(device)
-                                if x_mean.ndim == 1:
-                                    elevation = elevation * x_std[elev_idx] + x_mean[elev_idx]
-                                else:
-                                    elevation = elevation * x_std[:, elev_idx].view(1, 1, -1) + x_mean[:, elev_idx].view(1, 1, -1)
-                        else:
-                            use_head_local = False
-                        head_loss, head_violation = pressure_headloss_consistency_loss(
-                            press,
-                            flow,
-                            edge_index,
-                            edge_attr_phys,
-                            elevation=elevation,
-                            edge_type=et,
-                            node_type=nt,
-                            return_violation=True,
-                            sign_weight=head_sign_weight,
-                            use_head=use_head_local,
-                        )
-                    else:
-                        head_loss = torch.tensor(0.0, device=device)
-                        head_violation = torch.tensor(0.0, device=device)
-                    if pump_loss and pump_coeffs is not None:
-                        flow_pc = edge_preds.squeeze(-1)
-                        if hasattr(model, 'y_mean') and model.y_mean is not None:
-                            if isinstance(model.y_mean, dict):
-                                q_mean = model.y_mean['edge_outputs'].to(device)
-                                q_std = model.y_std['edge_outputs'].to(device)
-                                flow_pc = flow_pc * q_std + q_mean
-                            else:
-                                flow_pc = flow_pc * model.y_std[-1].to(device) + model.y_mean[-1].to(device)
-                        pump_speed_tensor = _select_pump_speeds(
-                            edge_attr_batch,
-                            edge_attr,
-                            edge_attr_phys,
-                            et,
-                            device,
-                        )
-                        pump_loss_val = pump_curve_loss(
-                            flow_pc,
-                            pump_coeffs,
-                            edge_index,
-                            et,
-                            pump_speeds=pump_speed_tensor,
-                        )
-                    else:
-                        pump_loss_val = torch.tensor(0.0, device=device)
-                    if physics_loss or pressure_loss or pump_loss:
-                        logger.debug(
-                            "Raw physics losses - mass: %.6e, head: %.6e, pump: %.6e",
-                            mass_loss.detach().item(),
-                            head_loss.detach().item(),
-                            pump_loss_val.detach().item(),
-                        )
-                    mass_denom = 1.0
-                    if physics_loss or pressure_loss or pump_loss:
-                        (
-                            mass_loss,
-                            head_loss,
-                            pump_loss_val,
-                            mass_denom,
-                            _,
-                            _,
-                        ) = scale_physics_losses(
-                            mass_loss,
-                            head_loss,
-                            pump_loss_val,
-                            mass_scale=mass_scale,
-                            head_scale=head_scale,
-                            pump_scale=pump_scale,
-                            return_denominators=True,
-                        )
-                        if mass_scale > 0:
-                            sym_loss = sym_loss / mass_denom
-                    if physics_loss:
-                        loss = loss + w_mass * (mass_loss + sym_loss)
-                    if pressure_loss:
-                        loss = loss + w_head * head_loss
-                    if pump_loss:
-                        loss = loss + w_pump * pump_loss_val
-                else:
-                    Y_seq = Y_seq.to(device)
-                    loss_press = loss_cl = loss_edge = mass_loss = sym_loss = torch.tensor(0.0, device=device)
-                    head_loss = pump_loss_val = torch.tensor(0.0, device=device)
-                    mass_imb = head_violation = torch.tensor(0.0, device=device)
-                    press_mae = torch.tensor(0.0, device=device)
-                    loss = _apply_loss(preds, Y_seq.float(), loss_fn)
-                    if abs_err_total is None and preds.dim() >= 3:
-                        total_nodes = node_mask.numel() if node_mask is not None else preds.size(2)
-                        abs_err_total = torch.zeros(total_nodes, device=device)
-                        sq_err_total = torch.zeros(total_nodes, device=device)
-                        count = torch.zeros(total_nodes, device=device)
-                    if preds.dim() >= 3:
-                        press_pred_full = preds[..., 0]
-                        press_true_full = Y_seq[..., 0]
-                        if node_mask is not None:
-                            mask_vec = node_mask.to(device)
-                            diff_full = press_pred_full - press_true_full
-                            abs_err_total[mask_vec] += diff_full.abs().sum(dim=(0, 1))
-                            sq_err_total[mask_vec] += diff_full.pow(2).sum(dim=(0, 1))
-                            count[mask_vec] += diff_full.shape[0] * diff_full.shape[1]
-                        else:
-                            diff_full = press_pred_full - press_true_full
-                            abs_err_total += diff_full.abs().sum(dim=(0, 1))
-                            sq_err_total += diff_full.pow(2).sum(dim=(0, 1))
-                            count += diff_full.shape[0] * diff_full.shape[1]
             total_loss += loss.item() * X_seq.size(0)
             press_total += loss_press.item() * X_seq.size(0)
             cl_total += loss_cl.item() * X_seq.size(0)
@@ -2670,6 +2726,17 @@ def main(args: argparse.Namespace):
             head_idx = feature_layout.index("head")
         elif include_head_feature and base_dim >= 2:
             head_idx = base_dim - 2
+    demand_idx = (
+        feature_layout.index("demand")
+        if feature_layout and "demand" in feature_layout
+        else 0
+    )
+    if head_idx is not None:
+        pump_start = head_idx + 2
+    elif elev_idx is not None:
+        pump_start = elev_idx + 1
+    else:
+        pump_start = base_dim
     args.output_dim = 2 if has_chlorine else 1
     norm_md5 = None
     if args.normalize:
@@ -3021,6 +3088,8 @@ def main(args: argparse.Namespace):
             head_sign_weight=getattr(args, "head_sign_weight", 0.5),
             has_chlorine=has_chlorine,
             use_head=args.physics_loss_use_head,
+            head_idx=head_idx,
+            elev_idx=elev_idx,
         )
         if args.physics_loss and mass_scale <= 0:
             mass_scale = m_base
@@ -3144,6 +3213,8 @@ def main(args: argparse.Namespace):
                     head_sign_weight=getattr(args, "head_sign_weight", 0.5),
                     has_chlorine=has_chlorine,
                     use_head=args.physics_loss_use_head,
+                    head_idx=head_idx,
+                    elev_idx=elev_idx,
                 )
                 loss = loss_tuple[0]
                 (
@@ -3198,6 +3269,8 @@ def main(args: argparse.Namespace):
                         head_sign_weight=getattr(args, "head_sign_weight", 0.5),
                         has_chlorine=has_chlorine,
                         use_head=args.physics_loss_use_head,
+                        head_idx=head_idx,
+                        elev_idx=elev_idx,
                     )
                     val_loss = val_tuple[0]
                     (
@@ -3771,9 +3844,20 @@ def main(args: argparse.Namespace):
             err_p = preds_p - true_p
 
             # gather additional node metadata from raw test features
-            demand_idx = 0
-            elev_idx = 3 if has_chlorine else 2
-            pump_start = 4 if has_chlorine else 3
+            demand_idx_local = demand_idx
+            elev_idx_export = _resolve_elevation_index(
+                head_idx, elev_idx, has_chlorine
+            )
+            if elev_idx_export is None:
+                elev_idx_export = 3 if has_chlorine else 2
+            pump_start_export = pump_start
+            if pump_start_export is None:
+                if head_idx is not None:
+                    pump_start_export = head_idx + 2
+                elif elev_idx_export is not None:
+                    pump_start_export = elev_idx_export + 1
+                else:
+                    pump_start_export = base_dim
             pump_count = len(wn.pump_name_list)
             node_indices = np.arange(len(wn.node_name_list))[node_mask_np]
             X_features = X_test_raw
@@ -3783,10 +3867,10 @@ def main(args: argparse.Namespace):
                 X_flat = X_features.reshape(-1, X_features.shape[-2], X_features.shape[-1])
             else:
                 X_flat = X_features
-            demand = X_flat[..., demand_idx][:, node_mask_np].reshape(-1)
-            elevation = X_flat[..., elev_idx][:, node_mask_np].reshape(-1)
-            if pump_count > 0:
-                pumps = X_flat[..., pump_start : pump_start + pump_count][
+            demand = X_flat[..., demand_idx_local][:, node_mask_np].reshape(-1)
+            elevation = X_flat[..., elev_idx_export][:, node_mask_np].reshape(-1)
+            if pump_count > 0 and pump_start_export is not None:
+                pumps = X_flat[..., pump_start_export : pump_start_export + pump_count][
                     :, node_mask_np, :
                 ].reshape(-1, pump_count)
             else:
