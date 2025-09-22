@@ -1042,7 +1042,14 @@ def compute_mpc_cost(
         clamped = torch.clamp(raw_speed, 0.0, MAX_PUMP_SPEED)
         speed = raw_speed + (clamped - raw_speed).detach()
         x = prepare_node_features(
-            feature_template, cur_p, cur_c, speed, model, d, skip_normalization
+            feature_template,
+            cur_p,
+            cur_c,
+            speed,
+            model,
+            demands=d,
+            node_type=node_types,
+            skip_normalization=skip_normalization,
         )
         if hasattr(model, "rnn"):
             seq_in = x.unsqueeze(0).unsqueeze(0)
@@ -1443,7 +1450,14 @@ def propagate_with_surrogate(
                 speed_in = speed
             d = demands[t] if demands is not None else None
             x = prepare_node_features(
-                feature_template, cur_p, cur_c, speed_in, model, d, skip_normalization
+                feature_template,
+                cur_p,
+                cur_c,
+                speed_in,
+                model,
+                demands=d,
+                node_type=node_types,
+                skip_normalization=skip_normalization,
             )
             if hasattr(model, "rnn"):
                 seq_in = x.view(batch_size, 1, feature_template.size(0), x.size(-1))
@@ -1557,7 +1571,7 @@ def simulate_closed_loop(
             "surrogate predictions may drift without hourly EPANET feedback."
         )
 
-    expected_in_dim = 4 + len(pump_names)
+    expected_in_dim = feature_template.size(1)
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", expected_in_dim)
     if in_dim < expected_in_dim:
         raise ValueError(
@@ -1931,7 +1945,7 @@ def main():
     model_layers = len(getattr(model, "layers", []))
     model_hidden = getattr(getattr(model, "layers", [None])[0], "out_channels", None)
 
-    expected_in_dim = 4 + len(pump_names)
+    expected_in_dim = feature_template.size(1)
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", expected_in_dim)
     if in_dim != expected_in_dim:
         print(

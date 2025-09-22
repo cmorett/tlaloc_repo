@@ -41,9 +41,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from models.loss_utils import compute_mass_balance_loss
 try:
-    from .feature_utils import build_static_node_features, prepare_node_features
+    from .feature_utils import (
+        build_static_node_features,
+        prepare_node_features,
+        build_node_type,
+    )
 except ImportError:  # pragma: no cover
-    from feature_utils import build_static_node_features, prepare_node_features
+    from feature_utils import build_static_node_features, prepare_node_features, build_node_type
 
 # Compute absolute path to the repository's data directory so that results are
 # always written inside the project regardless of the current working
@@ -249,6 +253,13 @@ def _prepare_features(
             wn, num_pumps, include_chlorine=include_chlorine
         )
         _prepare_features.include_chlorine = include_chlorine
+        _prepare_features.node_types = torch.tensor(
+            build_node_type(wn), dtype=torch.long
+        )
+    elif not hasattr(_prepare_features, "node_types"):
+        _prepare_features.node_types = torch.tensor(
+            build_node_type(wn), dtype=torch.long
+        )
     template = _prepare_features.template
 
     pressures_t = torch.tensor(
@@ -275,7 +286,8 @@ def _prepare_features(
         chlorine_t,
         pump_t,
         model,
-        demands_t,
+        demands=demands_t,
+        node_type=_prepare_features.node_types,
         skip_normalization=skip_normalization,
         include_chlorine=include_chlorine,
     )
