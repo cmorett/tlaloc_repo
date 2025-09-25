@@ -64,3 +64,31 @@ def test_headloss_uses_head():
     assert torch.allclose(loss_equal, loss_pressure, atol=1e-6)
     assert not torch.allclose(loss_diff, loss_pressure, atol=1e-6)
 
+
+
+
+def test_headloss_log_roughness():
+    edge_index = torch.tensor([[0], [1]], dtype=torch.long)
+    edge_attr = torch.tensor(
+        [[1000.0, 0.5, 130.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]],
+        dtype=torch.float32,
+    )
+    flow = torch.tensor([0.2], dtype=torch.float32)
+    pressures = torch.tensor([75.0, 70.0], dtype=torch.float32)
+    elev = torch.tensor([5.0, 5.0], dtype=torch.float32)
+    node_type = torch.zeros(2, dtype=torch.long)
+    loss_raw = pressure_headloss_consistency_loss(
+        pressures, flow, edge_index, edge_attr, elevation=elev, node_type=node_type
+    )
+    edge_attr_log = edge_attr.clone()
+    edge_attr_log[:, 2] = torch.log1p(edge_attr_log[:, 2])
+    loss_log = pressure_headloss_consistency_loss(
+        pressures,
+        flow,
+        edge_index,
+        edge_attr_log,
+        elevation=elev,
+        node_type=node_type,
+        log_roughness=True,
+    )
+    assert torch.allclose(loss_raw, loss_log, atol=1e-6)

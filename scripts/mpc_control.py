@@ -370,6 +370,8 @@ def load_surrogate_model(
     raw_state = dict(state)  # preserve original keys for loading
     ckpt_meta = checkpoint.get("model_meta") if isinstance(checkpoint, dict) else None
     model_class_meta = ckpt_meta.get("model_class") if ckpt_meta else None
+    pressure_idx_meta = ckpt_meta.get("pressure_feature_idx") if ckpt_meta else None
+    use_pressure_skip_meta = ckpt_meta.get("use_pressure_skip") if ckpt_meta else None
     if ckpt_meta is not None:
         arch_cfg = {
             k: ckpt_meta.get(k)
@@ -642,6 +644,8 @@ def load_surrogate_model(
             rnn_hidden_dim=rnn_hidden_dim,
             num_node_types=getattr(conv_layers[0], "num_node_types", 1),
             num_edge_types=getattr(conv_layers[0], "num_edge_types", 1),
+            pressure_feature_idx=pressure_idx_meta if pressure_idx_meta is not None else 1,
+            use_pressure_skip=True if use_pressure_skip_meta is None else bool(use_pressure_skip_meta),
         ).to(device)
     elif has_rnn:
         out_dim, rnn_hidden_dim = state["decoder.weight"].shape
@@ -660,6 +664,8 @@ def load_surrogate_model(
             rnn_hidden_dim=rnn_hidden_dim,
             num_node_types=getattr(conv_layers[0], "num_node_types", 1),
             num_edge_types=getattr(conv_layers[0], "num_edge_types", 1),
+            pressure_feature_idx=pressure_idx_meta if pressure_idx_meta is not None else 1,
+            use_pressure_skip=True if use_pressure_skip_meta is None else bool(use_pressure_skip_meta),
         ).to(device)
     else:
         model = GNNSurrogate(conv_layers, fc_out=fc_layer).to(device)

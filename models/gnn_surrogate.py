@@ -263,6 +263,8 @@ class RecurrentGNNSurrogate(nn.Module):
         num_node_types: int = 1,
         num_edge_types: int = 1,
         use_checkpoint: bool = False,
+        pressure_feature_idx: int = 1,
+        use_pressure_skip: bool = True,
     ) -> None:
         super().__init__()
         self.encoder = EnhancedGNNEncoder(
@@ -282,6 +284,8 @@ class RecurrentGNNSurrogate(nn.Module):
         self.use_checkpoint = use_checkpoint
         self.rnn = nn.LSTM(hidden_channels, rnn_hidden_dim, batch_first=True)
         self.decoder = nn.Linear(rnn_hidden_dim, output_dim)
+        self.pressure_feature_idx = int(pressure_feature_idx)
+        self.use_pressure_skip = bool(use_pressure_skip)
 
     def forward(
         self,
@@ -320,11 +324,17 @@ class RecurrentGNNSurrogate(nn.Module):
         )
 
         emb = None
+        press_inputs: List[torch.Tensor] = []
         for t in range(T):
             x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
             edge_attr_t = None
             if edge_attr_seq is not None:
                 edge_attr_t = edge_attr_seq[:, t].reshape(batch_size * E, -1)
+
+            if self.use_pressure_skip and self.pressure_feature_idx < in_dim:
+                press_inputs.append(
+                    X_seq[:, t, :, self.pressure_feature_idx]
+                )
 
             if edge_attr_t is not None:
 
@@ -378,6 +388,12 @@ class RecurrentGNNSurrogate(nn.Module):
         rnn_out, _ = self.rnn(rnn_in)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
         out = self.decoder(rnn_out)
+        if self.use_pressure_skip and press_inputs and out.size(-1) >= 1:
+            press_stack = torch.stack(press_inputs, dim=1).to(out.device, out.dtype)
+            if press_stack.shape != out[..., 0].shape:
+                press_stack = press_stack.view_as(out[..., 0])
+            out = out.clone()
+            out[..., 0] = out[..., 0] + press_stack
         out = out.clone()
         min_p = min_c = 0.0
         if getattr(self, "y_mean", None) is not None:
@@ -432,6 +448,8 @@ class MultiTaskGNNSurrogate(nn.Module):
         num_node_types: int = 1,
         num_edge_types: int = 1,
         use_checkpoint: bool = False,
+        pressure_feature_idx: int = 1,
+        use_pressure_skip: bool = True,
     ) -> None:
         super().__init__()
         self.encoder = EnhancedGNNEncoder(
@@ -453,6 +471,8 @@ class MultiTaskGNNSurrogate(nn.Module):
         self.time_att = MultiheadAttention(rnn_hidden_dim, num_heads=4, batch_first=True)
         self.node_decoder = nn.Linear(rnn_hidden_dim, node_output_dim)
         self.edge_decoder = nn.Linear(rnn_hidden_dim * 3, edge_output_dim)
+        self.pressure_feature_idx = int(pressure_feature_idx)
+        self.use_pressure_skip = bool(use_pressure_skip)
 
     def reset_tank_levels(
         self,
@@ -507,11 +527,17 @@ class MultiTaskGNNSurrogate(nn.Module):
         )
 
         emb = None
+        press_inputs: List[torch.Tensor] = []
         for t in range(T):
             x_t = X_seq[:, t].reshape(batch_size * num_nodes, in_dim)
             edge_attr_t = None
             if edge_attr_seq is not None:
                 edge_attr_t = edge_attr_seq[:, t].reshape(batch_size * E, -1)
+
+            if self.use_pressure_skip and self.pressure_feature_idx < in_dim:
+                press_inputs.append(
+                    X_seq[:, t, :, self.pressure_feature_idx]
+                )
 
             if edge_attr_t is not None:
 
@@ -571,6 +597,11 @@ class MultiTaskGNNSurrogate(nn.Module):
 
         node_pred = self.node_decoder(att_out)
         node_pred = node_pred.clone()
+        if self.use_pressure_skip and press_inputs and node_pred.size(-1) >= 1:
+            press_stack = torch.stack(press_inputs, dim=1).to(node_pred.device, node_pred.dtype)
+            if press_stack.shape != node_pred[..., 0].shape:
+                press_stack = press_stack.view_as(node_pred[..., 0])
+            node_pred[..., 0] = node_pred[..., 0] + press_stack
 
         src = edge_index[0]
         tgt = edge_index[1]

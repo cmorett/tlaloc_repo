@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from typing import Dict, List, Tuple, Optional, Sequence, Union
+from collections import deque
 import wntr
 from wntr.network.base import LinkStatus
 
@@ -490,10 +491,23 @@ def build_pump_node_matrix(
     wn: wntr.network.WaterNetworkModel,
     dtype: Union[np.dtype, type] = np.float32,
 ) -> np.ndarray:
-    """Return a ``(num_nodes, num_pumps)`` matrix encoding pump incidence."""
+    """Return a ``(num_nodes, num_pumps)`` matrix encoding pump incidence.
+
+    The matrix stores ``-1`` at pump suction nodes, ``+1`` at discharge nodes
+    and attenuated positive weights ``1 / (d + 1)`` for all junctions that are
+    hydraulically downstream of the discharge node (where ``d`` is the number
+    of pipe/valve hops away from the pump). This exposes pump speed information
+    to remote nodes that would otherwise be multiple graph layers away from the
+    pump and allows the surrogate to reason about islanded districts supplied
+    through booster pumps.
+    """
 
     node_map = {name: idx for idx, name in enumerate(wn.node_name_list)}
     layout = np.zeros((len(node_map), len(wn.pump_name_list)), dtype=np.float32)
+    if not wn.pump_name_list:
+        return layout.astype(dtype, copy=False)
+
+    graph = wn.to_graph().to_undirected()
     for pump_idx, pump_name in enumerate(wn.pump_name_list):
         pump = wn.get_link(pump_name)
         start = pump.start_node.name if hasattr(pump.start_node, "name") else pump.start_node
@@ -502,6 +516,43 @@ def build_pump_node_matrix(
             layout[node_map[start], pump_idx] -= 1.0
         if end in node_map:
             layout[node_map[end], pump_idx] += 1.0
+
+        if end not in graph:
+            continue
+
+        visited = {start}
+        queue: deque[Tuple[str, int]] = deque([(end, 0)])
+        while queue:
+            node, dist = queue.popleft()
+            if node in visited:
+                continue
+            visited.add(node)
+
+            if node != end and node in node_map:
+                weight = 1.0 / (dist + 1)
+                layout[node_map[node], pump_idx] += weight
+
+            neighbors = graph.adj.get(node, {})
+            for nbr, edges in neighbors.items():
+                if nbr in visited:
+                    continue
+                include = False
+                for link_name, attrs in edges.items():
+                    if link_name == pump_name:
+                        include = False
+                        break
+                    link_type = attrs.get("type") if isinstance(attrs, dict) else None
+                    if link_type is None:
+                        try:
+                            link_type = wn.get_link(link_name).link_type
+                        except KeyError:
+                            link_type = None
+                    if link_type and str(link_type).lower() == "pump":
+                        include = False
+                        break
+                    include = True
+                if include:
+                    queue.append((nbr, dist + 1))
     return layout.astype(dtype, copy=False)
 
 
@@ -516,10 +567,11 @@ def build_static_node_features(
     ``[demand, 0, 0, 0, elevation, pump_1, ..., pump_N]`` corresponding to
     demand, pressure, chlorine, hydraulic head and elevation respectively.
     Without chlorine the layout becomes
-    ``[demand, 0, 0, elevation, pump_1, ..., pump_N]``. Pump columns store the
-    signed incidence of each pump: ``+1`` for discharge nodes, ``-1`` for
-    suction nodes and ``0`` otherwise. Runtime feature assembly multiplies
-    these values by the current pump speeds.
+    ``[demand, 0, 0, elevation, pump_1, ..., pump_N]``. Pump columns now store
+    extended incidence weights: ``-1`` at suction nodes, ``+1`` at discharge
+    nodes and decayed positive weights for downstream junctions that convey the
+    current pump speed information deeper into the network. Runtime feature
+    assembly multiplies these values by the instantaneous pump speeds.
     """
 
     num_nodes = len(wn.node_name_list)

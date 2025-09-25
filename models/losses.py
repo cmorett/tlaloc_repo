@@ -118,6 +118,7 @@ def pressure_headloss_consistency_loss(
     epsilon: float = 1e-6,
     sign_weight: float = 0.5,
     use_head: bool = True,
+    log_roughness: Optional[bool] = None,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """Return MSE between predicted and Hazen--Williams head losses.
 
@@ -127,6 +128,10 @@ def pressure_headloss_consistency_loss(
     edge drops.  Edges incident to tanks or reservoirs (``node_type`` 1 or 2)
     are excluded.  When ``return_violation`` is ``True`` the percentage of
     edges where the predicted head loss has the wrong sign is also returned.
+    When `log_roughness` is `None` the helper automatically infers whether
+    roughness values were log-transformed (the default in this repository).
+    Pass `log_roughness=True` to force `log1p` inversion or `False` to
+    disable it.
     """
     # Un-normalise edge attributes if statistics are available
     if edge_attr_mean is not None and edge_attr_std is not None:
@@ -136,7 +141,17 @@ def pressure_headloss_consistency_loss(
 
     length = attr[:, 0]
     diam = attr[:, 1].clamp(min=epsilon)
-    rough = attr[:, 2].clamp(min=epsilon)
+    rough = attr[:, 2]
+    if log_roughness is None:
+        if rough.numel() > 0:
+            rough_max = float(rough.detach().max().cpu())
+            rough_min = float(rough.detach().min().cpu())
+            log_roughness = rough_max <= 10.0 and rough_min >= -1e-6
+        else:
+            log_roughness = False
+    if log_roughness:
+        rough = torch.expm1(rough)
+    rough = rough.clamp(min=epsilon)
 
     # Flatten prediction tensors so the first dimension represents the batch
     p = pred_pressures.reshape(-1, pred_pressures.shape[-1])

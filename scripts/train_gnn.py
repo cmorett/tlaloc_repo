@@ -2726,6 +2726,10 @@ def main(args: argparse.Namespace):
             head_idx = feature_layout.index("head")
         elif include_head_feature and base_dim >= 2:
             head_idx = base_dim - 2
+    if feature_layout and "pressure" in feature_layout:
+        pressure_idx = feature_layout.index("pressure")
+    else:
+        pressure_idx = 1
     demand_idx = (
         feature_layout.index("demand")
         if feature_layout and "demand" in feature_layout
@@ -2946,6 +2950,7 @@ def main(args: argparse.Namespace):
                 num_node_types=num_node_types,
                 num_edge_types=num_edge_types,
                 use_checkpoint=args.checkpoint,
+                pressure_feature_idx=pressure_idx,
             ).to(device)
             tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
             model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
@@ -2982,6 +2987,7 @@ def main(args: argparse.Namespace):
                 num_node_types=num_node_types,
                 num_edge_types=num_edge_types,
                 use_checkpoint=args.checkpoint,
+                pressure_feature_idx=pressure_idx,
             ).to(device)
             tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
             model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
@@ -3044,6 +3050,8 @@ def main(args: argparse.Namespace):
         "num_edge_types": num_edge_types,
         "edge_scaler": "MinMax",
         "log_roughness": True,
+        "pressure_feature_idx": pressure_idx,
+        "use_pressure_skip": True,
     }
     if norm_md5 is not None:
         model_meta["norm_stats_md5"] = norm_md5
