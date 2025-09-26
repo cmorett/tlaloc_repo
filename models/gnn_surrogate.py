@@ -610,16 +610,37 @@ class MultiTaskGNNSurrogate(nn.Module):
         att_out = att_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
 
         node_pred = self.node_decoder(att_out)
+        pump_corr = None
         if self.pump_gain is not None and self.num_pumps > 0:
             pump_start = self.pump_feature_offset
             pump_end = pump_start + self.num_pumps
             pump_feats = X_seq[:, :, :, pump_start:pump_end]
-            pump_corr = torch.tensordot(pump_feats, self.pump_gain, dims=([-1], [0]))
+            if self.x_mean is not None and self.x_std is not None:
+                x_mean = self.x_mean
+                x_std = self.x_std
+                if not isinstance(x_mean, torch.Tensor):
+                    x_mean = torch.as_tensor(x_mean, device=pump_feats.device, dtype=pump_feats.dtype)
+                    x_std = torch.as_tensor(x_std, device=pump_feats.device, dtype=pump_feats.dtype)
+                else:
+                    x_mean = x_mean.to(device=pump_feats.device, dtype=pump_feats.dtype)
+                    x_std = x_std.to(device=pump_feats.device, dtype=pump_feats.dtype)
+                if x_mean.ndim == 2:
+                    pump_mean = x_mean[:, pump_start:pump_end].unsqueeze(0).unsqueeze(0)
+                    pump_std = x_std[:, pump_start:pump_end].unsqueeze(0).unsqueeze(0)
+                else:
+                    pump_mean = x_mean[..., pump_start:pump_end]
+                    pump_std = x_std[..., pump_start:pump_end]
+                    while pump_mean.dim() < pump_feats.dim():
+                        pump_mean = pump_mean.unsqueeze(0)
+                        pump_std = pump_std.unsqueeze(0)
+                pump_std = pump_std.clamp_min(1e-6)
+                pump_feats = pump_feats * pump_std + pump_mean
+            gain = self.pump_gain.to(device=pump_feats.device, dtype=pump_feats.dtype)
+            pump_corr = torch.tensordot(pump_feats, gain, dims=([-1], [0]))
             node_pred = node_pred.clone()
             node_pred[..., 0] = node_pred[..., 0] + pump_corr
         else:
             node_pred = node_pred.clone()
-            pump_corr = None
         if self.use_pressure_skip and press_inputs and node_pred.size(-1) >= 1:
             press_stack = torch.stack(press_inputs, dim=1).to(node_pred.device, node_pred.dtype)
             if press_stack.shape != node_pred[..., 0].shape:

@@ -853,8 +853,19 @@ def build_sequence_dataset(
         p_arr = pressures.to_numpy(dtype=np.float64)
         q_arr = quality.to_numpy(dtype=np.float64) if quality is not None else None
         d_arr = demands.to_numpy(dtype=np.float64)
+        head_df = sim_results.node["head"]
+        head_idx = {n: head_df.columns.get_loc(n) for n in head_df.columns}
+        h_arr = head_df.to_numpy(dtype=np.float64)
+        pump_head_arr = np.zeros((num_pumps, len(times)), dtype=np.float64) if num_pumps else np.zeros((0, len(times)), dtype=np.float64)
         if num_pumps:
             pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
+            for pump_idx, pump_name in enumerate(pumps):
+                pump = wn_template.get_link(pump_name)
+                start = pump.start_node.name if hasattr(pump.start_node, "name") else pump.start_node
+                end = pump.end_node.name if hasattr(pump.end_node, "name") else pump.end_node
+                start_col = head_idx[start]
+                end_col = head_idx[end]
+                pump_head_arr[pump_idx] = h_arr[:, end_col] - h_arr[:, start_col]
         else:
             pump_ctrl_arr = np.zeros((0, len(times)), dtype=np.float64)
 
@@ -867,7 +878,9 @@ def build_sequence_dataset(
         reservoir_names = set(wn_template.reservoir_name_list)
         for t in range(seq_len):
             pump_vector = pump_ctrl_arr[:, t]
+            head_vector = pump_head_arr[:, t] if pump_head_arr.size else pump_head_arr
             node_pump = pump_layout * pump_vector
+            node_pump_head = pump_layout * head_vector if head_vector.size else pump_layout * head_vector
             edge_attr_t = base_edge_attr_arr.copy()
             if pump_edge_indices:
                 for pump_name, (idx_fwd, idx_rev) in pump_edge_indices.items():
@@ -918,6 +931,7 @@ def build_sequence_dataset(
                 feat.append(elev)
                 if num_pumps:
                     feat.extend(node_pump[layout_idx].tolist())
+                    feat.extend(node_pump_head[layout_idx].tolist())
                 feat_nodes.append(feat)
             X_seq.append(np.array(feat_nodes, dtype=np.float64))
 
@@ -1018,14 +1032,25 @@ def build_dataset(
         p_arr = pressures.to_numpy(dtype=np.float64)
         q_arr = quality.to_numpy(dtype=np.float64) if quality is not None else None
         d_arr = demands.to_numpy(dtype=np.float64)
+        head_df = sim_results.node["head"]
+        head_idx = {n: head_df.columns.get_loc(n) for n in head_df.columns}
+        h_arr = head_df.to_numpy(dtype=np.float64)
+        pump_head_arr = np.zeros((num_pumps, len(times)), dtype=np.float64) if num_pumps else np.zeros((0, len(times)), dtype=np.float64)
         if num_pumps:
             pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
+            for pump_idx, pump_name in enumerate(pumps):
+                pump = wn_template.get_link(pump_name)
+                start = pump.start_node.name if hasattr(pump.start_node, "name") else pump.start_node
+                end = pump.end_node.name if hasattr(pump.end_node, "name") else pump.end_node
+                pump_head_arr[pump_idx] = h_arr[:, head_idx[end]] - h_arr[:, head_idx[start]]
         else:
             pump_ctrl_arr = np.zeros((0, len(times)), dtype=np.float64)
 
         for i in range(len(times) - 1):
             pump_vector = pump_ctrl_arr[:, i]
+            head_vector = pump_head_arr[:, i] if pump_head_arr.size else pump_head_arr
             node_pump = pump_layout * pump_vector
+            node_pump_head = pump_layout * head_vector if head_vector.size else pump_layout * head_vector
 
             feat_nodes = []
             for node in node_names:
@@ -1065,6 +1090,7 @@ def build_dataset(
                 feat.append(elev)
                 if num_pumps:
                     feat.extend(node_pump[layout_idx].tolist())
+                    feat.extend(node_pump_head[layout_idx].tolist())
                 feat_nodes.append(feat)
             X_list.append(np.array(feat_nodes, dtype=np.float64))
 
