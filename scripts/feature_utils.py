@@ -385,7 +385,7 @@ def build_edge_attr(
     edge_index: np.ndarray,
     pump_speeds: Optional[Dict[str, float]] = None,
 ) -> np.ndarray:
-    """Return edge attribute matrix ``[E,10]`` for given edge index."""
+    """Return edge attribute matrix ``[E,13]`` for given edge index."""
 
     def _safe_float(value: Optional[float]) -> float:
         if value is None:
@@ -450,6 +450,12 @@ def build_edge_attr(
                 getattr(link, "status", None)
             )
             valve_minor_loss = _safe_float(getattr(link, "minor_loss", 0.0))
+        coeff_a = coeff_b = coeff_c = 0.0
+        if is_pump:
+            try:
+                coeff_a, coeff_b, coeff_c = map(float, link.get_head_curve_coefficients())
+            except Exception:
+                coeff_a = coeff_b = coeff_c = 0.0
         attr_fwd = [
             float(length),
             float(diam),
@@ -459,6 +465,9 @@ def build_edge_attr(
             valve_closed,
             valve_active,
             valve_minor_loss,
+            coeff_a,
+            coeff_b,
+            coeff_c,
             1.0,
             pump_col,
         ]
@@ -766,17 +775,19 @@ def build_edge_type(
 ) -> np.ndarray:
     """Return integer edge type array matching ``edge_index``."""
     node_map = {n: i for i, n in enumerate(wn.node_name_list)}
+    pump_offset = 1
+    pump_types = {name: pump_offset + idx for idx, name in enumerate(wn.pump_name_list)}
+    valve_offset = pump_offset + len(pump_types)
+    valve_types = {name: valve_offset + idx for idx, name in enumerate(wn.valve_name_list)}
     type_dict: Dict[Tuple[int, int], int] = {}
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
         i = node_map[link.start_node.name]
         j = node_map[link.end_node.name]
-        if link_name in wn.pipe_name_list:
-            t = 0
-        elif link_name in wn.pump_name_list:
-            t = 1
-        elif link_name in wn.valve_name_list:
-            t = 2
+        if link_name in pump_types:
+            t = pump_types[link_name]
+        elif link_name in valve_types:
+            t = valve_types[link_name]
         else:
             t = 0
         type_dict[(i, j)] = t

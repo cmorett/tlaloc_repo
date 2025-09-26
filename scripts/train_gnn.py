@@ -2490,7 +2490,10 @@ def main(args: argparse.Namespace):
             axis=1,
         )
     skip_edge_attr_cols: Optional[List[int]] = None
-    if edge_attr_phys_np.shape[1] >= 2:
+    if edge_attr_phys_np.shape[1] >= 5:
+        last_five = range(edge_attr_phys_np.shape[1] - 5, edge_attr_phys_np.shape[1])
+        skip_edge_attr_cols = list(last_five)
+    elif edge_attr_phys_np.shape[1] >= 2:
         skip_edge_attr_cols = [edge_attr_phys_np.shape[1] - 2, edge_attr_phys_np.shape[1] - 1]
     edge_attr_phys = torch.tensor(edge_attr_phys_np.copy(), dtype=torch.float32)
     if os.path.exists(args.pump_coeffs_path):
@@ -2923,7 +2926,8 @@ def main(args: argparse.Namespace):
                     persistent_workers=args.workers > 0,
                 )
 
-    expected_in_dim = (5 if has_chlorine else 4) + len(wn.pump_name_list)
+    pump_offset = 5 if has_chlorine else 4
+    expected_in_dim = pump_offset + len(wn.pump_name_list)
 
     if seq_mode:
         sample_dim = data_ds.X.shape[-1]
@@ -2951,6 +2955,8 @@ def main(args: argparse.Namespace):
                 num_edge_types=num_edge_types,
                 use_checkpoint=args.checkpoint,
                 pressure_feature_idx=pressure_idx,
+                num_pumps=len(wn.pump_name_list),
+                pump_feature_offset=pump_offset,
             ).to(device)
             tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
             model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
@@ -2988,6 +2994,8 @@ def main(args: argparse.Namespace):
                 num_edge_types=num_edge_types,
                 use_checkpoint=args.checkpoint,
                 pressure_feature_idx=pressure_idx,
+                num_pumps=len(wn.pump_name_list),
+                pump_feature_offset=pump_offset,
             ).to(device)
             tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
             model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
@@ -4315,3 +4323,5 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     main(args)
+
+

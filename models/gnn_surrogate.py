@@ -87,10 +87,10 @@ class HydroConv(MessagePassing):
                 continue
             raw = mlp(edge_attr.index_select(0, idx))
             if t == self.PUMP_EDGE_TYPE and raw.size(1) >= 2:
-                gain_t = F.softplus(raw[:, :1]).to(gain.dtype)
-                gain_t = gain_t * pump_speed.index_select(0, idx)
-                bias_t = raw[:, 1:2].to(bias.dtype)
-                bias_t = bias_t * pump_speed.index_select(0, idx)
+                dir_local = direction.index_select(0, idx)
+                speed_local = pump_speed.index_select(0, idx) * dir_local
+                gain_t = F.softplus(raw[:, :1]).to(gain.dtype) * speed_local
+                bias_t = raw[:, 1:2].to(bias.dtype) * speed_local
                 gain.index_copy_(0, idx, gain_t)
                 bias.index_copy_(0, idx, bias_t)
             else:
@@ -286,6 +286,12 @@ class RecurrentGNNSurrogate(nn.Module):
         self.decoder = nn.Linear(rnn_hidden_dim, output_dim)
         self.pressure_feature_idx = int(pressure_feature_idx)
         self.use_pressure_skip = bool(use_pressure_skip)
+        self.num_pumps = int(num_pumps)
+        self.pump_feature_offset = int(pump_feature_offset)
+        if self.num_pumps > 0:
+            self.pump_gain = nn.Parameter(torch.zeros(self.num_pumps))
+        else:
+            self.register_parameter("pump_gain", None)
 
     def forward(
         self,
@@ -450,6 +456,8 @@ class MultiTaskGNNSurrogate(nn.Module):
         use_checkpoint: bool = False,
         pressure_feature_idx: int = 1,
         use_pressure_skip: bool = True,
+        num_pumps: int = 0,
+        pump_feature_offset: int = 4,
     ) -> None:
         super().__init__()
         self.encoder = EnhancedGNNEncoder(
@@ -473,6 +481,12 @@ class MultiTaskGNNSurrogate(nn.Module):
         self.edge_decoder = nn.Linear(rnn_hidden_dim * 3, edge_output_dim)
         self.pressure_feature_idx = int(pressure_feature_idx)
         self.use_pressure_skip = bool(use_pressure_skip)
+        self.num_pumps = int(num_pumps)
+        self.pump_feature_offset = int(pump_feature_offset)
+        if self.num_pumps > 0:
+            self.pump_gain = nn.Parameter(torch.zeros(self.num_pumps))
+        else:
+            self.register_parameter("pump_gain", None)
 
     def reset_tank_levels(
         self,
@@ -596,7 +610,16 @@ class MultiTaskGNNSurrogate(nn.Module):
         att_out = att_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
 
         node_pred = self.node_decoder(att_out)
-        node_pred = node_pred.clone()
+        if self.pump_gain is not None and self.num_pumps > 0:
+            pump_start = self.pump_feature_offset
+            pump_end = pump_start + self.num_pumps
+            pump_feats = X_seq[:, :, :, pump_start:pump_end]
+            pump_corr = torch.tensordot(pump_feats, self.pump_gain, dims=([-1], [0]))
+            node_pred = node_pred.clone()
+            node_pred[..., 0] = node_pred[..., 0] + pump_corr
+        else:
+            node_pred = node_pred.clone()
+            pump_corr = None
         if self.use_pressure_skip and press_inputs and node_pred.size(-1) >= 1:
             press_stack = torch.stack(press_inputs, dim=1).to(node_pred.device, node_pred.dtype)
             if press_stack.shape != node_pred[..., 0].shape:
@@ -760,3 +783,5 @@ __all__ = [
     "RecurrentGNNSurrogate",
     "MultiTaskGNNSurrogate",
 ]
+
+
