@@ -882,7 +882,8 @@ def build_sequence_dataset(
                 pump_vector = pump_ctrl_arr[:, future_idx]
             else:
                 pump_vector = pump_ctrl_arr
-            head_vector = pump_head_arr[:, t] if pump_head_arr.size else pump_head_arr
+            head_idx = min(t + 1, pump_head_arr.shape[1] - 1) if pump_head_arr.size else 0
+            head_vector = pump_head_arr[:, head_idx] if pump_head_arr.size else pump_head_arr
             node_pump = pump_layout * pump_vector
             node_pump_head = pump_layout * head_vector if head_vector.size else pump_layout * head_vector
             edge_attr_t = base_edge_attr_arr.copy()
