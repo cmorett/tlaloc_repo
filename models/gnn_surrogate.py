@@ -458,6 +458,7 @@ class MultiTaskGNNSurrogate(nn.Module):
         use_pressure_skip: bool = True,
         num_pumps: int = 0,
         pump_feature_offset: int = 4,
+        pump_feature_repeats: int = 1,
     ) -> None:
         super().__init__()
         self.encoder = EnhancedGNNEncoder(
@@ -483,10 +484,24 @@ class MultiTaskGNNSurrogate(nn.Module):
         self.use_pressure_skip = bool(use_pressure_skip)
         self.num_pumps = int(num_pumps)
         self.pump_feature_offset = int(pump_feature_offset)
+        # Default physics metadata for tank integration; training populates
+        # these with the simulator timestep and flow unit conversion.
+        self.timestep_seconds = 3600.0
+        self.flow_unit_scale = 1.0
         if self.num_pumps > 0:
+            repeats = int(pump_feature_repeats) if pump_feature_repeats else 1
+            if repeats < 1:
+                repeats = 1
+            self.pump_feature_repeats = repeats
             self.pump_gain = nn.Parameter(torch.zeros(self.num_pumps))
+            if self.pump_feature_repeats >= 2:
+                self.pump_head_gain = nn.Parameter(torch.zeros(self.num_pumps))
+            else:
+                self.register_parameter("pump_head_gain", None)
         else:
+            self.pump_feature_repeats = 0
             self.register_parameter("pump_gain", None)
+            self.register_parameter("pump_head_gain", None)
 
     def reset_tank_levels(
         self,
@@ -611,9 +626,10 @@ class MultiTaskGNNSurrogate(nn.Module):
 
         node_pred = self.node_decoder(att_out)
         pump_corr = None
-        if self.pump_gain is not None and self.num_pumps > 0:
+        if self.num_pumps > 0 and self.pump_gain is not None:
             pump_start = self.pump_feature_offset
-            pump_end = pump_start + self.num_pumps
+            repeats = self.pump_feature_repeats if self.pump_feature_repeats else 1
+            pump_end = pump_start + self.num_pumps * repeats
             pump_feats = X_seq[:, :, :, pump_start:pump_end]
             if self.x_mean is not None and self.x_std is not None:
                 x_mean = self.x_mean
@@ -635,8 +651,13 @@ class MultiTaskGNNSurrogate(nn.Module):
                         pump_std = pump_std.unsqueeze(0)
                 pump_std = pump_std.clamp_min(1e-6)
                 pump_feats = pump_feats * pump_std + pump_mean
-            gain = self.pump_gain.to(device=pump_feats.device, dtype=pump_feats.dtype)
-            pump_corr = torch.tensordot(pump_feats, gain, dims=([-1], [0]))
+            speed_feats = pump_feats[..., : self.num_pumps]
+            gain_speed = self.pump_gain.to(device=speed_feats.device, dtype=speed_feats.dtype)
+            pump_corr = torch.tensordot(speed_feats, gain_speed, dims=([-1], [0]))
+            if self.pump_head_gain is not None and pump_feats.size(-1) >= self.num_pumps * 2:
+                head_feats = pump_feats[..., self.num_pumps : self.num_pumps * 2]
+                gain_head = self.pump_head_gain.to(device=head_feats.device, dtype=head_feats.dtype)
+                pump_corr = pump_corr + torch.tensordot(head_feats, gain_head, dims=([-1], [0]))
             node_pred = node_pred.clone()
             node_pred[..., 0] = node_pred[..., 0] + pump_corr
         else:
@@ -728,7 +749,17 @@ class MultiTaskGNNSurrogate(nn.Module):
                     else:
                         net.append((flows[:, t, edges] * signs).sum(dim=1))
                 net_flow = torch.stack(net, dim=1) / 2.0
-                delta_vol = net_flow * 3600.0 * 0.001
+                timestep = getattr(self, "timestep_seconds", 3600.0)
+                flow_scale = getattr(self, "flow_unit_scale", 1.0)
+                if isinstance(flow_scale, torch.Tensor):
+                    scale_tensor = flow_scale.to(device=device, dtype=net_flow.dtype)
+                else:
+                    scale_tensor = torch.tensor(
+                        flow_scale, device=device, dtype=net_flow.dtype
+                    )
+                while scale_tensor.dim() < net_flow.dim():
+                    scale_tensor = scale_tensor.unsqueeze(0)
+                delta_vol = net_flow * scale_tensor * timestep
                 self.tank_levels += delta_vol
                 self.tank_levels = self.tank_levels.clamp(min=0.0)
                 delta_h = delta_vol / self.tank_areas

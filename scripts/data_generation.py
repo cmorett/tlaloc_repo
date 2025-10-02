@@ -877,7 +877,11 @@ def build_sequence_dataset(
         edge_attr_seq: List[np.ndarray] = []
         reservoir_names = set(wn_template.reservoir_name_list)
         for t in range(seq_len):
-            pump_vector = pump_ctrl_arr[:, t]
+            if num_pumps:
+                future_idx = min(t + 1, pump_ctrl_arr.shape[1] - 1)
+                pump_vector = pump_ctrl_arr[:, future_idx]
+            else:
+                pump_vector = pump_ctrl_arr
             head_vector = pump_head_arr[:, t] if pump_head_arr.size else pump_head_arr
             node_pump = pump_layout * pump_vector
             node_pump_head = pump_layout * head_vector if head_vector.size else pump_layout * head_vector
@@ -887,7 +891,7 @@ def build_sequence_dataset(
                     pump_idx = pump_index_map.get(pump_name)
                     if pump_idx is None:
                         continue
-                    speed = float(pump_ctrl_arr[pump_idx, t])
+                    speed = float(pump_ctrl_arr[pump_idx, future_idx])
                     edge_attr_t[idx_fwd, -1] = speed
                     edge_attr_t[idx_rev, -1] = speed
             edge_attr_seq.append(edge_attr_t.astype(np.float64))
@@ -1047,7 +1051,11 @@ def build_dataset(
             pump_ctrl_arr = np.zeros((0, len(times)), dtype=np.float64)
 
         for i in range(len(times) - 1):
-            pump_vector = pump_ctrl_arr[:, i]
+            if num_pumps:
+                future_idx = min(i + 1, pump_ctrl_arr.shape[1] - 1)
+                pump_vector = pump_ctrl_arr[:, future_idx]
+            else:
+                pump_vector = pump_ctrl_arr
             head_vector = pump_head_arr[:, i] if pump_head_arr.size else pump_head_arr
             node_pump = pump_layout * pump_vector
             node_pump_head = pump_layout * head_vector if head_vector.size else pump_layout * head_vector
@@ -1517,6 +1525,9 @@ def main() -> None:
     if args.include_chlorine:
         base_layout.append("chlorine")
     base_layout.extend(["head", "elevation"])
+    if wn_template.pump_name_list:
+        base_layout.extend([f"pump_speed_next_{p}" for p in wn_template.pump_name_list])
+        base_layout.extend([f"pump_head_{p}" for p in wn_template.pump_name_list])
     manifest = {
         "num_extreme": int(extreme_count),
         "total_scenarios": len(manifest_records),
@@ -1525,6 +1536,8 @@ def main() -> None:
         "node_target_dim": 2 if args.include_chlorine else 1,
         "node_feature_layout": base_layout,
         "scenarios": manifest_records,
+        "pump_names": list(wn_template.pump_name_list),
+        "pump_feature_repeats": 2 if wn_template.pump_name_list else 0,
     }
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)

@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import json
 import os
 import random
@@ -1161,6 +1161,56 @@ def build_loss_mask(wn: wntr.network.WaterNetworkModel) -> torch.Tensor:
         if name in wn.reservoir_name_list:
             mask[i] = False
     return mask
+
+
+def estimate_tank_flow_scale(
+    X_seq: np.ndarray,
+    Y_seq: np.ndarray,
+    edge_index_np: np.ndarray,
+    tank_indices: Sequence[int],
+    tank_areas: Sequence[float],
+    timestep_seconds: float,
+) -> np.ndarray:
+    """Estimate per-tank flow scaling factors for volume integration."""
+
+    if not tank_indices:
+        return np.array([], dtype=np.float32)
+    scales: List[float] = []
+    edge_index_np = np.asarray(edge_index_np)
+    timestep = float(timestep_seconds) if timestep_seconds else 1.0
+    for idx, area in zip(tank_indices, tank_areas):
+        src = np.where(edge_index_np[0] == idx)[0]
+        tgt = np.where(edge_index_np[1] == idx)[0]
+        if src.size == 0 and tgt.size == 0:
+            scales.append(1.0)
+            continue
+        edges = np.concatenate([src, tgt])
+        signs = np.concatenate([-np.ones(src.size), np.ones(tgt.size)])
+        net_flows: List[np.ndarray] = []
+        delta_h: List[np.ndarray] = []
+        for seq_idx in range(len(X_seq)):
+            flows = Y_seq[seq_idx]["edge_outputs"][:, edges]
+            net = (flows * signs).sum(axis=1) / 2.0
+            net_flows.append(net)
+            pressure_curr = X_seq[seq_idx][:, idx, 1]
+            pressure_next = Y_seq[seq_idx]["node_outputs"][:, idx, 0]
+            delta_h.append(pressure_next - pressure_curr)
+        net_flow_flat = np.concatenate(net_flows)
+        delta_h_flat = np.concatenate(delta_h)
+        mask = np.abs(net_flow_flat) > 1e-6
+        if not np.any(mask):
+            scales.append(1.0)
+            continue
+        ratios = (delta_h_flat[mask] * area) / (net_flow_flat[mask] * timestep)
+        ratios = ratios[np.isfinite(ratios)]
+        if ratios.size == 0:
+            scales.append(1.0)
+        else:
+            median = float(np.median(ratios))
+            if not np.isfinite(median):
+                median = 1.0
+            scales.append(float(np.clip(median, 1e-3, 1e3)))
+    return np.asarray(scales, dtype=np.float32)
 
 
 interrupted = False
@@ -2664,6 +2714,7 @@ def main(args: argparse.Namespace):
         first_target = data_list[0].y
         target_dim = int(first_target.size(-1)) if first_target.ndim >= 2 else 1
     manifest = None
+    pump_feature_repeats = 0
     manifest_path = Path(args.x_path).with_name("manifest.json")
     if manifest_path.exists():
         try:
@@ -2676,9 +2727,11 @@ def main(args: argparse.Namespace):
     include_head_feature = False
     has_chlorine: Optional[bool] = None
     head_idx: Optional[int] = None
+    manifest_pump_blocks = 0
     if manifest is not None:
         feature_layout = manifest.get("node_feature_layout")
         include_head_feature = bool(manifest.get("include_head"))
+        manifest_pump_blocks = int(manifest.get("pump_feature_repeats", manifest_pump_blocks))
         if "include_chlorine" in manifest:
             has_chlorine = bool(manifest["include_chlorine"])
         if feature_layout:
@@ -2691,7 +2744,11 @@ def main(args: argparse.Namespace):
             if has_chlorine is None:
                 has_chlorine = "chlorine" in feature_layout
 
-    base_dim = sample_dim - pump_count
+    pump_feature_repeats = manifest_pump_blocks if manifest_pump_blocks else pump_feature_repeats
+    effective_pump_blocks = pump_feature_repeats if pump_feature_repeats > 0 else (1 if pump_count > 0 else 0)
+    if pump_count > 0 and manifest_pump_blocks and manifest_pump_blocks != effective_pump_blocks:
+        logger.warning("Manifest pump feature repeats (%d) differ from detected layout (%d); using detected value", manifest_pump_blocks, effective_pump_blocks)
+    base_dim = sample_dim - pump_count * effective_pump_blocks
     if target_dim <= 1:
         has_chlorine = False
     if has_chlorine is None and target_dim > 1:
@@ -2714,12 +2771,15 @@ def main(args: argparse.Namespace):
             "Target dimension indicates pressure-only dataset; disabling chlorine outputs"
         )
         has_chlorine = False
-    if feature_layout and len(feature_layout) != base_dim:
-        logger.warning(
-            "Manifest feature layout (%d entries) does not match dataset feature dimension (%d)",
-            len(feature_layout),
-            base_dim,
-        )
+    if feature_layout:
+        layout_pump_blocks = manifest_pump_blocks if manifest_pump_blocks else effective_pump_blocks
+        layout_base_len = len(feature_layout) - pump_count * layout_pump_blocks
+        if layout_base_len != base_dim:
+            logger.warning(
+                "Manifest feature layout (%d entries) does not match dataset feature dimension (%d)",
+                len(feature_layout),
+                base_dim,
+            )
     if feature_layout and "elevation" in feature_layout:
         elev_idx = feature_layout.index("elevation")
     else:
@@ -2927,16 +2987,28 @@ def main(args: argparse.Namespace):
                 )
 
     pump_offset = 5 if has_chlorine else 4
-    expected_in_dim = pump_offset + len(wn.pump_name_list)
+    pump_count = len(wn.pump_name_list)
+    expected_in_dims = {pump_offset + pump_count}
+    if pump_count > 0:
+        expected_in_dims.add(pump_offset + pump_count * 2)
+    pump_feature_repeats = 0
+    has_pump_head_features = False
 
     if seq_mode:
         sample_dim = data_ds.X.shape[-1]
-        if sample_dim != expected_in_dim:
+        if sample_dim not in expected_in_dims:
+            expected_str = ", ".join(str(v) for v in sorted(expected_in_dims))
             raise ValueError(
                 f"Dataset provides {sample_dim} features per node but the network "
-                f"defines {len(wn.pump_name_list)} pumps (expected {expected_in_dim}).\n"
+                f"defines {len(wn.pump_name_list)} pumps (expected {expected_str}).\n"
                 "Re-generate the training data with pump control inputs using scripts/data_generation.py."
             )
+        extra_pump_features = sample_dim - pump_offset
+        if pump_count > 0 and extra_pump_features >= 0:
+            pump_feature_repeats = extra_pump_features // pump_count
+            has_pump_head_features = pump_feature_repeats == 2
+        if has_pump_head_features:
+            logger.info("Detected per-node pump head features; enabling extended pump conditioning.")
         if getattr(data_ds, "multi", False):
             model = MultiTaskGNNSurrogate(
                 in_channels=sample_dim,
@@ -2957,6 +3029,7 @@ def main(args: argparse.Namespace):
                 pressure_feature_idx=pressure_idx,
                 num_pumps=len(wn.pump_name_list),
                 pump_feature_offset=pump_offset,
+                pump_feature_repeats=effective_pump_blocks,
             ).to(device)
             tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
             model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
@@ -2977,6 +3050,26 @@ def main(args: argparse.Namespace):
             model.tank_edges = tank_edges
             model.tank_signs = tank_signs
             model.reset_tank_levels(batch_size=1, device=device)
+            timestep_seconds = float(getattr(wn.options.time, "hydraulic_timestep", 3600.0))
+            if hasattr(model, "timestep_seconds"):
+                model.timestep_seconds = timestep_seconds
+            if hasattr(model, "flow_unit_scale"):
+                flow_scales = estimate_tank_flow_scale(
+                    X_raw,
+                    Y_raw,
+                    edge_index_np,
+                    tank_indices,
+                    areas,
+                    timestep_seconds,
+                )
+                if flow_scales.size:
+                    model.flow_unit_scale = torch.tensor(
+                        flow_scales,
+                        device=device,
+                        dtype=torch.float32,
+                    )
+                else:
+                    model.flow_unit_scale = 1.0
         else:
             model = RecurrentGNNSurrogate(
                 in_channels=sample_dim,
@@ -3016,14 +3109,42 @@ def main(args: argparse.Namespace):
             model.tank_edges = tank_edges
             model.tank_signs = tank_signs
             model.reset_tank_levels(batch_size=1, device=device)
+            timestep_seconds = float(getattr(wn.options.time, "hydraulic_timestep", 3600.0))
+            if hasattr(model, "timestep_seconds"):
+                model.timestep_seconds = timestep_seconds
+            if hasattr(model, "flow_unit_scale"):
+                flow_scales = estimate_tank_flow_scale(
+                    X_raw,
+                    Y_raw,
+                    edge_index_np,
+                    tank_indices,
+                    areas,
+                    timestep_seconds,
+                )
+                if flow_scales.size:
+                    model.flow_unit_scale = torch.tensor(
+                        flow_scales,
+                        device=device,
+                        dtype=torch.float32,
+                    )
+                else:
+                    model.flow_unit_scale = 1.0
     else:
         sample = data_list[0]
-        if sample.num_node_features != expected_in_dim:
+        sample_dim = sample.num_node_features
+        if sample_dim not in expected_in_dims:
+            expected_str = ", ".join(str(v) for v in sorted(expected_in_dims))
             raise ValueError(
                 f"Dataset provides {sample.num_node_features} features per node but the network "
-                f"defines {len(wn.pump_name_list)} pumps (expected {expected_in_dim}).\n"
+                f"defines {len(wn.pump_name_list)} pumps (expected {expected_str}).\n"
                 "Re-generate the training data with pump control inputs using scripts/data_generation.py."
             )
+        extra_pump_features = sample_dim - pump_offset
+        if pump_count > 0 and extra_pump_features >= 0:
+            pump_feature_repeats = extra_pump_features // pump_count
+            has_pump_head_features = pump_feature_repeats == 2
+        if has_pump_head_features:
+            logger.info("Detected per-node pump head features; enabling extended pump conditioning.")
         model = GCNEncoder(
             in_channels=sample.num_node_features,
             hidden_channels=args.hidden_dim,
@@ -3060,6 +3181,9 @@ def main(args: argparse.Namespace):
         "log_roughness": True,
         "pressure_feature_idx": pressure_idx,
         "use_pressure_skip": True,
+        "pump_feature_offset": pump_offset,
+        "pump_feature_repeats": pump_feature_repeats,
+        "has_pump_head_features": has_pump_head_features,
     }
     if norm_md5 is not None:
         model_meta["norm_stats_md5"] = norm_md5

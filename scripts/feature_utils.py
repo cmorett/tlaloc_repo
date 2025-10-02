@@ -538,7 +538,7 @@ def build_pump_node_matrix(
             visited.add(node)
 
             if node != end and node in node_map:
-                weight = 1.0 / (dist + 1)
+                weight = 1.0
                 layout[node_map[node], pump_idx] += weight
 
             neighbors = graph.adj.get(node, {})
