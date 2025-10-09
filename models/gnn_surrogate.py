@@ -88,7 +88,11 @@ class HydroConv(MessagePassing):
             raw = mlp(edge_attr.index_select(0, idx))
             if t == self.PUMP_EDGE_TYPE and raw.size(1) >= 2:
                 dir_local = direction.index_select(0, idx)
-                speed_local = pump_speed.index_select(0, idx) * dir_local
+                speed_mag = pump_speed.index_select(0, idx)
+                speed_scale = torch.where(
+                    dir_local > 0, dir_local, torch.ones_like(dir_local)
+                )
+                speed_local = speed_mag * speed_scale
                 gain_t = F.softplus(raw[:, :1]).to(gain.dtype) * speed_local
                 bias_t = raw[:, 1:2].to(bias.dtype) * speed_local
                 gain.index_copy_(0, idx, gain_t)
