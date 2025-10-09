@@ -775,9 +775,9 @@ def build_edge_type(
 ) -> np.ndarray:
     """Return integer edge type array matching ``edge_index``."""
     node_map = {n: i for i, n in enumerate(wn.node_name_list)}
-    pump_offset = 1
-    pump_types = {name: pump_offset + idx for idx, name in enumerate(wn.pump_name_list)}
-    valve_offset = pump_offset + len(pump_types)
+    pump_type_id = 1
+    pump_types = {name: pump_type_id for name in wn.pump_name_list}
+    valve_offset = pump_type_id + 1
     valve_types = {name: valve_offset + idx for idx, name in enumerate(wn.valve_name_list)}
     type_dict: Dict[Tuple[int, int], int] = {}
     for link_name in wn.link_name_list:
