@@ -43,10 +43,12 @@ current Git commit to `logs/config.yaml` for provenance.
 The repository provides a simple training script `scripts/train_gnn.py` which
 expects feature and label data saved in the `data/` directory as NumPy arrays.
 Each node feature vector has the layout
-``[base_demand, pressure, (chlorine), head, elevation, pump_speed_next_1, ..., pump_speed_next_K, pump_head_1, ..., pump_head_K]`` where each
-``pump_speed_i`` stores the signed contribution of pump ``i`` for that node (discharge
-nodes receive ``+speed`` and suction nodes ``-speed`` while unrelated nodes
-store ``0``) and ``pump_head_i`` carries the instantaneous head gain imparted by the
+``[base_demand, pressure, (chlorine), head, elevation, pump_speed_cmd_1, ..., pump_speed_cmd_K, pump_head_1, ..., pump_head_K]`` where each
+``pump_speed_i`` stores the signed contribution of pump ``i`` for that node. The
+values now reflect the command that was actually applied during the current
+hydraulic interval (the one that produces the pressure target at the next hour).
+Discharge nodes receive ``+speed``, suction nodes ``-speed`` and unrelated nodes
+store ``0``. ``pump_head_i`` carries the instantaneous head gain imparted by the
 corresponding pump. When chlorine is disabled the third entry is omitted but the
 feature order is otherwise preserved. Reservoir nodes use their constant hydraulic head in the
 ``pressure`` slot so the model is given the correct supply level. Legacy datasets generated before this release only contain the pump speed block; `scripts/train_gnn.py` automatically detects both layouts but regenerating the data ensures the model sees the pump head features that stabilise islanded districts. The helper
@@ -55,7 +57,7 @@ generates these arrays as well as the graph ``edge_index``.  Two dataset formats
 are
 supported:
 
-> **Heads up:** After updating to this release, rerun `scripts/data_generation.py` so the saved datasets include the new pump head features. Legacy `.npy` files still load, but the surrogate will lack the additional context that resolves the booster district bias.
+> **Heads up:** After updating to this release, rerun `scripts/data_generation.py` so the saved datasets include the corrected, in-sync pump commands (and the pump head features introduced in previous releases). Legacy `.npy` files still load, but the surrogate will lack the additional context that resolves the booster district bias.
 
 1. **Dictionary format** – each entry of ``X`` is a dictionary containing the
    graph ``edge_index`` and a ``node_features`` array.
@@ -311,6 +313,9 @@ The script logs to stdout and ``logs/data_generation.log`` by default. Use
 destination. After generation completes global min/mean/max statistics for
 pressures, demand multipliers and pump speeds are printed and saved to
 ``logs/data_generation_summary.json`` for later inspection.
+Run ``python inspect_pump_alignment.py --data-dir data`` after generation to confirm
+that the recorded pump features match the commands applied during the hydraulic
+simulation—misalignments indicate stale datasets that should be regenerated.
 If a particular random configuration causes EPANET to fail to produce results,
 the script now skips it after a few retries so the actual number of generated
 scenarios may be slightly smaller than requested.

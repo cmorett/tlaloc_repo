@@ -9,6 +9,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
 - `AGENTS.md` – repository guidelines for Codex.
 - `CTown.inp` – EPANET input file for the C‑Town network.
 - `pytorchcheck.py` – quick script verifying that PyTorch Geometric runs on the configured GPU.
+- `inspect_pump_alignment.py` – diagnostic utility confirming that pump speed features align with the commands applied during data generation.
 - `models/`
   - `loss_utils.py` – physics-based loss helpers.
   - `losses.py` – weighted multi-task loss utilities.

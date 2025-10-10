@@ -796,6 +796,8 @@ def build_sequence_dataset(
     num_pumps = len(pumps)
     pump_index_map = {name: idx for idx, name in enumerate(pumps)}
     node_names = wn_template.node_name_list
+    tank_names = np.array(wn_template.tank_name_list)
+    num_tanks = len(tank_names)
 
     node_index_map = {name: idx for idx, name in enumerate(node_names)}
     pump_edge_indices: Dict[str, Tuple[int, int]] = {}
@@ -857,6 +859,7 @@ def build_sequence_dataset(
         head_idx = {n: head_df.columns.get_loc(n) for n in head_df.columns}
         h_arr = head_df.to_numpy(dtype=np.float64)
         pump_head_arr = np.zeros((num_pumps, len(times)), dtype=np.float64) if num_pumps else np.zeros((0, len(times)), dtype=np.float64)
+        tank_level_arr = np.zeros((num_tanks, len(times)), dtype=np.float64) if num_tanks else np.zeros((0, len(times)), dtype=np.float64)
         if num_pumps:
             pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
             for pump_idx, pump_name in enumerate(pumps):
@@ -868,6 +871,14 @@ def build_sequence_dataset(
                 pump_head_arr[pump_idx] = h_arr[:, end_col] - h_arr[:, start_col]
         else:
             pump_ctrl_arr = np.zeros((0, len(times)), dtype=np.float64)
+        if num_tanks:
+            for tank_idx, tank_name in enumerate(tank_names):
+                col_idx = node_idx[tank_name]
+                tank = wn_template.get_node(tank_name)
+                level_series = p_arr[:, col_idx]
+                span = max(tank.max_level - tank.min_level, 1e-6)
+                level_frac = (level_series - tank.min_level) / span
+                tank_level_arr[tank_idx] = np.clip(level_frac, 0.0, 1.0)
 
         X_seq: List[np.ndarray] = []
         node_out_seq: List[np.ndarray] = []
@@ -878,21 +889,32 @@ def build_sequence_dataset(
         reservoir_names = set(wn_template.reservoir_name_list)
         for t in range(seq_len):
             if num_pumps:
-                future_idx = min(t + 1, pump_ctrl_arr.shape[1] - 1)
-                pump_vector = pump_ctrl_arr[:, future_idx]
+                # Align pump features with the command that produced pressures at t+1.
+                ctrl_idx = min(t, pump_ctrl_arr.shape[1] - 1)
+                pump_vector = pump_ctrl_arr[:, ctrl_idx]
             else:
                 pump_vector = pump_ctrl_arr
-            head_idx = min(t + 1, pump_head_arr.shape[1] - 1) if pump_head_arr.size else 0
-            head_vector = pump_head_arr[:, head_idx] if pump_head_arr.size else pump_head_arr
+            head_step_idx = (
+                min(t, pump_head_arr.shape[1] - 1) if pump_head_arr.size else 0
+            )
+            head_vector = (
+                pump_head_arr[:, head_step_idx]
+                if pump_head_arr.size
+                else pump_head_arr
+            )
+            if num_tanks:
+                tank_step_idx = min(t, tank_level_arr.shape[1] - 1)
+                tank_vector = tank_level_arr[:, tank_step_idx]
+            else:
+                tank_vector = np.empty((0,), dtype=np.float64)
             node_pump = pump_layout * pump_vector
-            node_pump_head = pump_layout * head_vector if head_vector.size else pump_layout * head_vector
             edge_attr_t = base_edge_attr_arr.copy()
             if pump_edge_indices:
                 for pump_name, (idx_fwd, idx_rev) in pump_edge_indices.items():
                     pump_idx = pump_index_map.get(pump_name)
                     if pump_idx is None:
                         continue
-                    speed = float(pump_ctrl_arr[pump_idx, future_idx])
+                    speed = float(pump_ctrl_arr[pump_idx, ctrl_idx])
                     edge_attr_t[idx_fwd, -1] = speed
                     edge_attr_t[idx_rev, -1] = speed
             edge_attr_seq.append(edge_attr_t.astype(np.float64))
@@ -936,7 +958,8 @@ def build_sequence_dataset(
                 feat.append(elev)
                 if num_pumps:
                     feat.extend(node_pump[layout_idx].tolist())
-                    feat.extend(node_pump_head[layout_idx].tolist())
+                if num_tanks:
+                    feat.extend(tank_vector.tolist())
                 feat_nodes.append(feat)
             X_seq.append(np.array(feat_nodes, dtype=np.float64))
 
@@ -1007,6 +1030,8 @@ def build_dataset(
     node_names = wn_template.node_name_list
     node_index_map = {name: idx for idx, name in enumerate(node_names)}
     pump_layout = build_pump_node_matrix(wn_template, dtype=np.float64)
+    tank_names = np.array(wn_template.tank_name_list)
+    num_tanks = len(tank_names)
 
     reservoir_names = set(wn_template.reservoir_name_list)
     for sim_results, _scale_dict, pump_ctrl in results:
@@ -1041,6 +1066,7 @@ def build_dataset(
         head_idx = {n: head_df.columns.get_loc(n) for n in head_df.columns}
         h_arr = head_df.to_numpy(dtype=np.float64)
         pump_head_arr = np.zeros((num_pumps, len(times)), dtype=np.float64) if num_pumps else np.zeros((0, len(times)), dtype=np.float64)
+        tank_level_arr = np.zeros((num_tanks, len(times)), dtype=np.float64) if num_tanks else np.zeros((0, len(times)), dtype=np.float64)
         if num_pumps:
             pump_ctrl_arr = np.asarray([pump_ctrl[p] for p in pumps], dtype=np.float64)
             for pump_idx, pump_name in enumerate(pumps):
@@ -1050,16 +1076,29 @@ def build_dataset(
                 pump_head_arr[pump_idx] = h_arr[:, head_idx[end]] - h_arr[:, head_idx[start]]
         else:
             pump_ctrl_arr = np.zeros((0, len(times)), dtype=np.float64)
+        if num_tanks:
+            for tank_idx, tank_name in enumerate(tank_names):
+                col_idx = node_idx[tank_name]
+                tank = wn_template.get_node(tank_name)
+                level_series = p_arr[:, col_idx]
+                span = max(tank.max_level - tank.min_level, 1e-6)
+                level_frac = (level_series - tank.min_level) / span
+                tank_level_arr[tank_idx] = np.clip(level_frac, 0.0, 1.0)
 
         for i in range(len(times) - 1):
             if num_pumps:
-                future_idx = min(i + 1, pump_ctrl_arr.shape[1] - 1)
-                pump_vector = pump_ctrl_arr[:, future_idx]
+                # Use the command active during [i, i+1) which yields pressures at i+1.
+                ctrl_idx = min(i, pump_ctrl_arr.shape[1] - 1)
+                pump_vector = pump_ctrl_arr[:, ctrl_idx]
             else:
                 pump_vector = pump_ctrl_arr
-            head_vector = pump_head_arr[:, i] if pump_head_arr.size else pump_head_arr
+            head_step_idx = min(i, pump_head_arr.shape[1] - 1) if pump_head_arr.size else 0
+            head_vector = pump_head_arr[:, head_step_idx] if pump_head_arr.size else pump_head_arr
+            if num_tanks:
+                tank_vector = tank_level_arr[:, min(i, tank_level_arr.shape[1] - 1)]
+            else:
+                tank_vector = np.empty((0,), dtype=np.float64)
             node_pump = pump_layout * pump_vector
-            node_pump_head = pump_layout * head_vector if head_vector.size else pump_layout * head_vector
 
             feat_nodes = []
             for node in node_names:
@@ -1099,7 +1138,8 @@ def build_dataset(
                 feat.append(elev)
                 if num_pumps:
                     feat.extend(node_pump[layout_idx].tolist())
-                    feat.extend(node_pump_head[layout_idx].tolist())
+                if num_tanks:
+                    feat.extend(tank_vector.tolist())
                 feat_nodes.append(feat)
             X_list.append(np.array(feat_nodes, dtype=np.float64))
 
@@ -1527,8 +1567,9 @@ def main() -> None:
         base_layout.append("chlorine")
     base_layout.extend(["head", "elevation"])
     if wn_template.pump_name_list:
-        base_layout.extend([f"pump_speed_next_{p}" for p in wn_template.pump_name_list])
-        base_layout.extend([f"pump_head_{p}" for p in wn_template.pump_name_list])
+        base_layout.extend([f"pump_speed_cmd_{p}" for p in wn_template.pump_name_list])
+    if wn_template.tank_name_list:
+        base_layout.extend([f"tank_level_{t}" for t in wn_template.tank_name_list])
     manifest = {
         "num_extreme": int(extreme_count),
         "total_scenarios": len(manifest_records),
@@ -1538,7 +1579,9 @@ def main() -> None:
         "node_feature_layout": base_layout,
         "scenarios": manifest_records,
         "pump_names": list(wn_template.pump_name_list),
-        "pump_feature_repeats": 2 if wn_template.pump_name_list else 0,
+        "pump_feature_repeats": 1 if wn_template.pump_name_list else 0,
+        "tank_names": list(wn_template.tank_name_list),
+        "tank_feature_repeats": 1 if wn_template.tank_name_list else 0,
     }
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)

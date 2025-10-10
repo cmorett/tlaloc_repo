@@ -16,6 +16,15 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.amp import autocast, GradScaler
+
+# Disable MKLDNN RNN kernels on CPU to prevent primitive descriptor failures.
+if not torch.cuda.is_available():
+    mkldnn_backend = getattr(torch.backends, "mkldnn", None)
+    if mkldnn_backend is not None and getattr(mkldnn_backend, "is_available", lambda: False)():
+        mkldnn_backend.enabled = False
+        warnings.warn(
+            "MKLDNN backend disabled for CPU training to avoid LSTM primitive descriptor failures."
+        )
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch.utils.data import Dataset, DataLoader as TorchLoader
@@ -2988,25 +2997,22 @@ def main(args: argparse.Namespace):
 
     pump_offset = 5 if has_chlorine else 4
     pump_count = len(wn.pump_name_list)
-    expected_in_dims = {pump_offset + pump_count}
-    if pump_count > 0:
-        expected_in_dims.add(pump_offset + pump_count * 2)
+    min_expected_dim = pump_offset + pump_count
     pump_feature_repeats = 0
     has_pump_head_features = False
 
     if seq_mode:
         sample_dim = data_ds.X.shape[-1]
-        if sample_dim not in expected_in_dims:
-            expected_str = ", ".join(str(v) for v in sorted(expected_in_dims))
+        if sample_dim < min_expected_dim:
             raise ValueError(
                 f"Dataset provides {sample_dim} features per node but the network "
-                f"defines {len(wn.pump_name_list)} pumps (expected {expected_str}).\n"
+                f"defines {len(wn.pump_name_list)} pumps (expected at least {min_expected_dim}).\n"
                 "Re-generate the training data with pump control inputs using scripts/data_generation.py."
             )
-        extra_pump_features = sample_dim - pump_offset
+        extra_pump_features = max(sample_dim - pump_offset, 0)
         if pump_count > 0 and extra_pump_features >= 0:
-            pump_feature_repeats = extra_pump_features // pump_count
-            has_pump_head_features = pump_feature_repeats == 2
+            pump_feature_repeats = min(extra_pump_features // pump_count, 2)
+            has_pump_head_features = pump_feature_repeats >= 2
         if has_pump_head_features:
             logger.info("Detected per-node pump head features; enabling extended pump conditioning.")
         if getattr(data_ds, "multi", False):
@@ -3132,17 +3138,16 @@ def main(args: argparse.Namespace):
     else:
         sample = data_list[0]
         sample_dim = sample.num_node_features
-        if sample_dim not in expected_in_dims:
-            expected_str = ", ".join(str(v) for v in sorted(expected_in_dims))
+        if sample_dim < min_expected_dim:
             raise ValueError(
                 f"Dataset provides {sample.num_node_features} features per node but the network "
-                f"defines {len(wn.pump_name_list)} pumps (expected {expected_str}).\n"
+                f"defines {len(wn.pump_name_list)} pumps (expected at least {min_expected_dim}).\n"
                 "Re-generate the training data with pump control inputs using scripts/data_generation.py."
             )
-        extra_pump_features = sample_dim - pump_offset
+        extra_pump_features = max(sample_dim - pump_offset, 0)
         if pump_count > 0 and extra_pump_features >= 0:
-            pump_feature_repeats = extra_pump_features // pump_count
-            has_pump_head_features = pump_feature_repeats == 2
+            pump_feature_repeats = min(extra_pump_features // pump_count, 2)
+            has_pump_head_features = pump_feature_repeats >= 2
         if has_pump_head_features:
             logger.info("Detected per-node pump head features; enabling extended pump conditioning.")
         model = GCNEncoder(
