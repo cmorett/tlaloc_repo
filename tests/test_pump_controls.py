@@ -13,6 +13,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 import scripts.data_generation as data_generation
 from scripts.data_generation import (
     _run_single_scenario,
+    _extract_applied_pump_speeds,
     build_dataset,
     build_sequence_dataset,
     build_edge_index,
@@ -42,27 +43,36 @@ def _run_scenario():
         torch.random.set_rng_state(torch_state)
 
 
-def test_at_least_one_pump_active_per_hour():
-    res, scale, controls = _run_scenario()
-    hours = len(next(iter(controls.values())))
-    for h in range(hours):
-        assert any(controls[p][h] > 0.05 for p in controls)
+def test_pump_speeds_align_with_epanet_outputs():
+    sim_results, _scale, controls = _run_scenario()
+    link_outputs = getattr(sim_results, "link", {})
+    setting_df = link_outputs.get("setting")
+    status_df = link_outputs.get("status")
+    for pump, values in controls.items():
+        ctrl = np.asarray(values, dtype=float)
+        reference = None
+        if setting_df is not None and pump in setting_df:
+            reference = np.nan_to_num(setting_df[pump].to_numpy(dtype=float))
+        elif status_df is not None and pump in status_df:
+            reference = np.nan_to_num(status_df[pump].to_numpy(dtype=float))
+        if reference is None or reference.size == 0:
+            continue
+        length = min(len(ctrl), len(reference))
+        assert length > 0
+        assert np.allclose(ctrl[:length], reference[:length], atol=1e-6)
+        assert np.all((ctrl[:length] >= 0.0) & (ctrl[:length] <= 1.5))
 
 
-def test_pump_speeds_continuous_and_correlated():
-    res, scale, controls = _run_scenario()
-    for speeds in controls.values():
-        arr = np.array(speeds, dtype=float)
-        # Speeds span more than the discrete {0.0, 0.5, 1.0} set
-        assert len(np.unique(np.round(arr, 2))) > 3
-        # Adjacent hours should be positively correlated with limited jumps
-        if len(arr) > 1:
-            corr = np.corrcoef(arr[:-1], arr[1:])[0, 1]
-            assert corr > 0.3
-            diffs = np.diff(arr)
-            active_mask = (arr[:-1] > 0.05) & (arr[1:] > 0.05)
-            if np.any(active_mask):
-                assert np.max(np.abs(diffs[active_mask])) < 0.35
+def test_extract_applied_pump_speeds_fallback_to_status():
+    import pandas as pd
+
+    status = pd.DataFrame({"P1": ["OPEN", "CLOSED", "OPEN"]})
+    extracted = _extract_applied_pump_speeds(["P1"], status, None, fallback=None)
+    assert np.allclose(extracted["P1"], [1.0, 0.0, 1.0])
+
+    fallback = {"P1": [0.9, 0.9, 0.9, 0.7]}
+    extracted = _extract_applied_pump_speeds(["P1"], None, None, fallback=fallback)
+    assert np.allclose(extracted["P1"], fallback["P1"])
 
 
 def test_closed_pumps_reflected_in_features(monkeypatch):

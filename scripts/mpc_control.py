@@ -69,7 +69,7 @@ PLOTS_DIR = REPO_ROOT / "plots"
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 EPS = 1e-8
-MAX_PUMP_SPEED = 1.8
+MAX_PUMP_SPEED = 1.5
 
 
 def plot_mpc_time_series(

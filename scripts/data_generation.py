@@ -7,7 +7,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple, Optional, Union, Any
+from typing import Dict, Iterable, List, Tuple, Optional, Union, Any, Set
 from functools import partial
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
@@ -34,11 +34,13 @@ logger = logging.getLogger(__name__)
 # in both data generation and validation to keep preprocessing consistent.
 MIN_PRESSURE = 0.0
 
-# Default pump speed bounds and step size for the random walk process.
-# These values can be overridden via CLI arguments.
-DEFAULT_PUMP_SPEED_MAX = 1.2
-DEFAULT_PUMP_SPEED_MIN = 0.6
-DEFAULT_PUMP_STEP = 0.05  # maximum absolute change per hour
+# Default pump speed bounds used when the optional manual sampler is enabled.
+# By default data generation now relies on EPANET controls which typically
+# operate pumps in the ``[0.0, 1.0]`` band.  Manual overrides can expand this
+# envelope up to ``DEFAULT_PUMP_SPEED_MAX``.
+DEFAULT_PUMP_SPEED_MAX = 1.5
+DEFAULT_PUMP_SPEED_MIN = 0.0
+DEFAULT_PUMP_STEP = 0.05  # maximum absolute change per hour when sampling
 
 # Resolve repository paths so all files are created inside the repo
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +83,7 @@ import numpy as np
 import wntr
 from wntr.network.base import LinkStatus
 from wntr.metrics.economic import pump_energy
+from wntr.network.controls import Comparison
 import networkx as nx
 import json
 
@@ -247,44 +250,362 @@ def _to_numeric_array(values: np.ndarray) -> np.ndarray:
     return out
 
 
-def _apply_simulated_pump_speeds(
-    pump_controls: Dict[str, List[float]],
+def _extract_applied_pump_speeds(
+    pump_names: Iterable[str],
     status_df: Optional[Any],
     setting_df: Optional[Any],
-) -> None:
-    """Overwrite sampled pump commands with the speeds enforced by EPANET."""
+    fallback: Optional[Dict[str, List[float]]] = None,
+) -> Dict[str, List[float]]:
+    """Return the pump speeds enforced by EPANET at each reported timestep.
 
-    if not pump_controls:
-        return
+    Parameters
+    ----------
+    pump_names:
+        Names of the pumps in the network.
+    status_df, setting_df:
+        Link-level output frames containing the discrete pump status and
+        continuous speed settings exported by EPANET.  ``setting_df`` is
+        preferred when available as it reflects variable speed commands,
+        otherwise the binary status is converted to ``{0.0, 1.0}``.
+    fallback:
+        Optional dictionary containing pre-sampled commands.  When EPANET does
+        not report any setting/status for a pump this sequence is used instead
+        to preserve alignment with the generated features.
+    """
 
-    for pump_name, commands in pump_controls.items():
-        sampled = np.asarray(commands, dtype=np.float64)
+    resolved: Dict[str, List[float]] = {}
+    fallback = fallback or {}
+    for pump_name in pump_names:
         actual: Optional[np.ndarray] = None
-
         setting_values = _extract_series_array(setting_df, pump_name)
         if setting_values is not None:
             actual = _to_numeric_array(setting_values)
         else:
             status_values = _extract_series_array(status_df, pump_name)
             if status_values is not None:
-                status_numeric = _to_numeric_array(status_values)
-                actual = sampled * status_numeric
+                actual = _to_numeric_array(status_values)
 
+        fallback_array = np.asarray(fallback.get(pump_name, []), dtype=np.float64)
         if actual is None:
-            actual = sampled.copy()
+            actual = fallback_array.copy()
         else:
-            actual = np.nan_to_num(actual, nan=0.0)
+            actual = np.nan_to_num(np.asarray(actual, dtype=np.float64), nan=0.0)
             actual[~np.isfinite(actual)] = 0.0
             if actual.size == 0:
-                actual = sampled.copy()
-            elif actual.shape[0] > sampled.shape[0]:
-                actual = actual[: sampled.shape[0]]
-            elif actual.shape[0] < sampled.shape[0]:
-                pad = sampled[actual.shape[0] :]
+                actual = fallback_array.copy()
+            elif fallback_array.size and actual.shape[0] < fallback_array.shape[0]:
+                pad = fallback_array[actual.shape[0] :]
                 if pad.size:
                     actual = np.concatenate([actual, pad])
+        resolved[pump_name] = actual.astype(np.float64).tolist()
+    return resolved
 
-        pump_controls[pump_name] = actual.astype(np.float64).tolist()
+
+def _iter_controls(wn: wntr.network.WaterNetworkModel) -> Iterable[Any]:
+    """Yield control objects defined in the network."""
+
+    names_attr = getattr(wn, "control_name_list", None)
+    if callable(names_attr):
+        try:
+            names = list(names_attr())
+        except TypeError:
+            names = []
+    else:
+        names = list(names_attr or [])
+    seen: set[int] = set()
+    for name in names:
+        try:
+            control = wn.get_control(name)
+        except Exception:  # pragma: no cover - defensive
+            continue
+        if control is None or id(control) in seen:
+            continue
+        seen.add(id(control))
+        yield control
+
+    controls_attr = getattr(wn, "controls", None)
+    candidate = None
+    if isinstance(controls_attr, dict):
+        candidate = controls_attr.values()
+    elif controls_attr is not None:
+        try:
+            candidate = list(controls_attr)
+        except TypeError:
+            candidate = None
+    if candidate:
+        for control in candidate:
+            if control is None or id(control) in seen:
+                continue
+            seen.add(id(control))
+            yield control
+
+
+def _jitter_control_thresholds(
+    wn: wntr.network.WaterNetworkModel,
+    magnitude: float,
+) -> Dict[str, Dict[str, List[Any]]]:
+    """Randomly perturb simple control thresholds to diversify pump schedules."""
+
+    per_tank_conditions: Dict[str, Dict[str, List[Any]]] = {}
+    if magnitude <= 0.0:
+        return per_tank_conditions
+
+    for control in _iter_controls(wn):
+        condition = getattr(control, "_condition", None)
+        if condition is None:
+            continue
+        threshold = getattr(condition, "_threshold", None)
+        if threshold is None:
+            continue
+        try:
+            offset = random.uniform(-magnitude, magnitude)
+        except Exception:
+            offset = 0.0
+        new_threshold = max(0.0, float(threshold) + offset)
+        setattr(condition, "_threshold", new_threshold)
+
+        tank_obj = getattr(condition, "_source_obj", None)
+        if tank_obj is None or not hasattr(tank_obj, "name"):
+            continue
+        relation = getattr(condition, "_relation", None)
+        bucket = None
+        if relation == Comparison.lt:
+            bucket = "lt"
+        elif relation == Comparison.gt:
+            bucket = "gt"
+        if bucket is None:
+            continue
+        tank_conditions = per_tank_conditions.setdefault(
+            getattr(tank_obj, "name"), {"lt": [], "gt": []}
+        )
+        tank_conditions[bucket].append(condition)
+
+    for tank_name, groups in per_tank_conditions.items():
+        try:
+            tank = wn.get_node(tank_name)
+        except Exception:
+            tank = None
+        min_level = getattr(tank, "min_level", 0.0) if tank is not None else 0.0
+        max_level = getattr(tank, "max_level", min_level + 1.0) if tank is not None else min_level + 1.0
+
+        for bucket in ("lt", "gt"):
+            for cond in groups[bucket]:
+                value = getattr(cond, "_threshold", min_level)
+                value = max(min_level, min(max_level, value))
+                setattr(cond, "_threshold", value)
+
+        if groups["lt"] and groups["gt"]:
+            max_open = max(getattr(cond, "_threshold", min_level) for cond in groups["lt"])
+            min_close = min(getattr(cond, "_threshold", max_level) for cond in groups["gt"])
+            if max_open >= min_close - 0.1:
+                adjustment = max_open - (min_close - 0.1)
+                for cond in groups["lt"]:
+                    new_thr = max(min_level, getattr(cond, "_threshold", min_level) - adjustment - 1e-3)
+                    setattr(cond, "_threshold", new_thr)
+            for cond in groups["gt"]:
+                new_thr = min(max_level, getattr(cond, "_threshold", max_level))
+                setattr(cond, "_threshold", new_thr)
+    return per_tank_conditions
+
+
+def _collect_tank_thresholds(
+    wn: wntr.network.WaterNetworkModel,
+) -> Dict[str, List[float]]:
+    """Return mapping from tank name to control thresholds after jitter."""
+
+    tank_thresholds: Dict[str, List[float]] = {}
+    for control in _iter_controls(wn):
+        condition = getattr(control, "_condition", None)
+        if condition is None:
+            continue
+        tank_obj = getattr(condition, "_source_obj", None)
+        if tank_obj is None or not hasattr(tank_obj, "name"):
+            continue
+        threshold = getattr(condition, "_threshold", None)
+        if threshold is None:
+            continue
+        tank_thresholds.setdefault(tank_obj.name, []).append(float(threshold))
+    return tank_thresholds
+
+
+def _initialize_tank_levels(
+    wn: wntr.network.WaterNetworkModel,
+    thresholds: Dict[str, List[float]],
+    frac_range: Tuple[float, float],
+    *,
+    threshold_bias: float = 0.6,
+    threshold_band: float = 0.75,
+) -> None:
+    """Assign initial tank levels biased towards active control thresholds."""
+
+    lower, upper = frac_range
+    lower = max(0.0, float(lower))
+    upper = max(lower, float(upper))
+
+    for tname in wn.tank_name_list:
+        tank = wn.get_node(tname)
+        min_level = getattr(tank, "min_level", 0.0)
+        max_level = getattr(tank, "max_level", min_level + 1.0)
+        span = max(max_level - min_level, 1e-6)
+        frac = random.uniform(lower, upper)
+        baseline = min_level + frac * span
+
+        target_levels = thresholds.get(tname, [])
+        if target_levels and random.random() < max(0.0, min(1.0, threshold_bias)):
+            base = random.choice(target_levels)
+            base += random.uniform(-threshold_band, threshold_band)
+        else:
+            base = baseline
+        base = max(min_level, min(max_level, base))
+        tank.init_level = base
+
+
+def _pumps_controlled_by_network(
+    wn: wntr.network.WaterNetworkModel,
+) -> Set[str]:
+    """Return names of pumps referenced by explicit controls."""
+
+    controlled: Set[str] = set()
+    for control in _iter_controls(wn):
+        actions = getattr(control, "_then_actions", [])
+        for action in actions:
+            target = getattr(action, "_target_obj", None)
+            if target is None:
+                continue
+            name = getattr(target, "name", None)
+            link_type = getattr(target, "link_type", None)
+            if name and isinstance(link_type, str) and link_type.lower() == "pump":
+                controlled.add(name)
+    return controlled
+
+
+PAIRED_PUMP_GROUPS: Tuple[Tuple[str, str], ...] = (("PU8", "PU9"),)
+
+
+def _apply_paired_pump_patterns(
+    pump_controls: Dict[str, List[float]],
+    hours: int,
+    min_speed: float,
+    max_speed: float,
+    *,
+    groups: Tuple[Tuple[str, str], ...] = PAIRED_PUMP_GROUPS,
+) -> None:
+    """Assign correlated pump patterns for predefined pump pairs."""
+
+    rng_min = min(min_speed, max_speed)
+    rng_max = max(min_speed, max_speed)
+    for primary, secondary in groups:
+        if primary not in pump_controls or secondary not in pump_controls:
+            continue
+        seq_primary: List[float] = []
+        seq_secondary: List[float] = []
+        prev_state = None
+        for _ in range(hours):
+            state = random.random()
+            if state < 0.35:
+                sp1 = random.uniform(rng_min, rng_max)
+                sp2 = 0.0
+                state_label = "primary"
+            elif state < 0.7:
+                sp1 = 0.0
+                sp2 = random.uniform(rng_min, rng_max)
+                state_label = "secondary"
+            elif state < 0.85:
+                base = random.uniform(rng_min, rng_max)
+                sp1 = base
+                sp2 = base * random.uniform(0.35, 0.75)
+                state_label = "both"
+            else:
+                sp1 = 0.0
+                sp2 = 0.0
+                state_label = "off"
+            # Avoid rapid oscillations by biasing towards previous state
+            if prev_state == state_label and state_label in {"primary", "secondary"}:
+                sp2 = seq_secondary[-1] if seq_secondary else sp2
+                sp1 = seq_primary[-1] if seq_primary else sp1
+            seq_primary.append(sp1)
+            seq_secondary.append(sp2)
+            prev_state = state_label
+        pump_controls[primary] = seq_primary
+        pump_controls[secondary] = seq_secondary
+
+
+def _jitter_reservoir_heads(
+    wn: wntr.network.WaterNetworkModel,
+    magnitude: float,
+) -> None:
+    """Apply uniform head jitter to reservoir nodes."""
+
+    if magnitude <= 0.0:
+        return
+    for name in wn.reservoir_name_list:
+        reservoir = wn.get_node(name)
+        base = getattr(reservoir, "base_head", getattr(reservoir, "head", 0.0))
+        delta = random.uniform(-magnitude, magnitude)
+        new_head = max(0.0, float(base) + delta)
+        if hasattr(reservoir, "base_head"):
+            reservoir.base_head = new_head
+
+
+def _sample_manual_pump_patterns(
+    wn: wntr.network.WaterNetworkModel,
+    hours: int,
+    *,
+    pump_speed_min: float,
+    pump_speed_max: float,
+    pump_step: float,
+    on_threshold: float = 0.1,
+) -> Dict[str, List[float]]:
+    """Generate manual pump speed trajectories via truncated random walks."""
+
+    pump_controls: Dict[str, List[float]] = {pn: [] for pn in wn.pump_name_list}
+    if not pump_controls:
+        return pump_controls
+
+    max_step = max(pump_step, 1e-6)
+    min_dwell = 2
+    current_speed: Dict[str, float] = {}
+    dwell_time: Dict[str, int] = {}
+    is_on: Dict[str, bool] = {}
+
+    for pn in wn.pump_name_list:
+        spd = random.uniform(pump_speed_min, pump_speed_max)
+        current_speed[pn] = spd
+        pump_controls[pn].append(spd)
+        is_on[pn] = spd > on_threshold
+        dwell_time[pn] = 1
+
+    for _h in range(1, hours):
+        for pn in wn.pump_name_list:
+            prev = current_speed[pn]
+            step = random.gauss(0.0, max_step / 2.0)
+            step = float(np.clip(step, -max_step, max_step))
+            cand = prev + step
+            if is_on[pn] and cand <= on_threshold and dwell_time[pn] < min_dwell:
+                cand = max(cand, on_threshold)
+            if not is_on[pn] and cand > on_threshold and dwell_time[pn] < min_dwell:
+                cand = min(cand, on_threshold)
+            cand = float(np.clip(cand, pump_speed_min, pump_speed_max))
+            pump_controls[pn].append(cand)
+            current_speed[pn] = cand
+            if (cand > on_threshold) == is_on[pn]:
+                dwell_time[pn] += 1
+            else:
+                is_on[pn] = cand > on_threshold
+                dwell_time[pn] = 1
+
+        if wn.pump_name_list and all(
+            pump_controls[pn][-1] <= on_threshold for pn in wn.pump_name_list
+        ):
+            keep_on = random.choice(wn.pump_name_list)
+            forced = random.uniform(
+                max(pump_speed_min, on_threshold), pump_speed_max
+            )
+            pump_controls[keep_on][-1] = forced
+            current_speed[keep_on] = forced
+            is_on[keep_on] = True
+            dwell_time[keep_on] = 1
+    return pump_controls
 
 
 def simulate_extreme_event(
@@ -331,21 +652,25 @@ def _build_randomized_network(
     pipe_closure: bool = False,
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
     stress_test: bool = False,
+    manual_pump_sampler: bool = False,
+    paired_pump_override: bool = False,
+    control_threshold_jitter: float = 0.5,
+    reservoir_head_jitter: float = 1.5,
+    tank_threshold_bias: float = 0.6,
+    tank_threshold_band: float = 0.75,
     pump_speed_min: float = DEFAULT_PUMP_SPEED_MIN,
     pump_speed_max: float = DEFAULT_PUMP_SPEED_MAX,
     pump_step: float = DEFAULT_PUMP_STEP,
     demand_scale_min: float = 0.8,
     demand_scale_max: float = 1.2,
 ) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
-    """Create a network with randomized demand patterns and pump controls.
+    """Create a network with randomized demand patterns and optional pump overrides.
 
-    Pipe roughness values are kept at their defaults. Pump speeds evolve
-    continuously: each pump begins from a random speed in ``[pump_speed_min,
-    pump_speed_max]`` and performs a truncated random walk with hourly steps
-    limited to ``±pump_step``.  A short dwell time around zero prevents
-    unrealistic rapid cycling and at least one pump remains active every
-    hour.  Additional modifications such as local demand surges, pump
-    outages and pipe closures can be injected via flags.
+    Demand multipliers, initial tank levels, reservoir heads and control
+    thresholds are perturbed to expose diverse hydraulic responses. Pump speeds
+    default to those enforced by EPANET's own controls.  When
+    ``manual_pump_sampler`` is enabled the legacy random walk sampler is used to
+    drive variable-speed pumps for scenario stress testing.
     """
 
     wn = wntr.network.WaterNetworkModel(inp_file)
@@ -355,15 +680,20 @@ def _build_randomized_network(
     wn.options.time.report_timestep = 3600
     wn.options.quality.parameter = "CHEMICAL"
 
-    # Randomize initial tank levels uniformly across the provided range
-    for tname in wn.tank_name_list:
-        tank = wn.get_node(tname)
-        span = max(tank.max_level - tank.min_level, 1e-6)
-        frac = random.uniform(tank_level_range[0], tank_level_range[1])
-        level = tank.min_level + frac * span
-        tank.init_level = min(max(level, tank.min_level), tank.max_level)
-
     hours = int(wn.options.time.duration // wn.options.time.hydraulic_timestep)
+
+    _jitter_control_thresholds(wn, control_threshold_jitter)
+    _jitter_reservoir_heads(wn, reservoir_head_jitter)
+    tank_thresholds = _collect_tank_thresholds(wn)
+    _initialize_tank_levels(
+        wn,
+        tank_thresholds,
+        tank_level_range,
+        threshold_bias=tank_threshold_bias,
+        threshold_band=tank_threshold_band,
+    )
+    controlled_pumps = _pumps_controlled_by_network(wn)
+    uncontrolled_pumps = set(wn.pump_name_list) - controlled_pumps
 
     scale_dict: Dict[str, np.ndarray] = {}
     pattern_dict: Dict[str, wntr.network.elements.Pattern] = {}
@@ -402,56 +732,39 @@ def _build_randomized_network(
             arr = np.clip(arr, 0.0, None)
             scale_dict[n] = arr
             pattern_dict[n].multipliers = arr
+    pump_controls: Dict[str, List[float]]
+    if manual_pump_sampler:
+        rng_min = min(pump_speed_min, pump_speed_max)
+        rng_max = max(pump_speed_min, pump_speed_max)
+        pump_controls = _sample_manual_pump_patterns(
+            wn,
+            hours,
+            pump_speed_min=rng_min,
+            pump_speed_max=rng_max,
+            pump_step=max(pump_step, 1e-6),
+        )
+    else:
+        pump_controls = {pn: [0.0] * hours for pn in wn.pump_name_list}
+        if uncontrolled_pumps:
+            rng_min = min(pump_speed_min, pump_speed_max)
+            rng_max = max(pump_speed_min, pump_speed_max)
+            free_patterns = _sample_manual_pump_patterns(
+                wn,
+                hours,
+                pump_speed_min=rng_min,
+                pump_speed_max=rng_max,
+                pump_step=max(pump_step, 1e-6),
+            )
+            for pn in uncontrolled_pumps:
+                pump_controls[pn] = free_patterns.get(pn, pump_controls[pn])
 
-    pump_controls: Dict[str, List[float]] = {pn: [] for pn in wn.pump_name_list}
-
-    # Pump speeds now follow a continuous, temporally correlated process. Each
-    # pump starts from a random speed in ``[pump_speed_min, pump_speed_max]`` and
-    # evolves through a truncated random walk that limits hourly
-    # changes.  The ``is_on`` state is tracked with a small dwell time to avoid
-    # unrealistic rapid cycling near zero.
-    max_step = pump_step
-    min_dwell = 2   # minimum hours before switching on/off
-
-    current_speed: Dict[str, float] = {}
-    dwell_time: Dict[str, int] = {}
-    is_on: Dict[str, bool] = {}
-
-    on_threshold = 0.1  # speed below which a pump is considered "off"
-
-    for pn in wn.pump_name_list:
-        spd = random.uniform(pump_speed_min, pump_speed_max)
-        current_speed[pn] = spd
-        pump_controls[pn].append(spd)
-        is_on[pn] = spd > on_threshold
-        dwell_time[pn] = 1
-
-    for _h in range(1, hours):
-        for pn in wn.pump_name_list:
-            prev = current_speed[pn]
-            step = random.gauss(0.0, max_step / 2)
-            step = float(np.clip(step, -max_step, max_step))
-            cand = prev + step
-            if is_on[pn] and cand <= on_threshold and dwell_time[pn] < min_dwell:
-                cand = max(cand, 0.1)
-            if not is_on[pn] and cand > on_threshold and dwell_time[pn] < min_dwell:
-                cand = min(cand, on_threshold)
-            cand = float(np.clip(cand, pump_speed_min, pump_speed_max))
-            pump_controls[pn].append(cand)
-            current_speed[pn] = cand
-            if (cand > on_threshold) == is_on[pn]:
-                dwell_time[pn] += 1
-            else:
-                is_on[pn] = cand > on_threshold
-                dwell_time[pn] = 1
-
-        if wn.pump_name_list and all(pump_controls[pn][-1] <= on_threshold for pn in wn.pump_name_list):
-            keep_on = random.choice(wn.pump_name_list)
-            forced = random.uniform(pump_speed_min, pump_speed_max)
-            pump_controls[keep_on][-1] = forced
-            current_speed[keep_on] = forced
-            is_on[keep_on] = True
-            dwell_time[keep_on] = 1
+    if paired_pump_override:
+        _apply_paired_pump_patterns(
+            pump_controls,
+            hours,
+            pump_speed_min,
+            pump_speed_max,
+        )
 
     # Inject pump outage by forcing a pump off for a short period
     if pump_outage and wn.pump_name_list:
@@ -484,12 +797,15 @@ def _build_randomized_network(
     for pn in wn.pump_name_list:
         link = wn.get_link(pn)
         link.initial_status = LinkStatus.Open
-        pat_name = f"{pn}_pat_{idx}"
-        wn.add_pattern(
-            pat_name, wntr.network.elements.Pattern(pat_name, pump_controls[pn])
-        )
         link.base_speed = 1.0
-        link.speed_pattern_name = pat_name
+        if manual_pump_sampler or pn in uncontrolled_pumps:
+            pat_name = f"{pn}_pat_{idx}"
+            wn.add_pattern(
+                pat_name, wntr.network.elements.Pattern(pat_name, pump_controls[pn])
+            )
+            link.speed_pattern_name = pat_name
+        else:
+            link.speed_pattern_name = None
 
     return wn, scale_dict, pump_controls
 
@@ -501,6 +817,13 @@ def _run_single_scenario(
     local_surge_rate: float = 0.0,
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
     extreme_event_prob: Optional[float] = None,
+    manual_pump_sampler: bool = False,
+    manual_pump_fraction: float = 0.0,
+    paired_pump_fraction: float = 0.0,
+    control_threshold_jitter: float = 0.5,
+    reservoir_head_jitter: float = 1.5,
+    tank_threshold_bias: float = 0.6,
+    tank_threshold_band: float = 0.75,
     pump_speed_min: float = DEFAULT_PUMP_SPEED_MIN,
     pump_speed_max: float = DEFAULT_PUMP_SPEED_MAX,
     pump_step: float = DEFAULT_PUMP_STEP,
@@ -533,6 +856,8 @@ def _run_single_scenario(
         stress = random.random() < extreme_rate
         pump_out = stress or (random.random() < pump_outage_rate)
         surge = stress or (random.random() < local_surge_rate)
+        manual_override = manual_pump_sampler or (random.random() < manual_pump_fraction)
+        paired_override = random.random() < paired_pump_fraction
 
         wn, scale_dict, pump_controls = _build_randomized_network(
             inp_file,
@@ -542,6 +867,12 @@ def _run_single_scenario(
             pipe_closure=pump_out or stress,
             tank_level_range=tank_level_range,
             stress_test=stress,
+            manual_pump_sampler=manual_override,
+            paired_pump_override=paired_override,
+            control_threshold_jitter=control_threshold_jitter,
+            reservoir_head_jitter=reservoir_head_jitter,
+            tank_threshold_bias=tank_threshold_bias,
+            tank_threshold_band=tank_threshold_band,
             pump_speed_min=pump_speed_min,
             pump_speed_max=pump_speed_max,
             pump_step=pump_step,
@@ -558,6 +889,8 @@ def _run_single_scenario(
             events.append("stress")
         if pump_out or stress:
             events.append("pipe_closure")
+        if manual_override:
+            events.append("manual_sampler")
         scenario_label = "+".join(events) if events else "normal"
 
         prefix = TEMP_DIR / f"temp_{os.getpid()}_{idx}_{attempt}"
@@ -586,7 +919,9 @@ def _run_single_scenario(
         if df.isna().any().any() or np.isinf(df.values).any():
             raise ValueError("invalid values detected in simulation results")
 
-    _apply_simulated_pump_speeds(pump_controls, status_df, setting_df)
+    pump_controls = _extract_applied_pump_speeds(
+        wn.pump_name_list, status_df, setting_df, fallback=pump_controls
+    )
 
     return sim_results, scale_dict, pump_controls
 
@@ -621,6 +956,13 @@ def run_scenarios(
     tank_level_range: Tuple[float, float] = (0.0, 1.0),
     num_workers: Optional[int] = None,
     show_progress: bool = False,
+    manual_pump_sampler: bool = False,
+    manual_pump_fraction: float = 0.0,
+    paired_pump_fraction: float = 0.0,
+    control_threshold_jitter: float = 0.5,
+    reservoir_head_jitter: float = 1.5,
+    tank_threshold_bias: float = 0.6,
+    tank_threshold_band: float = 0.75,
     pump_speed_min: float = DEFAULT_PUMP_SPEED_MIN,
     pump_speed_max: float = DEFAULT_PUMP_SPEED_MAX,
     pump_step: float = DEFAULT_PUMP_STEP,
@@ -648,6 +990,13 @@ def run_scenarios(
             pump_outage_rate=pump_outage_rate,
             local_surge_rate=local_surge_rate,
             tank_level_range=tank_level_range,
+            manual_pump_sampler=manual_pump_sampler,
+            manual_pump_fraction=manual_pump_fraction,
+            paired_pump_fraction=paired_pump_fraction,
+            control_threshold_jitter=control_threshold_jitter,
+            reservoir_head_jitter=reservoir_head_jitter,
+            tank_threshold_bias=tank_threshold_bias,
+            tank_threshold_band=tank_threshold_band,
             pump_speed_min=pump_speed_min,
             pump_speed_max=pump_speed_max,
             pump_step=pump_step,
@@ -1264,22 +1613,67 @@ def main() -> None:
         help="Probability of applying a localized demand surge",
     )
     parser.add_argument(
+        "--manual-pump-sampler",
+        action="store_true",
+        help=(
+            "Enable the legacy pump speed random walk sampler. "
+            "When disabled pumps follow EPANET controls and recorded speeds "
+            "reflect the hydraulic response."
+        ),
+    )
+    parser.add_argument(
+        "--manual-pump-fraction",
+        type=float,
+        default=0.0,
+        help="Fraction of scenarios that should use the manual pump sampler in addition to any explicit flag",
+    )
+    parser.add_argument(
+        "--paired-pump-fraction",
+        type=float,
+        default=0.5,
+        help="Probability of sampling correlated patterns for predefined pump pairs (e.g., PU8/PU9)",
+    )
+    parser.add_argument(
         "--pump-speed-min",
         type=float,
         default=DEFAULT_PUMP_SPEED_MIN,
-        help="Minimum relative pump speed for the random walk",
+        help="Minimum relative pump speed when the manual sampler is enabled",
     )
     parser.add_argument(
         "--pump-speed-max",
         type=float,
         default=DEFAULT_PUMP_SPEED_MAX,
-        help="Maximum relative pump speed for the random walk",
+        help="Maximum relative pump speed when the manual sampler is enabled",
     )
     parser.add_argument(
         "--pump-step",
         type=float,
         default=DEFAULT_PUMP_STEP,
         help="Maximum absolute hourly change in pump speed",
+    )
+    parser.add_argument(
+        "--control-threshold-jitter",
+        type=float,
+        default=0.5,
+        help="Uniform perturbation magnitude [m] applied to tank/level controls",
+    )
+    parser.add_argument(
+        "--reservoir-head-jitter",
+        type=float,
+        default=1.5,
+        help="Uniform perturbation magnitude [m] applied to reservoir heads",
+    )
+    parser.add_argument(
+        "--tank-threshold-bias",
+        type=float,
+        default=0.6,
+        help="Probability of initializing tank levels near active control thresholds",
+    )
+    parser.add_argument(
+        "--tank-threshold-band",
+        type=float,
+        default=0.75,
+        help="Jitter band [m] around control thresholds used when sampling initial tank levels",
     )
     parser.add_argument(
         "--demand-scale-min",
@@ -1381,6 +1775,13 @@ def main() -> None:
         tank_level_range=tuple(args.tank_level_range),
         num_workers=args.num_workers,
         show_progress=args.show_progress,
+        manual_pump_sampler=args.manual_pump_sampler,
+        manual_pump_fraction=args.manual_pump_fraction,
+        paired_pump_fraction=args.paired_pump_fraction,
+        control_threshold_jitter=args.control_threshold_jitter,
+        reservoir_head_jitter=args.reservoir_head_jitter,
+        tank_threshold_bias=args.tank_threshold_bias,
+        tank_threshold_band=args.tank_threshold_band,
         pump_speed_min=args.pump_speed_min,
         pump_speed_max=args.pump_speed_max,
         pump_step=args.pump_step,
@@ -1471,40 +1872,64 @@ def main() -> None:
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
     edge_attr_train_seq = edge_attr_val_seq = edge_attr_test_seq = None
+    num_nodes = len(wn_template.node_name_list)
+    base_feature_dim = 5 if args.include_chlorine else 4
+    base_feature_dim += len(wn_template.pump_name_list)
+    base_feature_dim += len(wn_template.tank_name_list)
+
+    def _empty_sequence_arrays():
+        return (
+            np.empty((0, args.sequence_length, num_nodes, base_feature_dim), dtype=np.float32),
+            np.empty((0,), dtype=object),
+            np.empty((0,), dtype="<U1"),
+            np.empty((0, args.sequence_length, 0, 0), dtype=np.float32),
+        )
+
     if args.sequence_length > 1:
-        (
-            X_train,
-            Y_train,
-            train_labels,
-            edge_attr_train_seq,
-        ) = build_sequence_dataset(
-            train_res,
-            wn_template,
-            args.sequence_length,
-            include_chlorine=args.include_chlorine,
-        )
-        (
-            X_val,
-            Y_val,
-            val_labels,
-            edge_attr_val_seq,
-        ) = build_sequence_dataset(
-            val_res,
-            wn_template,
-            args.sequence_length,
-            include_chlorine=args.include_chlorine,
-        )
-        (
-            X_test,
-            Y_test,
-            test_labels,
-            edge_attr_test_seq,
-        ) = build_sequence_dataset(
-            test_res,
-            wn_template,
-            args.sequence_length,
-            include_chlorine=args.include_chlorine,
-        )
+        if train_res:
+            (
+                X_train,
+                Y_train,
+                train_labels,
+                edge_attr_train_seq,
+            ) = build_sequence_dataset(
+                train_res,
+                wn_template,
+                args.sequence_length,
+                include_chlorine=args.include_chlorine,
+            )
+        else:
+            X_train, Y_train, train_labels, edge_attr_train_seq = _empty_sequence_arrays()
+
+        if val_res:
+            (
+                X_val,
+                Y_val,
+                val_labels,
+                edge_attr_val_seq,
+            ) = build_sequence_dataset(
+                val_res,
+                wn_template,
+                args.sequence_length,
+                include_chlorine=args.include_chlorine,
+            )
+        else:
+            X_val, Y_val, val_labels, edge_attr_val_seq = _empty_sequence_arrays()
+
+        if test_res:
+            (
+                X_test,
+                Y_test,
+                test_labels,
+                edge_attr_test_seq,
+            ) = build_sequence_dataset(
+                test_res,
+                wn_template,
+                args.sequence_length,
+                include_chlorine=args.include_chlorine,
+            )
+        else:
+            X_test, Y_test, test_labels, edge_attr_test_seq = _empty_sequence_arrays()
     else:
         X_train, Y_train = build_dataset(
             train_res, wn_template, include_chlorine=args.include_chlorine

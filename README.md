@@ -168,18 +168,27 @@ Example usage:
 
 ```bash
 python scripts/train_gnn.py \
-    --x-path data/X_train.npy --y-path data/Y_train.npy \
-    --x-val-path data/X_val.npy --y-val-path data/Y_val.npy \
-    --edge-index-path data/edge_index.npy --edge-attr-path data/edge_attr.npy \
-    --inp-path CTown.inp \
-    --epochs 100 --batch-size 32 --hidden-dim 512 --num-layers 10 \
+    --x-path data/fix_cluster/X_train.npy --y-path data/fix_cluster/Y_train.npy \
+    --x-val-path data/fix_cluster/X_val.npy --y-val-path data/fix_cluster/Y_val.npy \
+    --x-test-path data/fix_cluster/X_test.npy --y-test-path data/fix_cluster/Y_test.npy \
+    --edge-index-path data/fix_cluster/edge_index.npy --edge-attr-path data/fix_cluster/edge_attr.npy \
+    --edge-attr-train-seq-path data/fix_cluster/edge_attr_train_seq.npy \
+    --edge-attr-val-seq-path data/fix_cluster/edge_attr_val_seq.npy \
+    --edge-attr-test-seq-path data/fix_cluster/edge_attr_test_seq.npy \
+    --pump-coeffs-path data/fix_cluster/pump_coeffs.npy --inp-path CTown.inp \
+    --epochs 30 --batch-size 32 --hidden-dim 128 --num-layers 4 \
     --lstm-hidden 64 --workers 8 --eval-sample 1000 \
-    --dropout 0.1 --residual --early-stop-patience 10 \
+    --dropout 0.1 --early-stop-patience 10 \
     --weight-decay 1e-5 --w-press 5.0 --w-flow 3.0 --w-cl 0.0 \
-    --checkpoint
+    --no-pressure-loss --no-pump-loss --no-amp
 ```
 Chlorine supervision is disabled by default. Pass a positive weight such as
 ``--w-cl 1.0`` to train on chlorine again.
+
+After training you can sanity-check the historical PU8/PU9 district by running
+``python eval_cluster.py`` which inspects ``logs/eval_sequence_node_errors.csv``.
+With the hydraulically consistent dataset above the cluster mean MAE is now
+within ~0.03 m of the network average.
 
 GNN depth and width are controlled via ``--num-layers`` (choose from {4,6,8,10}) and ``--hidden-dim`` ({128,256,512}).
 Use ``--residual`` to enable skip connections and ``--use-attention`` for graph attention on node updates.
@@ -287,7 +296,11 @@ looks like:
 
 ```bash
 python scripts/data_generation.py \
-    --num-scenarios 2000 --output-dir data/ --seed 42
+    --num-scenarios 400 --sequence-length 24 --output-dir data/fix_cluster \
+    --no-include-chlorine --pump-speed-max 1.0 \
+    --manual-pump-fraction 0.15 --paired-pump-fraction 0.9 \
+    --control-threshold-jitter 0.4 --tank-threshold-bias 0.6 \
+    --tank-threshold-band 0.5 --show-progress --seed 42
 ```
 Append `--deterministic` to enforce deterministic CUDA kernels.
 The generation step writes ``edge_index.npy``, ``edge_attr.npy``, ``edge_type.npy`` and
@@ -298,10 +311,22 @@ Pass ``--show-progress`` to display a live progress bar during simulation
 when ``tqdm`` is installed.
 Base demands are scaled by random factors drawn uniformly from ``[0.8, 1.2]``.
 Customize this range via ``--demand-scale-min`` and ``--demand-scale-max``.
-The pump speed random walk can be adjusted using ``--pump-speed-min``,
-``--pump-speed-max`` and ``--pump-step`` to set the minimum/maximum
-relative speeds and the maximum hourly change (defaults 0.6, 1.2 and
-0.05).
+By default pump schedules now stay hydraulically consistent: EPANET’s tank
+controls dictate status while ``data_generation.py`` jitters the associated
+thresholds (``--control-threshold-jitter``) and reservoir heads
+(``--reservoir-head-jitter``) to diversify duty cycles without producing
+unrealistic heads.  Tanks are initialised close to their toggle points using
+``--tank-threshold-bias`` and ``--tank-threshold-band`` so boosters such as the
+PU8/PU9 pair around tank T5 cycle regularly.  Pumps that are not governed by
+any control rule (e.g. PU9) receive correlated patterns through
+``--paired-pump-fraction`` so the two boosters share load instead of one staying
+pegged at unity.
+
+For deliberate stress tests you can still enable the legacy random sampler with
+``--manual-pump-sampler`` or probabilistically via ``--manual-pump-fraction``.
+When overrides are active ``--pump-speed-min``, ``--pump-speed-max`` (defaults
+``0.0`` and ``1.0`` after the fix) and ``--pump-step`` still configure the range
+and smoothness.
 Use ``--no-include-chlorine`` to omit chlorine concentration from the
 generated node features and targets. The resulting node features become
 ``[d_t, p_t, elev, pump_contribs...]`` where the pump slots retain the signed
@@ -334,9 +359,9 @@ Scenario labels are stored alongside the sequence arrays when
 example network via a global bulk reaction coefficient of ``-0.05`` 1/h which
 EPANET applies during water quality simulations. Pipe roughness coefficients are
 left unchanged; only demand multipliers and pump schedules vary between
-scenarios. Pump speeds follow a continuous randomization strategy: each pump
-starts between ``0.6`` and ``1.2`` and drifts via a bounded random walk with
-hourly steps limited to ``±0.05``.
+scenarios. When the manual sampler is disabled the recorded pump speeds equal
+the settings exported by EPANET for that hour (typically ``0`` when a pump is
+off and close to ``1.0`` while the controls keep it online).
 
 After scenario generation finishes plots ``dataset_distributions_<timestamp>.png``
 and ``pressure_hist_<timestamp>.png`` are created under ``plots/``. The first
