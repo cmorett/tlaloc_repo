@@ -12,6 +12,7 @@ import os
 import json
 import pickle
 import hashlib
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from datetime import datetime
@@ -107,39 +108,66 @@ def pressure_error_heatmap(
     run_name: str,
     plots_dir: Optional[Path] = None,
     return_fig: bool = False,
-) -> Optional[plt.Figure]:
-    """Heatmaps showing pressure prediction errors across nodes and time."""
+) -> Optional[Tuple[plt.Figure, plt.Figure]]:
+    """Visualise pressure prediction errors across nodes and their spatial layout.
+
+    Two figures are produced: a time-vs-node heatmap and a spatial scatter plot
+    coloured by each node's average error.  The figures are saved separately so
+    that long node labels have enough room to remain legible.
+    """
     if plots_dir is None:
         plots_dir = PLOTS_DIR
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    # --- Heatmap (time vs node) -------------------------------------------------
+    fig_heatmap, ax_heatmap = plt.subplots(figsize=(16, 6))
+    im = ax_heatmap.imshow(errors, aspect="auto", cmap="magma")
+    ax_heatmap.set_xlabel("Node")
+    ax_heatmap.set_ylabel("Time (h)")
+    ax_heatmap.set_title("Heatmap of Pressure Prediction Errors")
+    ax_heatmap.set_yticks(np.arange(len(times)))
+    ax_heatmap.set_yticklabels(times)
 
-    im = axes[0].imshow(errors, aspect="auto", cmap="magma")
-    axes[0].set_xlabel("Node")
-    axes[0].set_ylabel("Time (h)")
-    axes[0].set_title("Heatmap of Pressure Prediction Errors")
-    axes[0].set_yticks(np.arange(len(times)))
-    axes[0].set_yticklabels(times)
-    axes[0].set_xticks(np.arange(len(node_names)))
-    axes[0].set_xticklabels(node_names, rotation=90, fontsize=6)
-    fig.colorbar(im, ax=axes[0], label="Error (m)")
+    num_nodes = len(node_names)
+    ax_heatmap.set_xticks(np.arange(num_nodes))
+    max_labels = 40
+    if num_nodes > max_labels:
+        step = math.ceil(num_nodes / max_labels)
+        display_idx = np.arange(0, num_nodes, step)
+        ax_heatmap.set_xticks(display_idx)
+        ax_heatmap.set_xticklabels(
+            [node_names[i] for i in display_idx], rotation=90, fontsize=7
+        )
+    else:
+        ax_heatmap.set_xticklabels(node_names, rotation=90, fontsize=7)
+    fig_heatmap.colorbar(im, ax=ax_heatmap, label="Error (m)")
+    fig_heatmap.tight_layout()
+    heatmap_path = plots_dir / f"pressure_error_heatmap_{run_name}.png"
+    fig_heatmap.savefig(heatmap_path)
 
+    # --- Spatial scatter (node coordinates) -------------------------------------
     net = epyt.epanet(str(inp_path))
     coords = net.getNodeCoordinates()
     node_index = {name: i + 1 for i, name in enumerate(net.NodeNameID)}
     avg_err = errors.mean(axis=0)
     x = [coords["x"][node_index[n]] for n in node_names]
     y = [coords["y"][node_index[n]] for n in node_names]
-    sc = axes[1].scatter(x, y, c=avg_err, cmap="magma")
-    axes[1].set_title("Average Node Error")
-    fig.colorbar(sc, ax=axes[1], label="Error (m)")
 
-    fig.tight_layout()
-    fig.savefig(plots_dir / f"pressure_error_heatmap_{run_name}.png")
+    fig_scatter, ax_scatter = plt.subplots(figsize=(7, 7))
+    sc = ax_scatter.scatter(x, y, c=avg_err, cmap="magma", s=35)
+    ax_scatter.set_title("Average Node Error")
+    ax_scatter.set_xlabel("x (m)")
+    ax_scatter.set_ylabel("y (m)")
+    ax_scatter.set_aspect("equal", adjustable="datalim")
+    fig_scatter.colorbar(sc, ax=ax_scatter, label="Error (m)")
+    fig_scatter.tight_layout()
+    scatter_path = plots_dir / f"pressure_error_spatial_{run_name}.png"
+    fig_scatter.savefig(scatter_path)
+
     if not return_fig:
-        plt.close(fig)
-    return fig if return_fig else None
+        plt.close(fig_heatmap)
+        plt.close(fig_scatter)
+    return (fig_heatmap, fig_scatter) if return_fig else None
 
 
 def animate_mpc_network(
