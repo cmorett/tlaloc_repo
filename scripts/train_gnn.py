@@ -9,6 +9,7 @@ import signal
 import warnings
 import logging
 import math
+from collections import OrderedDict
 
 import numpy as np
 import pandas as pd
@@ -101,6 +102,21 @@ except ImportError:  # pragma: no cover
     )
 
 PUMP_LOSS_WARN_THRESHOLD = 1.0
+
+FLOW_CONVERSION_TO_M3S = {
+    "CFS": 0.028316846592,
+    "GPM": 0.0000630901964,
+    "MGD": 0.0438126364,
+    "MLD": 0.011574074074074073,
+    "MLPD": 0.011574074074074073,
+    "CMD": 1.1574074074074073e-05,
+    "M3D": 1.1574074074074073e-05,
+    "CMH": 0.0002777777777777778,
+    "CMS": 1.0,
+    "LPS": 0.001,
+    "LPM": 1.6666666666666667e-05,
+    "MLPS": 1.0,
+}
 
 
 def _forward_with_auto_checkpoint(model: nn.Module, fn):
@@ -1159,6 +1175,232 @@ def plot_sequence_prediction(
     fig.savefig(plots_dir / f"time_series_example_{run_name}.png")
     plt.close(fig)
 
+
+def _get_flow_conversion_factor(units: Optional[str]) -> float:
+    """Return conversion factor from ``units`` to m^3/s."""
+
+    if not units:
+        return 1.0
+    key = str(units).upper()
+    return FLOW_CONVERSION_TO_M3S.get(key, 1.0)
+
+
+def _estimate_pump_areas(
+    wn: wntr.network.WaterNetworkModel,
+) -> Dict[str, Optional[float]]:
+    """Estimate cross-sectional area (m^2) for each pump using adjacent pipes."""
+
+    areas: Dict[str, Optional[float]] = {}
+    for pump_name in wn.pump_name_list:
+        try:
+            pump = wn.get_link(pump_name)
+        except Exception:  # pragma: no cover - defensive guard
+            areas[pump_name] = None
+            continue
+        diameter: Optional[float] = None
+        for node_name in (pump.start_node_name, pump.end_node_name):
+            try:
+                links = wn.get_links_for_node(node_name)
+            except Exception:
+                links = []
+            for link_name in links:
+                if link_name == pump_name:
+                    continue
+                try:
+                    link = wn.get_link(link_name)
+                except Exception:
+                    continue
+                diam = getattr(link, "diameter", None)
+                if diam is not None and diam > 0:
+                    diameter = float(diam)
+                    break
+            if diameter is not None:
+                break
+        if diameter is not None and diameter > 0:
+            areas[pump_name] = math.pi * (diameter ** 2) / 4.0
+        else:
+            areas[pump_name] = None
+    return areas
+
+
+def _plot_time_series(
+    time: np.ndarray,
+    series: "OrderedDict[str, np.ndarray]",
+    title: str,
+    ylabel: str,
+    filename: str,
+    run_name: str,
+    plots_dir: Path,
+) -> None:
+    """Plot multiple time series on a shared axis."""
+
+    if not series:
+        return
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for label, values in series.items():
+        ax.plot(time, values, label=label)
+    ax.set_title(title)
+    ax.set_xlabel("Timestep")
+    ax.set_ylabel(ylabel)
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.legend(loc="best", ncol=2, fontsize="small")
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"{filename}_{run_name}.png")
+    plt.close(fig)
+
+
+def generate_sequence_diagnostic_plots(
+    sequence_data: Dict[str, np.ndarray],
+    wn: wntr.network.WaterNetworkModel,
+    run_name: str,
+    plots_dir: Optional[Path] = None,
+) -> None:
+    """Generate tank, pump and node time series comparison plots."""
+
+    pred_nodes = sequence_data.get("pred_nodes")
+    true_nodes = sequence_data.get("true_nodes")
+    pred_edges = sequence_data.get("pred_edges")
+    true_edges = sequence_data.get("true_edges")
+
+    if pred_nodes is None or true_nodes is None:
+        return
+    if plots_dir is None:
+        plots_dir = PLOTS_DIR
+
+    pred_nodes = np.asarray(pred_nodes)
+    true_nodes = np.asarray(true_nodes)
+    time = np.arange(pred_nodes.shape[0])
+    node_index_map = {name: idx for idx, name in enumerate(wn.node_name_list)}
+
+    if wn.tank_name_list:
+        tank_indices = [node_index_map[name] for name in wn.tank_name_list if name in node_index_map]
+        if tank_indices:
+            pred_tanks = pred_nodes[:, tank_indices, 0]
+            true_tanks = true_nodes[:, tank_indices, 0]
+            modeled = OrderedDict(
+                (name, pred_tanks[:, i]) for i, name in enumerate(wn.tank_name_list) if name in node_index_map
+            )
+            actual = OrderedDict(
+                (name, true_tanks[:, i]) for i, name in enumerate(wn.tank_name_list) if name in node_index_map
+            )
+            _plot_time_series(
+                time,
+                modeled,
+                "Modeled Tank Pressure",
+                "Pressure (m)",
+                "tank_pressure_modeled",
+                run_name,
+                plots_dir,
+            )
+            _plot_time_series(
+                time,
+                actual,
+                "Actual Tank Pressure",
+                "Pressure (m)",
+                "tank_pressure_actual",
+                run_name,
+                plots_dir,
+            )
+
+    if pred_edges is not None and true_edges is not None and wn.pump_name_list:
+        pred_edges = np.asarray(pred_edges)
+        true_edges = np.asarray(true_edges)
+        if pred_edges.ndim == 3:
+            pred_edges = pred_edges.squeeze(-1)
+        if true_edges.ndim == 3:
+            true_edges = true_edges.squeeze(-1)
+        link_index_map = {name: idx for idx, name in enumerate(wn.link_name_list)}
+        pump_modeled = OrderedDict()
+        pump_actual = OrderedDict()
+        for pump_name in wn.pump_name_list:
+            link_idx = link_index_map.get(pump_name)
+            if link_idx is None:
+                continue
+            edge_idx = link_idx * 2
+            pump_modeled[pump_name] = pred_edges[:, edge_idx]
+            pump_actual[pump_name] = true_edges[:, edge_idx]
+        _plot_time_series(
+            time,
+            pump_modeled,
+            "Modeled Pump Flow",
+            "Flow (network units)",
+            "pump_flow_modeled",
+            run_name,
+            plots_dir,
+        )
+        _plot_time_series(
+            time,
+            pump_actual,
+            "Actual Pump Flow",
+            "Flow (network units)",
+            "pump_flow_actual",
+            run_name,
+            plots_dir,
+        )
+
+        pump_areas = _estimate_pump_areas(wn)
+        units = getattr(getattr(wn, "options", object), "hydraulic", None)
+        flow_units = getattr(units, "inpfile_units", None) if units is not None else None
+        conv = _get_flow_conversion_factor(flow_units)
+        velocity_modeled = OrderedDict()
+        velocity_actual = OrderedDict()
+        for pump_name in wn.pump_name_list:
+            area = pump_areas.get(pump_name)
+            if area is None or area <= 0:
+                continue
+            modeled_flow = pump_modeled.get(pump_name)
+            actual_flow = pump_actual.get(pump_name)
+            if modeled_flow is None or actual_flow is None:
+                continue
+            velocity_modeled[pump_name] = np.asarray(modeled_flow) * conv / area
+            velocity_actual[pump_name] = np.asarray(actual_flow) * conv / area
+        _plot_time_series(
+            time,
+            velocity_modeled,
+            "Modeled Pump Velocity",
+            "Velocity (m/s)",
+            "pump_velocity_modeled",
+            run_name,
+            plots_dir,
+        )
+        _plot_time_series(
+            time,
+            velocity_actual,
+            "Actual Pump Velocity",
+            "Velocity (m/s)",
+            "pump_velocity_actual",
+            run_name,
+            plots_dir,
+        )
+
+    focus_nodes = ["J219", "J304", "J67", "J431", "J255", "J314", "J363"]
+    available_nodes = [name for name in focus_nodes if name in node_index_map]
+    if available_nodes:
+        pred_focus = OrderedDict(
+            (name, pred_nodes[:, node_index_map[name], 0]) for name in available_nodes
+        )
+        true_focus = OrderedDict(
+            (name, true_nodes[:, node_index_map[name], 0]) for name in available_nodes
+        )
+        _plot_time_series(
+            time,
+            pred_focus,
+            "Modeled Pressure at Key Junctions",
+            "Pressure (m)",
+            "focus_pressure_modeled",
+            run_name,
+            plots_dir,
+        )
+        _plot_time_series(
+            time,
+            true_focus,
+            "Actual Pressure at Key Junctions",
+            "Pressure (m)",
+            "focus_pressure_actual",
+            run_name,
+            plots_dir,
+        )
 
 
 
@@ -3807,6 +4049,7 @@ def main(args: argparse.Namespace):
         sample_true_p: List[float] = []
         sample_preds_c: List[float] = []
         sample_true_c: List[float] = []
+        sequence_example: Dict[str, np.ndarray] = {}
 
         exclude = set(wn.reservoir_name_list)
         node_mask_np = np.array([n not in exclude for n in wn.node_name_list])
@@ -3894,6 +4137,21 @@ def main(args: argparse.Namespace):
                             pred_f = edge_pred.reshape(-1)
                             true_f = Y_edge.reshape(-1)
                             f_stats.update(pred_f.cpu().numpy(), true_f.cpu().numpy())
+                        if "pred_nodes" not in sequence_example:
+                            sequence_example["pred_nodes"] = (
+                                node_pred[0].detach().cpu().numpy()
+                            )
+                            sequence_example["true_nodes"] = (
+                                Y_node[0].detach().cpu().numpy()
+                            )
+                            if edge_pred is not None:
+                                sequence_example["pred_edges"] = (
+                                    edge_pred[0].detach().cpu().numpy()
+                                )
+                            if Y_edge is not None:
+                                sequence_example["true_edges"] = (
+                                    Y_edge[0].detach().cpu().numpy()
+                                )
                 else:
                     for batch in test_loader:
                         batch = batch.to(device, non_blocking=True)
@@ -3976,6 +4234,19 @@ def main(args: argparse.Namespace):
             chlorine_stats=c_stats,
             flow_stats=f_stats if f_stats.count > 0 else None,
         )
+
+        if seq_mode and sequence_example.get("pred_nodes") is not None:
+            try:
+                generate_sequence_diagnostic_plots(
+                    sequence_example,
+                    wn,
+                    run_name,
+                    plots_dir=PLOTS_DIR,
+                )
+            except Exception as exc:  # pragma: no cover - diagnostics only
+                logger.exception(
+                    "Failed to generate sequence diagnostic plots: %s", exc
+                )
 
         if sample_preds_p:
             preds_p = np.asarray(sample_preds_p)
