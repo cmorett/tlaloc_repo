@@ -625,7 +625,14 @@ class MultiTaskGNNSurrogate(nn.Module):
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
 
         att_in = rnn_out.reshape(batch_size * num_nodes, T, -1)
-        att_out, _ = self.time_att(att_in, att_in, att_in)
+        # ``MultiheadAttention`` can produce ``NaN`` outputs under autocast when
+        # sequence embeddings contain large values.  Cast the attention inputs to
+        # ``float32`` explicitly so the operation runs in full precision even
+        # when mixed precision training is enabled.
+        att_dtype = att_in.dtype
+        att_in_fp32 = att_in.float()
+        att_out, _ = self.time_att(att_in_fp32, att_in_fp32, att_in_fp32)
+        att_out = att_out.to(dtype=att_dtype)
         att_out = att_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
 
         node_pred = self.node_decoder(att_out)
