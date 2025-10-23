@@ -5,6 +5,7 @@ from torch.nn import MultiheadAttention
 from torch_geometric.nn import GCNConv, GATConv, LayerNorm, MessagePassing
 from typing import Optional, Sequence
 import torch.utils.checkpoint
+from contextlib import nullcontext
 
 
 class HydroConv(MessagePassing):
@@ -631,7 +632,14 @@ class MultiTaskGNNSurrogate(nn.Module):
         # when mixed precision training is enabled.
         att_dtype = att_in.dtype
         att_in_fp32 = att_in.float()
-        att_out, _ = self.time_att(att_in_fp32, att_in_fp32, att_in_fp32)
+        device_type = att_in_fp32.device.type
+        autocast_ctx = (
+            torch.autocast(device_type=device_type, enabled=False)
+            if hasattr(torch, "autocast")
+            else nullcontext()
+        )
+        with autocast_ctx:
+            att_out, _ = self.time_att(att_in_fp32, att_in_fp32, att_in_fp32)
         att_out = att_out.to(dtype=att_dtype)
         att_out = att_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
 
