@@ -243,7 +243,12 @@ class EnhancedGNNEncoder(nn.Module):
                 x = conv(x, edge_index)
             x = self.act_fn(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-            x = norm(x)
+            # ``LayerNorm`` executed under CUDA autocast can emit ``NaN`` outputs
+            # when the activations are promoted to ``float16``.  Explicitly run
+            # the normalisation in ``float32`` for numerical stability before
+            # converting back to the original dtype.
+            dtype = x.dtype
+            x = norm(x.float()).to(dtype)
             if self.residual and identity.shape == x.shape:
                 x = x + identity
         return self.fc_out(x)
