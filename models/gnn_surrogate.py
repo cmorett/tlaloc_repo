@@ -401,7 +401,17 @@ class RecurrentGNNSurrogate(nn.Module):
 
         assert emb is not None
         rnn_in = emb.permute(0, 2, 1, 3).reshape(batch_size * num_nodes, T, -1)
-        rnn_out, _ = self.rnn(rnn_in)
+        rnn_dtype = rnn_in.dtype
+        rnn_input = rnn_in.float()
+        device_type = rnn_input.device.type
+        rnn_ctx = (
+            torch.autocast(device_type=device_type, enabled=False)
+            if hasattr(torch, "autocast")
+            else nullcontext()
+        )
+        with rnn_ctx:
+            rnn_out, _ = self.rnn(rnn_input)
+        rnn_out = rnn_out.to(dtype=rnn_dtype)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
         out = self.decoder(rnn_out)
         if self.use_pressure_skip and press_inputs and out.size(-1) >= 1:
@@ -627,7 +637,17 @@ class MultiTaskGNNSurrogate(nn.Module):
 
         assert emb is not None
         rnn_in = emb.permute(0, 2, 1, 3).reshape(batch_size * num_nodes, T, -1)
-        rnn_out, _ = self.rnn(rnn_in)
+        rnn_dtype = rnn_in.dtype
+        rnn_input = rnn_in.float()
+        device_type = rnn_input.device.type
+        rnn_ctx = (
+            torch.autocast(device_type=device_type, enabled=False)
+            if hasattr(torch, "autocast")
+            else nullcontext()
+        )
+        with rnn_ctx:
+            rnn_out, _ = self.rnn(rnn_input)
+        rnn_out = rnn_out.to(dtype=rnn_dtype)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
 
         att_in = rnn_out.reshape(batch_size * num_nodes, T, -1)
