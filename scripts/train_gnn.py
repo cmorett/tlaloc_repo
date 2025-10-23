@@ -1960,7 +1960,10 @@ def train_sequence(
     grad_count = 0
     edge_index = edge_index.to(device)
     edge_attr = edge_attr.to(device) if edge_attr is not None else None
+    if edge_attr is not None:
+        torch.nan_to_num_(edge_attr, nan=0.0, posinf=0.0, neginf=0.0)
     edge_attr_phys = edge_attr_phys.to(device)
+    torch.nan_to_num_(edge_attr_phys, nan=0.0, posinf=0.0, neginf=0.0)
     if node_type is not None:
         node_type = node_type.to(device)
     if edge_type is not None:
@@ -1985,6 +1988,8 @@ def train_sequence(
             edge_attr_batch = None
         X_seq = X_seq.to(device)
         attr_input = edge_attr_batch.to(device) if isinstance(edge_attr_batch, torch.Tensor) else edge_attr
+        if isinstance(attr_input, torch.Tensor):
+            attr_input = torch.nan_to_num(attr_input, nan=0.0, posinf=0.0, neginf=0.0)
         if isinstance(Y_seq, dict):
             Y_seq = {k: v.to(device) for k, v in Y_seq.items()}
         else:

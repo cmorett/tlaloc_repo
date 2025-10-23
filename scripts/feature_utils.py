@@ -187,13 +187,16 @@ class SequenceDataset(torch.utils.data.Dataset):
         edge_attr_seq: Optional[np.ndarray] = None,
     ):
         self.X = torch.tensor(X, dtype=torch.float32)
+        torch.nan_to_num_(self.X, nan=0.0, posinf=0.0, neginf=0.0)
         self.edge_index = torch.tensor(edge_index, dtype=torch.long)
         self.edge_attr = None
         if edge_attr is not None:
             self.edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
+            torch.nan_to_num_(self.edge_attr, nan=0.0, posinf=0.0, neginf=0.0)
         self.edge_attr_seq = None
         if edge_attr_seq is not None:
             self.edge_attr_seq = torch.tensor(edge_attr_seq, dtype=torch.float32)
+            torch.nan_to_num_(self.edge_attr_seq, nan=0.0, posinf=0.0, neginf=0.0)
         self.node_type = None
         if node_type is not None:
             self.node_type = torch.tensor(node_type, dtype=torch.long)
@@ -209,25 +212,41 @@ class SequenceDataset(torch.utils.data.Dataset):
                 self.Y["node_outputs"] = torch.stack(
                     [torch.tensor(y["node_outputs"], dtype=torch.float32) for y in Y]
                 )
+                torch.nan_to_num_(
+                    self.Y["node_outputs"], nan=0.0, posinf=0.0, neginf=0.0
+                )
             if "edge_outputs" in first:
                 self.Y["edge_outputs"] = torch.stack(
                     [torch.tensor(y["edge_outputs"], dtype=torch.float32) for y in Y]
+                )
+                torch.nan_to_num_(
+                    self.Y["edge_outputs"], nan=0.0, posinf=0.0, neginf=0.0
                 )
             if "pump_energy" in first:
                 self.Y["pump_energy"] = torch.stack(
                     [torch.tensor(y["pump_energy"], dtype=torch.float32) for y in Y]
                 )
+                torch.nan_to_num_(
+                    self.Y["pump_energy"], nan=0.0, posinf=0.0, neginf=0.0
+                )
             if "demand" in first:
                 self.Y["demand"] = torch.stack(
                     [torch.tensor(y["demand"], dtype=torch.float32) for y in Y]
+                )
+                torch.nan_to_num_(
+                    self.Y["demand"], nan=0.0, posinf=0.0, neginf=0.0
                 )
             if self.edge_attr_seq is None and isinstance(first, dict) and "edge_attr_seq" in first:
                 self.edge_attr_seq = torch.stack(
                     [torch.tensor(y["edge_attr_seq"], dtype=torch.float32) for y in Y]
                 )
+                torch.nan_to_num_(
+                    self.edge_attr_seq, nan=0.0, posinf=0.0, neginf=0.0
+                )
         else:
             self.multi = False
             self.Y = torch.tensor(Y, dtype=torch.float32)
+            torch.nan_to_num_(self.Y, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Truncate to the shortest target length to avoid out-of-bounds access
         self.length = self.X.shape[0]
