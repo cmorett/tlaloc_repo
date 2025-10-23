@@ -794,6 +794,25 @@ def _build_randomized_network(
             pid = random.choice(list(wn.pipe_name_list))
             wn.get_link(pid).initial_status = LinkStatus.Closed
 
+    # Ensure pump controls contain finite values and match the simulation horizon
+    for pn, seq in pump_controls.items():
+        cleaned: List[float] = []
+        for spd in seq:
+            spd_val = float(spd) if spd is not None else 0.0
+            if not math.isfinite(spd_val):
+                logger.warning(
+                    "Non-finite pump speed encountered for %s; replacing with 0.0",
+                    pn,
+                )
+                spd_val = 0.0
+            cleaned.append(spd_val)
+        if len(cleaned) < hours:
+            pad_value = cleaned[-1] if cleaned else 0.0
+            cleaned.extend([pad_value] * (hours - len(cleaned)))
+        elif len(cleaned) > hours:
+            cleaned = cleaned[:hours]
+        pump_controls[pn] = cleaned
+
     for pn in wn.pump_name_list:
         link = wn.get_link(pn)
         link.initial_status = LinkStatus.Open
@@ -1243,6 +1262,7 @@ def build_sequence_dataset(
                 pump_vector = pump_ctrl_arr[:, ctrl_idx]
             else:
                 pump_vector = pump_ctrl_arr
+            pump_vector = np.nan_to_num(pump_vector, nan=0.0, posinf=0.0, neginf=0.0)
             head_step_idx = (
                 min(t, pump_head_arr.shape[1] - 1) if pump_head_arr.size else 0
             )
@@ -1263,9 +1283,10 @@ def build_sequence_dataset(
                     pump_idx = pump_index_map.get(pump_name)
                     if pump_idx is None:
                         continue
-                    speed = float(pump_ctrl_arr[pump_idx, ctrl_idx])
+                    speed = float(pump_vector[pump_idx]) if num_pumps else 0.0
                     edge_attr_t[idx_fwd, -1] = speed
                     edge_attr_t[idx_rev, -1] = speed
+            edge_attr_t = np.nan_to_num(edge_attr_t, nan=0.0, posinf=0.0, neginf=0.0)
             edge_attr_seq.append(edge_attr_t.astype(np.float64))
             feat_nodes = []
             for node in node_names:
@@ -1441,6 +1462,7 @@ def build_dataset(
                 pump_vector = pump_ctrl_arr[:, ctrl_idx]
             else:
                 pump_vector = pump_ctrl_arr
+            pump_vector = np.nan_to_num(pump_vector, nan=0.0, posinf=0.0, neginf=0.0)
             head_step_idx = min(i, pump_head_arr.shape[1] - 1) if pump_head_arr.size else 0
             head_vector = pump_head_arr[:, head_step_idx] if pump_head_arr.size else pump_head_arr
             if num_tanks:
