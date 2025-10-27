@@ -1,3 +1,4 @@
+import logging
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -6,6 +7,8 @@ from torch_geometric.nn import GCNConv, GATConv, LayerNorm, MessagePassing
 from typing import Optional, Sequence
 import torch.utils.checkpoint
 from contextlib import nullcontext
+
+logger = logging.getLogger(__name__)
 
 
 class HydroConv(MessagePassing):
@@ -76,17 +79,19 @@ class HydroConv(MessagePassing):
         edge_attr: torch.Tensor,
         edge_type: torch.Tensor,
     ) -> torch.Tensor:
-        direction = edge_attr[:, -2:-1].clone()
-        pump_speed = edge_attr[:, -1:].clone()
+        orig_dtype = edge_attr.dtype
+        edge_attr_fp32 = edge_attr.to(torch.float32)
+        direction = edge_attr_fp32[:, -2:-1].clone()
+        pump_speed = edge_attr_fp32[:, -1:].clone()
         if self.edge_type_emb is not None:
-            edge_attr = edge_attr + self.edge_type_emb(edge_type)
-        gain = edge_attr.new_zeros(edge_attr.size(0), 1)
-        bias = edge_attr.new_zeros(edge_attr.size(0), 1)
+            edge_attr_fp32 = edge_attr_fp32 + self.edge_type_emb(edge_type).to(torch.float32)
+        gain = edge_attr_fp32.new_zeros(edge_attr_fp32.size(0), 1)
+        bias = edge_attr_fp32.new_zeros(edge_attr_fp32.size(0), 1)
         for t, mlp in enumerate(self.edge_mlps):
             idx = torch.where(edge_type == t)[0]
             if idx.numel() == 0:
                 continue
-            raw = mlp(edge_attr.index_select(0, idx))
+            raw = mlp(edge_attr_fp32.index_select(0, idx))
             if t == self.PUMP_EDGE_TYPE and raw.size(1) >= 2:
                 dir_local = direction.index_select(0, idx)
                 speed_mag = pump_speed.index_select(0, idx)
@@ -94,15 +99,16 @@ class HydroConv(MessagePassing):
                     dir_local > 0, dir_local, torch.ones_like(dir_local)
                 )
                 speed_local = speed_mag * speed_scale
-                gain_t = F.softplus(raw[:, :1]).to(gain.dtype) * speed_local
-                bias_t = raw[:, 1:2].to(bias.dtype) * speed_local
-                gain.index_copy_(0, idx, gain_t)
-                bias.index_copy_(0, idx, bias_t)
+                gain_t = F.softplus(raw[:, :1]) * speed_local
+                bias_t = raw[:, 1:2] * speed_local
+                gain.index_copy_(0, idx, gain_t.to(gain.dtype))
+                bias.index_copy_(0, idx, bias_t.to(bias.dtype))
             else:
-                gain_t = F.softplus(raw).to(gain.dtype)
-                gain.index_copy_(0, idx, gain_t)
+                gain_t = F.softplus(raw)
+                gain.index_copy_(0, idx, gain_t.to(gain.dtype))
         sign = direction * 2.0 - 1.0
-        return sign * (gain * (x_j - x_i) + bias)
+        message = sign * (gain * (x_j.to(gain.dtype) - x_i.to(gain.dtype)) + bias)
+        return message.to(orig_dtype)
 
     def _load_from_state_dict(
         self,
@@ -352,7 +358,9 @@ class RecurrentGNNSurrogate(nn.Module):
                     X_seq[:, t, :, self.pressure_feature_idx]
                 )
 
+            x_t_fp32 = x_t.to(torch.float32)
             if edge_attr_t is not None:
+                edge_attr_t_fp32 = edge_attr_t.to(torch.float32)
 
                 def encode(x, attr):
                     return self.encoder(
@@ -394,16 +402,26 @@ class RecurrentGNNSurrogate(nn.Module):
                 else:
                     gnn_out = encode_no_attr(x_t)
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
+            if torch.isnan(gnn_out).any():
+                raise RuntimeError("NaN detected in GNN encoder output")
 
             if emb is None:
                 emb = X_seq.new_empty(batch_size, T, num_nodes, gnn_out.size(-1))
             emb[:, t] = gnn_out
 
         assert emb is not None
+        if torch.isnan(emb).any() or torch.isinf(emb).any():
+            raise RuntimeError("Invalid values in encoder embeddings")
         rnn_in = emb.permute(0, 2, 1, 3).reshape(batch_size * num_nodes, T, -1)
         rnn_dtype = rnn_in.dtype
         rnn_input = rnn_in.float()
         device_type = rnn_input.device.type
+        if torch.isnan(rnn_input).any() or torch.isinf(rnn_input).any():
+            stats = {
+                "min": float(torch.min(rnn_input)),
+                "max": float(torch.max(rnn_input)),
+            }
+            raise RuntimeError(f"Invalid values in RNN input: {stats}")
         rnn_ctx = (
             torch.autocast(device_type=device_type, enabled=False)
             if hasattr(torch, "autocast")
@@ -588,54 +606,71 @@ class MultiTaskGNNSurrogate(nn.Module):
                     X_seq[:, t, :, self.pressure_feature_idx]
                 )
 
+            x_t_fp32 = x_t.to(torch.float32)
             if edge_attr_t is not None:
+                edge_attr_t_fp32 = edge_attr_t.to(torch.float32)
 
                 def encode(x, attr):
-                    return self.encoder(
-                        x,
-                        batch_edge_index,
-                        attr,
-                        node_type_rep,
-                        edge_type_rep,
-                    )
+                    with torch.autocast(device_type=device.type, enabled=False):
+                        return self.encoder(
+                            x,
+                            batch_edge_index,
+                            attr,
+                            node_type_rep,
+                            edge_type_rep,
+                        )
 
                 if self.use_checkpoint and self.training:
-                    x_t = x_t.requires_grad_()
+                    x_t_fp32 = x_t_fp32.requires_grad_()
                     gnn_out = torch.utils.checkpoint.checkpoint(
                         encode,
-                        x_t,
-                        edge_attr_t,
+                        x_t_fp32,
+                        edge_attr_t_fp32,
                         use_reentrant=False,
                     )
                 else:
-                    gnn_out = encode(x_t, edge_attr_t)
+                    gnn_out = encode(x_t_fp32, edge_attr_t_fp32)
             else:
 
                 def encode_no_attr(x):
-                    return self.encoder(
-                        x,
-                        batch_edge_index,
-                        None,
-                        node_type_rep,
-                        edge_type_rep,
-                    )
+                    with torch.autocast(device_type=device.type, enabled=False):
+                        return self.encoder(
+                            x,
+                            batch_edge_index,
+                            None,
+                            node_type_rep,
+                            edge_type_rep,
+                        )
 
                 if self.use_checkpoint and self.training:
-                    x_t = x_t.requires_grad_()
+                    x_t_fp32 = x_t_fp32.requires_grad_()
                     gnn_out = torch.utils.checkpoint.checkpoint(
                         encode_no_attr,
-                        x_t,
+                        x_t_fp32,
                         use_reentrant=False,
                     )
                 else:
-                    gnn_out = encode_no_attr(x_t)
+                    gnn_out = encode_no_attr(x_t_fp32)
             gnn_out = gnn_out.view(batch_size, num_nodes, -1)
+            if torch.isnan(gnn_out).any() or torch.isinf(gnn_out).any():
+                stats = {
+                    "min": float(torch.min(gnn_out)),
+                    "max": float(torch.max(gnn_out)),
+                }
+                raise RuntimeError(f"Invalid values in GNN encoder output: {stats}")
+            gnn_out = gnn_out.to(x_t.dtype)
 
             if emb is None:
                 emb = X_seq.new_empty(batch_size, T, num_nodes, gnn_out.size(-1))
             emb[:, t] = gnn_out
 
         assert emb is not None
+        if torch.isnan(emb).any() or torch.isinf(emb).any():
+            stats = {
+                "min": float(torch.min(emb)),
+                "max": float(torch.max(emb)),
+            }
+            raise RuntimeError(f"Invalid values in encoder embeddings: {stats}")
         rnn_in = emb.permute(0, 2, 1, 3).reshape(batch_size * num_nodes, T, -1)
         rnn_dtype = rnn_in.dtype
         rnn_input = rnn_in.float()
@@ -649,6 +684,21 @@ class MultiTaskGNNSurrogate(nn.Module):
             rnn_out, _ = self.rnn(rnn_input)
         rnn_out = rnn_out.to(dtype=rnn_dtype)
         rnn_out = rnn_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
+        if torch.isnan(rnn_out).any() or torch.isinf(rnn_out).any():
+            stats = {
+                "min": float(torch.min(rnn_out)),
+                "max": float(torch.max(rnn_out)),
+            }
+            input_stats = {
+                "min": float(torch.min(rnn_input)),
+                "max": float(torch.max(rnn_input)),
+            }
+            logger.error(
+                "RNN produced invalid output: %s; input stats=%s",
+                stats,
+                input_stats,
+            )
+            raise RuntimeError(f"Invalid values in RNN output: {stats}")
 
         att_in = rnn_out.reshape(batch_size * num_nodes, T, -1)
         # ``MultiheadAttention`` can produce ``NaN`` outputs under autocast when
@@ -663,12 +713,22 @@ class MultiTaskGNNSurrogate(nn.Module):
             if hasattr(torch, "autocast")
             else nullcontext()
         )
+        if torch.isnan(att_in_fp32).any() or torch.isinf(att_in_fp32).any():
+            stats = {
+                "min": float(torch.min(att_in_fp32)),
+                "max": float(torch.max(att_in_fp32)),
+            }
+            raise RuntimeError(f"Invalid values in attention input: {stats}")
         with autocast_ctx:
             att_out, _ = self.time_att(att_in_fp32, att_in_fp32, att_in_fp32)
         att_out = att_out.to(dtype=att_dtype)
         att_out = att_out.reshape(batch_size, num_nodes, T, -1).permute(0, 2, 1, 3)
+        if torch.isnan(att_out).any():
+            raise RuntimeError("NaN detected in temporal attention output")
 
         node_pred = self.node_decoder(att_out)
+        if torch.isnan(node_pred).any():
+            raise RuntimeError("NaN detected in node decoder output")
         pump_corr = None
         if self.num_pumps > 0 and self.pump_gain is not None:
             pump_start = self.pump_feature_offset
@@ -711,6 +771,8 @@ class MultiTaskGNNSurrogate(nn.Module):
             if press_stack.shape != node_pred[..., 0].shape:
                 press_stack = press_stack.view_as(node_pred[..., 0])
             node_pred[..., 0] = node_pred[..., 0] + press_stack
+        if torch.isnan(node_pred).any():
+            raise RuntimeError("NaN detected after pump correction/skip connection")
 
         src = edge_index[0]
         tgt = edge_index[1]
@@ -719,6 +781,8 @@ class MultiTaskGNNSurrogate(nn.Module):
         h_diff = h_src - h_tgt
         edge_emb = torch.cat([h_src, h_tgt, h_diff], dim=-1)
         edge_pred = self.edge_decoder(edge_emb)
+        if torch.isnan(edge_pred).any():
+            raise RuntimeError("NaN detected in edge decoder output")
 
         if hasattr(self, "tank_indices") and len(getattr(self, "tank_indices")) > 0:
             if not hasattr(self, "tank_levels") or self.tank_levels.size(0) != batch_size:

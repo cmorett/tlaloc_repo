@@ -900,6 +900,9 @@ def _run_single_scenario(
         )
 
         events = []
+        hours = int(
+            wn.options.time.duration // wn.options.time.hydraulic_timestep
+        )
         if surge:
             events.append("local_surge")
         if pump_out:
@@ -921,6 +924,27 @@ def _run_single_scenario(
                 link_outputs = getattr(sim_results, "link", None)
                 status_df = _get_link_output(link_outputs, "status")
                 setting_df = _get_link_output(link_outputs, "setting")
+
+            pressures_df = sim_results.node["pressure"]
+            times = pressures_df.index
+            if len(times) <= hours:
+                logger.warning(
+                    "Scenario %d attempt %d produced only %d timesteps (need %d); retrying",
+                    idx,
+                    attempt,
+                    len(times),
+                    hours + 1,
+                )
+                continue
+            min_pressure = float(np.min(pressures_df.values))
+            if min_pressure < -20.0:
+                logger.warning(
+                    "Scenario %d attempt %d reached unrealistic pressure %.2f m; retrying",
+                    idx,
+                    attempt,
+                    min_pressure,
+                )
+                continue
             break
         except wntr.epanet.exceptions.EpanetException:
             if attempt == 2:

@@ -57,6 +57,10 @@ generates these arrays as well as the graph ``edge_index``.  Two dataset formats
 are
 supported:
 
+The generator automatically retries a randomized scenario whenever EPANET
+terminates early or produces unphysical negative pressures, preventing those
+failures from contaminating the saved datasets.
+
 > **Heads up:** After updating to this release, rerun `scripts/data_generation.py` so the saved datasets include the corrected, in-sync pump commands (and the pump head features introduced in previous releases). Legacy `.npy` files still load, but the surrogate will lack the additional context that resolves the booster district bias.
 
 1. **Dictionary format** – each entry of ``X`` is a dictionary containing the
@@ -241,6 +245,9 @@ sequentially to keep memory usage low.
 Mixed precision training is enabled by default via the ``--amp`` flag which
 wraps model evaluations in ``torch.cuda.amp.autocast`` and scales the loss for
 improved GPU throughput. Use ``--no-amp`` to run exclusively in full precision.
+The hydraulic encoder and recurrent layers automatically execute in float32
+while ``--amp`` is active so the large hydraulic coefficients remain numerically
+stable.
 
 A physics-informed mass balance penalty is applied by default to encourage
 conservation of predicted flows.  Because each pipe appears twice in the graph

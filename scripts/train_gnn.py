@@ -2074,13 +2074,38 @@ def train_sequence(
                     press_pred = _denormalize_pressures(press_pred, mean, std)
                     press_true = _denormalize_pressures(press_true, mean, std)
             press_mae = torch.mean(torch.abs(press_pred - press_true))
+            invalid_components = []
             for name, val in [
                 ("pressure", loss_press),
                 ("chlorine", loss_cl),
                 ("flow", loss_edge),
             ]:
                 if (not torch.isfinite(val)) or val.item() > 1e6:
-                    raise AssertionError(f"{name} loss {val.item():.3e} invalid")
+                    invalid_components.append((name, float(val.detach().cpu())))
+            if invalid_components:
+                press_snapshot = pred_nodes[..., 0].detach()
+                tgt_snapshot = target_nodes[..., 0].detach()
+                with torch.no_grad():
+                    snap_stats = {
+                        "pred_min": float(torch.min(press_snapshot)),
+                        "pred_max": float(torch.max(press_snapshot)),
+                        "tgt_min": float(torch.min(tgt_snapshot)),
+                        "tgt_max": float(torch.max(tgt_snapshot)),
+                    }
+                    x_stats = {
+                        "feature_min": float(torch.min(X_seq)),
+                        "feature_max": float(torch.max(X_seq)),
+                    }
+                logger.error(
+                    "Non-finite loss components detected: %s; "
+                    "pressure stats=%s; feature stats=%s",
+                    invalid_components,
+                    snap_stats,
+                    x_stats,
+                )
+                raise AssertionError(
+                    "; ".join(f"{name} loss {val:.3e} invalid" for name, val in invalid_components)
+                )
             if physics_loss:
                 flows_mb = edge_preds.squeeze(-1)
                 if hasattr(model, "y_mean") and model.y_mean is not None:
