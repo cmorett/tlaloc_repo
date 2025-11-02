@@ -257,6 +257,33 @@ def _resolve_elevation_index(
     return None
 
 
+def _attach_pump_metadata(
+    model: nn.Module,
+    wn: wntr.network.WaterNetworkModel,
+    device: torch.device,
+) -> None:
+    """Annotate ``model`` with pump start/end node indices for feature assembly."""
+
+    pump_names = list(wn.pump_name_list)
+    if not pump_names:
+        model.pump_start_indices = torch.empty(0, dtype=torch.long, device=device)
+        model.pump_end_indices = torch.empty(0, dtype=torch.long, device=device)
+        return
+
+    node_index = {name: idx for idx, name in enumerate(wn.node_name_list)}
+    pump_start: List[int] = []
+    pump_end: List[int] = []
+    for pump_name in pump_names:
+        pump = wn.get_link(pump_name)
+        start = pump.start_node.name if hasattr(pump.start_node, "name") else pump.start_node
+        end = pump.end_node.name if hasattr(pump.end_node, "name") else pump.end_node
+        pump_start.append(node_index[start])
+        pump_end.append(node_index[end])
+
+    model.pump_start_indices = torch.tensor(pump_start, dtype=torch.long, device=device)
+    model.pump_end_indices = torch.tensor(pump_end, dtype=torch.long, device=device)
+
+
 def _compute_head_loss_from_preds(
     node_outputs: torch.Tensor,
     edge_outputs: torch.Tensor,
@@ -3309,6 +3336,7 @@ def main(args: argparse.Namespace):
                 pump_feature_offset=pump_offset,
                 pump_feature_repeats=effective_pump_blocks,
             ).to(device)
+            _attach_pump_metadata(model, wn, device)
             tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
             model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
             areas = []
@@ -3368,6 +3396,7 @@ def main(args: argparse.Namespace):
                 num_pumps=len(wn.pump_name_list),
                 pump_feature_offset=pump_offset,
             ).to(device)
+            _attach_pump_metadata(model, wn, device)
             tank_indices = [i for i, n in enumerate(wn.node_name_list) if n in wn.tank_name_list]
             model.tank_indices = torch.tensor(tank_indices, device=device, dtype=torch.long)
             areas = []

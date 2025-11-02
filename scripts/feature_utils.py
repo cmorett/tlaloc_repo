@@ -487,12 +487,20 @@ def build_edge_attr(
             coeff_a,
             coeff_b,
             coeff_c,
-            1.0,
-            pump_col,
         ]
+        direction_idx = len(attr_fwd)
+        attr_fwd.append(1.0)
+        pump_speed_idx = len(attr_fwd)
+        attr_fwd.append(pump_col)
+        pump_head_idx = len(attr_fwd)
+        attr_fwd.append(0.0)
+        headloss_idx = len(attr_fwd)
+        attr_fwd.append(0.0)
         attr_rev = attr_fwd.copy()
+        attr_rev[direction_idx] = 0.0
         if is_pump:
-            attr_rev[-2] = 0.0
+            attr_rev[pump_speed_idx] = pump_col
+            attr_rev[pump_head_idx] = 0.0
         attr_dict[(i, j)] = attr_fwd
         attr_dict[(j, i)] = attr_rev
     return np.array([
@@ -588,6 +596,7 @@ def build_static_node_features(
     wn: wntr.network.WaterNetworkModel,
     num_pumps: int,
     include_chlorine: bool = True,
+    pump_feature_repeats: int = 1,
 ) -> torch.Tensor:
     """Return per-node static features including pump incidence signs.
 
@@ -595,18 +604,23 @@ def build_static_node_features(
     ``[demand, 0, 0, 0, elevation, pump_1, ..., pump_N]`` corresponding to
     demand, pressure, chlorine, hydraulic head and elevation respectively.
     Without chlorine the layout becomes
-    ``[demand, 0, 0, elevation, pump_1, ..., pump_N]``. Pump columns now store
-    extended incidence weights: ``-1`` at suction nodes, ``+1`` at discharge
-    nodes and decayed positive weights for downstream junctions that convey the
-    current pump speed information deeper into the network. Runtime feature
-    assembly multiplies these values by the instantaneous pump speeds.
+    ``[demand, 0, 0, elevation, pump_1, ..., pump_N]``. When
+    ``pump_feature_repeats`` is greater than one the pump incidence matrix is
+    repeated for each block so additional dynamic pump features (e.g., head rise)
+    can be injected at runtime. Pump columns store extended incidence weights:
+    ``-1`` at suction nodes, ``+1`` at discharge nodes and decayed positive
+    weights for downstream junctions that convey pump information deeper into
+    the network. Runtime feature assembly multiplies these values by the
+    instantaneous pump attributes (speeds, head rise, etc.).
     """
 
     num_nodes = len(wn.node_name_list)
+    repeats = max(int(pump_feature_repeats), 1) if num_pumps > 0 else 0
     base_dim = 5 if include_chlorine else 4
     head_idx = 3 if include_chlorine else 2
     elev_idx = head_idx + 1
-    feats = torch.zeros(num_nodes, base_dim + num_pumps, dtype=torch.float32)
+    pump_cols = num_pumps * repeats
+    feats = torch.zeros(num_nodes, base_dim + pump_cols, dtype=torch.float32)
     for idx, name in enumerate(wn.node_name_list):
         node = wn.get_node(name)
         if name in wn.junction_name_list:
@@ -627,7 +641,9 @@ def build_static_node_features(
             build_pump_node_matrix(wn, dtype=np.float32)
         )
         offset = base_dim
-        feats[:, offset : offset + num_pumps] = pump_layout
+        for repeat in range(repeats):
+            start = offset + repeat * num_pumps
+            feats[:, start : start + num_pumps] = pump_layout
     return feats
 
 
@@ -661,13 +677,40 @@ def prepare_node_features(
     head_idx = base_dim - 2
     elev_idx = base_dim - 1
     pump_offset = base_dim
-    if template.size(1) < pump_offset + num_pumps:
+    if num_pumps:
+        repeats = int(getattr(model, "pump_feature_repeats", 1) or 1)
+    else:
+        repeats = 0
+    total_pump_cols = num_pumps * repeats
+    if num_pumps and template.size(1) < pump_offset + total_pump_cols:
         raise ValueError(
             "Static feature template does not include pump columns consistent with pump speeds"
         )
-    pump_layout = template[:, pump_offset : pump_offset + num_pumps]
-    pump_layout = pump_layout.to(dtype=torch.float32, device=template.device)
+    if total_pump_cols > 0:
+        pump_layout_full = template[:, pump_offset : pump_offset + total_pump_cols]
+        pump_layout_full = pump_layout_full.to(dtype=torch.float32, device=template.device)
+        pump_layout_view = pump_layout_full.view(num_nodes, repeats, num_pumps)
+    else:
+        pump_layout_full = template.new_zeros((num_nodes, 0))
+        pump_layout_view = None
     pump_speeds = pump_speeds.to(dtype=torch.float32, device=template.device)
+
+    def _compute_pump_heads_from_state(head_tensor: torch.Tensor) -> torch.Tensor:
+        if num_pumps == 0:
+            return torch.zeros(head_tensor.shape[:-1] + (0,), device=head_tensor.device, dtype=head_tensor.dtype)
+        start_idx = getattr(model, "pump_start_indices", None)
+        end_idx = getattr(model, "pump_end_indices", None)
+        if start_idx is None or end_idx is None or len(start_idx) == 0:
+            return torch.zeros(head_tensor.shape[:-1] + (num_pumps,), device=head_tensor.device, dtype=head_tensor.dtype)
+        start_idx = start_idx.to(device=head_tensor.device)
+        end_idx = end_idx.to(device=head_tensor.device)
+        if head_tensor.dim() == 1:
+            return head_tensor[end_idx] - head_tensor[start_idx]
+        if head_tensor.dim() == 2:
+            return head_tensor[:, end_idx] - head_tensor[:, start_idx]
+        if head_tensor.dim() == 3:
+            return head_tensor[..., end_idx] - head_tensor[..., start_idx]
+        raise ValueError("Unsupported head tensor rank for pump head computation")
     pressures = pressures.to(dtype=torch.float32, device=template.device)
     if chlorine is not None:
         chlorine = chlorine.to(dtype=torch.float32, device=template.device)
@@ -694,7 +737,7 @@ def prepare_node_features(
             if reservoir_mask.any():
                 head = torch.where(reservoir_mask.unsqueeze(0), pressures, head)
         feats[:, :, head_idx] = head
-        if num_pumps:
+        if num_pumps and repeats > 0:
             speeds = pump_speeds
             if speeds.dim() == 1:
                 speeds = speeds.view(1, -1).expand(batch_size, -1)
@@ -707,8 +750,42 @@ def prepare_node_features(
                     )
             else:
                 raise ValueError("Pump speeds must be 1D or 2D tensor")
-            pump_vals = pump_layout.unsqueeze(0) * speeds.unsqueeze(1)
-            feats[:, :, pump_offset : pump_offset + num_pumps] = pump_vals
+
+            pump_inputs: List[torch.Tensor] = [speeds]
+            if repeats >= 2:
+                head_inputs = _compute_pump_heads_from_state(head)
+                if head_inputs.dim() == 1:
+                    head_inputs = head_inputs.view(1, -1).expand(batch_size, -1)
+                elif head_inputs.dim() == 2 and head_inputs.size(0) == 1 and batch_size > 1:
+                    head_inputs = head_inputs.expand(batch_size, -1)
+                pump_inputs.append(head_inputs)
+
+            pump_feat_tensor = torch.zeros(
+                batch_size,
+                num_nodes,
+                total_pump_cols,
+                device=template.device,
+                dtype=torch.float32,
+            )
+
+            for repeat_idx in range(repeats):
+                layout_block = pump_layout_view[:, repeat_idx, :] if pump_layout_view is not None else None
+                if layout_block is None:
+                    continue
+                layout_block = layout_block.unsqueeze(0).expand(batch_size, num_nodes, num_pumps)
+                if repeat_idx < len(pump_inputs):
+                    input_block = pump_inputs[repeat_idx]
+                else:
+                    input_block = torch.zeros_like(pump_inputs[0])
+                if input_block.dim() == 1:
+                    input_block = input_block.view(1, -1).expand(batch_size, -1)
+                pump_feat_tensor[
+                    :,
+                    :,
+                    repeat_idx * num_pumps : (repeat_idx + 1) * num_pumps,
+                ] = layout_block * input_block.unsqueeze(1)
+
+            feats[:, :, pump_offset : pump_offset + total_pump_cols] = pump_feat_tensor
         in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
         if in_dim is not None:
             feats = feats[:, :, :in_dim]
@@ -742,13 +819,30 @@ def prepare_node_features(
         if reservoir_mask.any():
             head = torch.where(reservoir_mask, pressures, head)
     feats[:, head_idx] = head
-    if num_pumps:
+    if num_pumps and repeats > 0:
         speeds = pump_speeds.reshape(-1)
         if speeds.numel() != num_pumps:
             raise ValueError(
                 f"Pump speed dimension mismatch: expected {num_pumps}, got {speeds.numel()}"
             )
-        feats[:, pump_offset : pump_offset + num_pumps] = pump_layout * speeds
+        head_inputs = None
+        if repeats >= 2:
+            head_vals = _compute_pump_heads_from_state(head)
+            head_inputs = head_vals.reshape(-1)
+        for repeat_idx in range(repeats):
+            layout_block = pump_layout_view[:, repeat_idx, :] if pump_layout_view is not None else None
+            if layout_block is None:
+                continue
+            if repeat_idx == 0:
+                input_block = speeds
+            elif repeat_idx == 1 and head_inputs is not None:
+                input_block = head_inputs
+            else:
+                input_block = torch.zeros_like(speeds)
+            feats[
+                :,
+                pump_offset + repeat_idx * num_pumps : pump_offset + (repeat_idx + 1) * num_pumps,
+            ] = layout_block * input_block
     in_dim = getattr(getattr(model, "layers", [None])[0], "in_channels", None)
     if in_dim is not None:
         feats = feats[:, :in_dim]

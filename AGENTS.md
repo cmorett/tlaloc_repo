@@ -18,6 +18,7 @@ for EPANET water distribution models. The main example network is `CTown.inp`.
   - `data_generation.py` – create randomized simulation scenarios and produce training datasets. It also stores the node order in `node_names.npy`.
   - `experiments_validation.py` – validate the surrogate, compare baselines and aggregate results.
   - `metrics.py` – report surrogate accuracy, MPC control and runtime metrics.
+  - `diagnose_pump_cluster.py` – dump per-node residuals, pump head rise and unit head loss diagnostics for trained checkpoints.
   - `mpc_control.py` – run gradient-based MPC using the trained surrogate.
   - `feature_utils.py` – shared feature construction and normalization helpers.
   - `ablation_study.py` – run a small grid of model variants and report validation pressure MAE.

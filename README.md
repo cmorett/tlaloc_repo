@@ -78,6 +78,21 @@ the node ordering used to build the feature matrices.  ``train_gnn.py`` verifies
 that the loaded features align with this reference list and raises an error if
 any nodes are missing or out of order.
 
+To better capture fast booster transients the generator now exposes
+``--hydraulic-timestep`` (in seconds). Passing ``--hydraulic-timestep 900`` runs
+EPANET at the native 15-minute resolution. Remember to increase the
+``--sequence-length`` accordingly (``96`` covers a full 24-hour horizon at 900 s
+per step):
+
+```bash
+python scripts/data_generation.py \
+    --num-scenarios 200 \
+    --hydraulic-timestep 900 \
+    --sequence-length 96 \
+    --no-include-chlorine \
+    --output-dir data/seq96_head_15m
+```
+
 All plots generated during training, validation and MPC experiments are
 saved under the top-level ``plots/`` directory.  The scripts automatically
 create this folder if it does not yet exist. After each training run
@@ -188,6 +203,27 @@ python scripts/train_gnn.py \
 ```
 Chlorine supervision is disabled by default. Pass a positive weight such as
 ``--w-cl 1.0`` to train on chlorine again.
+
+## Diagnostics
+
+Use ``scripts/diagnose_pump_cluster.py`` to profile per-node residuals and pump
+head/flow conditions over time for any trained checkpoint. The script produces
+three artefacts under ``logs/``: a long-form CSV (`..._val_<timestamp>.csv`)
+with per-timestep residuals, a per-node MAE summary CSV and a JSON synopsis of
+cluster versus network-wide behaviour. Example:
+
+```bash
+python scripts/diagnose_pump_cluster.py \
+    --model models/gnn_surrogate_seq96_head15m_e6_seq96_head15m_e6.pth \
+    --data-dir data/seq96_head_15m \
+    --split val \
+    --output-prefix headfix_15m
+```
+
+By default the script normalises the dataset using the checkpoint's stored
+statistics and reports pump head rise, unit head loss for the PU8/PU9 district
+and the requested cluster of nodes. Use ``--no-normalize`` if the dataset has
+already been scaled.
 
 After training you can sanity-check the historical PU8/PU9 district by running
 ``python eval_cluster.py`` which inspects ``logs/eval_sequence_node_errors.csv``.

@@ -275,7 +275,11 @@ def load_network(
 
     static_feats = None
     if return_features:
-        static_feats = build_static_node_features(wn, len(wn.pump_name_list))
+        static_feats = build_static_node_features(
+            wn,
+            len(wn.pump_name_list),
+            pump_feature_repeats=2 if wn.pump_name_list else 0,
+        )
 
     if return_edge_attr:
         edge_attr = build_edge_attr(wn, edge_index.numpy()).astype(np.float32)
@@ -669,6 +673,19 @@ def load_surrogate_model(
         ).to(device)
     else:
         model = GNNSurrogate(conv_layers, fc_out=fc_layer).to(device)
+
+    if ckpt_meta is not None:
+        pump_repeats_meta = int(ckpt_meta.get("pump_feature_repeats", 1) or 1)
+        model.pump_feature_repeats = pump_repeats_meta
+        if "has_pump_head_features" in ckpt_meta:
+            model.has_pump_head_features = bool(ckpt_meta["has_pump_head_features"])
+        else:
+            model.has_pump_head_features = pump_repeats_meta >= 2
+    else:
+        if not hasattr(model, "pump_feature_repeats"):
+            model.pump_feature_repeats = 1 if getattr(model, "num_pumps", 0) else 0
+        if not hasattr(model, "has_pump_head_features"):
+            model.has_pump_head_features = getattr(model, "pump_feature_repeats", 0) >= 2
 
     tank_keys = ["tank_indices", "tank_areas", "tank_edges", "tank_signs"]
     present_tanks = [k for k in tank_keys if k in state]
@@ -1947,6 +1964,21 @@ def main():
     except FileNotFoundError as e:
         print(e)
         return
+
+    if pump_names:
+        pump_start_idx = []
+        pump_end_idx = []
+        for pname in pump_names:
+            pump = wn.get_link(pname)
+            start = pump.start_node.name if hasattr(pump.start_node, "name") else pump.start_node
+            end = pump.end_node.name if hasattr(pump.end_node, "name") else pump.end_node
+            pump_start_idx.append(node_to_index[start])
+            pump_end_idx.append(node_to_index[end])
+        model.pump_start_indices = torch.tensor(pump_start_idx, dtype=torch.long, device=device)
+        model.pump_end_indices = torch.tensor(pump_end_idx, dtype=torch.long, device=device)
+    else:
+        model.pump_start_indices = torch.tensor([], dtype=torch.long, device=device)
+        model.pump_end_indices = torch.tensor([], dtype=torch.long, device=device)
     norm_md5 = getattr(model, "norm_hash", None)
     model_layers = len(getattr(model, "layers", []))
     model_hidden = getattr(getattr(model, "layers", [None])[0], "out_channels", None)

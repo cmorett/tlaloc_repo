@@ -278,7 +278,10 @@ def _prepare_features(
         _prepare_features, "include_chlorine", True
     ) != include_chlorine:
         _prepare_features.template = build_static_node_features(
-            wn, num_pumps, include_chlorine=include_chlorine
+            wn,
+            num_pumps,
+            include_chlorine=include_chlorine,
+            pump_feature_repeats=int(getattr(model, "pump_feature_repeats", 1) or 1),
         )
         _prepare_features.include_chlorine = include_chlorine
         _prepare_features.node_types = torch.tensor(
@@ -1052,13 +1055,31 @@ def main() -> None:
         norm_stats_path=str(args.norm_stats) if args.norm_stats else None,
         force_arch_mismatch=args.force_arch_mismatch,
     )
+    if wn.pump_name_list:
+        pump_start_idx = []
+        pump_end_idx = []
+        node_index = {name: idx for idx, name in enumerate(wn.node_name_list)}
+        for pname in wn.pump_name_list:
+            pump = wn.get_link(pname)
+            start = pump.start_node.name if hasattr(pump.start_node, "name") else pump.start_node
+            end = pump.end_node.name if hasattr(pump.end_node, "name") else pump.end_node
+            pump_start_idx.append(node_index[start])
+            pump_end_idx.append(node_index[end])
+        model.pump_start_indices = torch.tensor(pump_start_idx, dtype=torch.long, device=device)
+        model.pump_end_indices = torch.tensor(pump_end_idx, dtype=torch.long, device=device)
+    else:
+        model.pump_start_indices = torch.tensor([], dtype=torch.long, device=device)
+        model.pump_end_indices = torch.tensor([], dtype=torch.long, device=device)
     torch.set_grad_enabled(False)
     include_chlorine = (
         getattr(model, "y_mean_node", None) is not None
         and model.y_mean_node.size(-1) > 1
     )
     feature_template = build_static_node_features(
-        wn, len(pump_names), include_chlorine=include_chlorine
+        wn,
+        len(pump_names),
+        include_chlorine=include_chlorine,
+        pump_feature_repeats=int(getattr(model, "pump_feature_repeats", 1) or 1),
     )
     if args.debug:
         params = sum(p.numel() for p in model.parameters())

@@ -663,6 +663,7 @@ def _build_randomized_network(
     pump_step: float = DEFAULT_PUMP_STEP,
     demand_scale_min: float = 0.8,
     demand_scale_max: float = 1.2,
+    hydraulic_timestep: int = 3600,
 ) -> Tuple[wntr.network.WaterNetworkModel, Dict[str, np.ndarray], Dict[str, List[float]]]:
     """Create a network with randomized demand patterns and optional pump overrides.
 
@@ -675,12 +676,12 @@ def _build_randomized_network(
 
     wn = wntr.network.WaterNetworkModel(inp_file)
     wn.options.time.duration = 24 * 3600
-    wn.options.time.hydraulic_timestep = 3600
-    wn.options.time.quality_timestep = 3600
-    wn.options.time.report_timestep = 3600
+    wn.options.time.hydraulic_timestep = int(hydraulic_timestep)
+    wn.options.time.quality_timestep = int(hydraulic_timestep)
+    wn.options.time.report_timestep = int(hydraulic_timestep)
     wn.options.quality.parameter = "CHEMICAL"
 
-    hours = int(wn.options.time.duration // wn.options.time.hydraulic_timestep)
+    horizon_steps = int(wn.options.time.duration // wn.options.time.hydraulic_timestep)
 
     _jitter_control_thresholds(wn, control_threshold_jitter)
     _jitter_reservoir_heads(wn, reservoir_head_jitter)
@@ -701,7 +702,7 @@ def _build_randomized_network(
         node = wn.get_node(jname)
         ts = node.demand_timeseries_list[0]
         if ts.pattern is None:
-            base_mult = np.ones(hours, dtype=float)
+            base_mult = np.ones(horizon_steps, dtype=float)
         else:
             base_mult = np.array(ts.pattern.multipliers, dtype=float)
         multipliers = base_mult.copy()
@@ -723,7 +724,7 @@ def _build_randomized_network(
         start_node = random.choice(list(wn.junction_name_list))
         radius = random.randint(1, 2)
         nodes = [n for n in nx.ego_graph(G, start_node, radius=radius).nodes() if n in scale_dict]
-        start_h = random.randint(0, max(hours - 4, 0))
+        start_h = random.randint(0, max(horizon_steps - 4, 0))
         duration = random.randint(2, 4)
         factor = 1.8 if random.random() < 0.5 else 0.2
         for n in nodes:
@@ -738,19 +739,19 @@ def _build_randomized_network(
         rng_max = max(pump_speed_min, pump_speed_max)
         pump_controls = _sample_manual_pump_patterns(
             wn,
-            hours,
+            horizon_steps,
             pump_speed_min=rng_min,
             pump_speed_max=rng_max,
             pump_step=max(pump_step, 1e-6),
         )
     else:
-        pump_controls = {pn: [0.0] * hours for pn in wn.pump_name_list}
+        pump_controls = {pn: [0.0] * horizon_steps for pn in wn.pump_name_list}
         if uncontrolled_pumps:
             rng_min = min(pump_speed_min, pump_speed_max)
             rng_max = max(pump_speed_min, pump_speed_max)
             free_patterns = _sample_manual_pump_patterns(
                 wn,
-                hours,
+                horizon_steps,
                 pump_speed_min=rng_min,
                 pump_speed_max=rng_max,
                 pump_step=max(pump_step, 1e-6),
@@ -761,7 +762,7 @@ def _build_randomized_network(
     if paired_pump_override:
         _apply_paired_pump_patterns(
             pump_controls,
-            hours,
+            horizon_steps,
             pump_speed_min,
             pump_speed_max,
         )
@@ -769,10 +770,10 @@ def _build_randomized_network(
     # Inject pump outage by forcing a pump off for a short period
     if pump_outage and wn.pump_name_list:
         pump_id = random.choice(list(wn.pump_name_list))
-        start_h = random.randint(0, max(hours - 4, 0))
+        start_h = random.randint(0, max(horizon_steps - 4, 0))
         duration = random.randint(2, 4)
         speeds = pump_controls[pump_id]
-        for h in range(start_h, min(start_h + duration, hours)):
+        for h in range(start_h, min(start_h + duration, horizon_steps)):
             speeds[h] = 0.0
 
     # Inject pipe closure
@@ -789,7 +790,7 @@ def _build_randomized_network(
             pattern_dict[jname].multipliers = arr
         if wn.pump_name_list:
             pid = random.choice(list(wn.pump_name_list))
-            pump_controls[pid] = [0.0] * hours
+            pump_controls[pid] = [0.0] * horizon_steps
         if wn.pipe_name_list:
             pid = random.choice(list(wn.pipe_name_list))
             wn.get_link(pid).initial_status = LinkStatus.Closed
@@ -806,11 +807,11 @@ def _build_randomized_network(
                 )
                 spd_val = 0.0
             cleaned.append(spd_val)
-        if len(cleaned) < hours:
+        if len(cleaned) < horizon_steps:
             pad_value = cleaned[-1] if cleaned else 0.0
-            cleaned.extend([pad_value] * (hours - len(cleaned)))
-        elif len(cleaned) > hours:
-            cleaned = cleaned[:hours]
+            cleaned.extend([pad_value] * (horizon_steps - len(cleaned)))
+        elif len(cleaned) > horizon_steps:
+            cleaned = cleaned[:horizon_steps]
         pump_controls[pn] = cleaned
 
     for pn in wn.pump_name_list:
@@ -848,6 +849,7 @@ def _run_single_scenario(
     pump_step: float = DEFAULT_PUMP_STEP,
     demand_scale_min: float = 0.8,
     demand_scale_max: float = 1.2,
+    hydraulic_timestep: int = 3600,
 ) -> Optional[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
 ]:
@@ -897,10 +899,11 @@ def _run_single_scenario(
             pump_step=pump_step,
             demand_scale_min=demand_scale_min,
             demand_scale_max=demand_scale_max,
+            hydraulic_timestep=hydraulic_timestep,
         )
 
         events = []
-        hours = int(
+        horizon_steps = int(
             wn.options.time.duration // wn.options.time.hydraulic_timestep
         )
         if surge:
@@ -927,13 +930,13 @@ def _run_single_scenario(
 
             pressures_df = sim_results.node["pressure"]
             times = pressures_df.index
-            if len(times) <= hours:
+            if len(times) <= horizon_steps:
                 logger.warning(
                     "Scenario %d attempt %d produced only %d timesteps (need %d); retrying",
                     idx,
                     attempt,
                     len(times),
-                    hours + 1,
+                    horizon_steps + 1,
                 )
                 continue
             min_pressure = float(np.min(pressures_df.values))
@@ -1011,6 +1014,7 @@ def run_scenarios(
     pump_step: float = DEFAULT_PUMP_STEP,
     demand_scale_min: float = 0.8,
     demand_scale_max: float = 1.2,
+    hydraulic_timestep: int = 3600,
 ) -> List[
     Tuple[wntr.sim.results.SimulationResults, Dict[str, np.ndarray], Dict[str, List[float]]]
 ]:
@@ -1045,6 +1049,7 @@ def run_scenarios(
             pump_step=pump_step,
             demand_scale_min=demand_scale_min,
             demand_scale_max=demand_scale_max,
+            hydraulic_timestep=hydraulic_timestep,
         )
         if show_progress and tqdm is not None:
             raw_results = [
@@ -1194,20 +1199,37 @@ def build_sequence_dataset(
     node_index_map = {name: idx for idx, name in enumerate(node_names)}
     pump_edge_indices: Dict[str, Tuple[int, int]] = {}
     directed_edges: List[Tuple[int, int]] = []
+    edge_names: List[str] = []
+    edge_lengths: List[float] = []
+    is_pump_edge: List[bool] = []
     for link_name in wn_template.link_name_list:
         link = wn_template.get_link(link_name)
         i = node_index_map[link.start_node.name]
         j = node_index_map[link.end_node.name]
         directed_edges.append((i, j))
         directed_edges.append((j, i))
+        length_val = float(getattr(link, "length", 0.0) or 0.0)
+        edge_lengths.extend([length_val, length_val])
+        edge_names.extend([link_name, link_name])
+        is_pump = link_name in wn_template.pump_name_list
+        is_pump_edge.extend([is_pump, is_pump])
         if link_name in wn_template.pump_name_list:
             pump_edge_indices[link_name] = (len(directed_edges) - 2, len(directed_edges) - 1)
     edge_index_template = np.array(directed_edges, dtype=np.int64).T
     base_edge_attr_arr = build_edge_attr(wn_template, edge_index_template).astype(np.float64)
     base_edge_attr_arr[:, 2] = np.log1p(base_edge_attr_arr[:, 2])
+    direction_col_idx = base_edge_attr_arr.shape[1] - 4
+    pump_speed_col_idx = base_edge_attr_arr.shape[1] - 3
+    pump_head_col_idx = base_edge_attr_arr.shape[1] - 2
+    unit_headloss_col_idx = base_edge_attr_arr.shape[1] - 1
     for idx_fwd, idx_rev in pump_edge_indices.values():
-        base_edge_attr_arr[idx_fwd, -1] = 0.0
-        base_edge_attr_arr[idx_rev, -1] = 0.0
+        base_edge_attr_arr[idx_fwd, pump_speed_col_idx] = 0.0
+        base_edge_attr_arr[idx_rev, pump_speed_col_idx] = 0.0
+        base_edge_attr_arr[idx_rev, direction_col_idx] = 0.0
+        base_edge_attr_arr[idx_fwd, pump_head_col_idx] = 0.0
+        base_edge_attr_arr[idx_rev, pump_head_col_idx] = 0.0
+        base_edge_attr_arr[idx_fwd, unit_headloss_col_idx] = 0.0
+        base_edge_attr_arr[idx_rev, unit_headloss_col_idx] = 0.0
 
     pump_layout = build_pump_node_matrix(wn_template, dtype=np.float64)
 
@@ -1250,6 +1272,7 @@ def build_sequence_dataset(
         head_df = sim_results.node["head"]
         head_idx = {n: head_df.columns.get_loc(n) for n in head_df.columns}
         h_arr = head_df.to_numpy(dtype=np.float64)
+        head_cols = np.array([head_idx[n] for n in node_names], dtype=np.int64)
         pump_head_arr = np.zeros((num_pumps, len(times)), dtype=np.float64) if num_pumps else np.zeros((0, len(times)), dtype=np.float64)
         tank_level_arr = np.zeros((num_tanks, len(times)), dtype=np.float64) if num_tanks else np.zeros((0, len(times)), dtype=np.float64)
         if num_pumps:
@@ -1295,21 +1318,37 @@ def build_sequence_dataset(
                 if pump_head_arr.size
                 else pump_head_arr
             )
+            head_vector = np.nan_to_num(head_vector, nan=0.0, posinf=0.0, neginf=0.0)
             if num_tanks:
                 tank_step_idx = min(t, tank_level_arr.shape[1] - 1)
                 tank_vector = tank_level_arr[:, tank_step_idx]
             else:
                 tank_vector = np.empty((0,), dtype=np.float64)
             node_pump = pump_layout * pump_vector
+            node_pump_head = pump_layout * head_vector if num_pumps else pump_layout
+            node_pump_head = pump_layout * head_vector if num_pumps else pump_layout
             edge_attr_t = base_edge_attr_arr.copy()
+            head_step_idx = min(t, h_arr.shape[0] - 1)
+            head_snapshot = h_arr[head_step_idx]
             if pump_edge_indices:
                 for pump_name, (idx_fwd, idx_rev) in pump_edge_indices.items():
                     pump_idx = pump_index_map.get(pump_name)
                     if pump_idx is None:
                         continue
                     speed = float(pump_vector[pump_idx]) if num_pumps else 0.0
-                    edge_attr_t[idx_fwd, -1] = speed
-                    edge_attr_t[idx_rev, -1] = speed
+                    edge_attr_t[idx_fwd, pump_speed_col_idx] = speed
+                    edge_attr_t[idx_rev, pump_speed_col_idx] = speed
+            for edge_idx, (src_idx, dst_idx) in enumerate(directed_edges):
+                src_head = float(head_snapshot[head_cols[src_idx]])
+                dst_head = float(head_snapshot[head_cols[dst_idx]])
+                if is_pump_edge[edge_idx]:
+                    edge_attr_t[edge_idx, pump_head_col_idx] = dst_head - src_head
+                length_m = edge_lengths[edge_idx]
+                if length_m > 0.0:
+                    length_km = length_m / 1000.0
+                    edge_attr_t[edge_idx, unit_headloss_col_idx] = (src_head - dst_head) / max(length_km, 1e-6)
+                else:
+                    edge_attr_t[edge_idx, unit_headloss_col_idx] = 0.0
             edge_attr_t = np.nan_to_num(edge_attr_t, nan=0.0, posinf=0.0, neginf=0.0)
             edge_attr_seq.append(edge_attr_t.astype(np.float64))
             feat_nodes = []
@@ -1352,6 +1391,8 @@ def build_sequence_dataset(
                 feat.append(elev)
                 if num_pumps:
                     feat.extend(node_pump[layout_idx].tolist())
+                    feat.extend(node_pump_head[layout_idx].tolist())
+                    feat.extend(node_pump_head[layout_idx].tolist())
                 if num_tanks:
                     feat.extend(tank_vector.tolist())
                 feat_nodes.append(feat)
@@ -1489,6 +1530,7 @@ def build_dataset(
             pump_vector = np.nan_to_num(pump_vector, nan=0.0, posinf=0.0, neginf=0.0)
             head_step_idx = min(i, pump_head_arr.shape[1] - 1) if pump_head_arr.size else 0
             head_vector = pump_head_arr[:, head_step_idx] if pump_head_arr.size else pump_head_arr
+            head_vector = np.nan_to_num(head_vector, nan=0.0, posinf=0.0, neginf=0.0)
             if num_tanks:
                 tank_vector = tank_level_arr[:, min(i, tank_level_arr.shape[1] - 1)]
             else:
@@ -1764,6 +1806,12 @@ def main() -> None:
         help="Length of sequences to store in the dataset (1 for single-step)",
     )
     parser.add_argument(
+        "--hydraulic-timestep",
+        type=int,
+        default=3600,
+        help="Hydraulic simulation timestep in seconds",
+    )
+    parser.add_argument(
         "--show-progress",
         action="store_true",
         help="Display a progress bar during scenario simulation",
@@ -1833,6 +1881,7 @@ def main() -> None:
         pump_step=args.pump_step,
         demand_scale_min=args.demand_scale_min,
         demand_scale_max=args.demand_scale_max,
+        hydraulic_timestep=args.hydraulic_timestep,
     )
 
     if args.exclude_stress:
@@ -1917,6 +1966,9 @@ def main() -> None:
         json.dump(summary, f, indent=2)
 
     wn_template = wntr.network.WaterNetworkModel(str(inp_file))
+    wn_template.options.time.hydraulic_timestep = int(args.hydraulic_timestep)
+    wn_template.options.time.quality_timestep = int(args.hydraulic_timestep)
+    wn_template.options.time.report_timestep = int(args.hydraulic_timestep)
     edge_attr_train_seq = edge_attr_val_seq = edge_attr_test_seq = None
     num_nodes = len(wn_template.node_name_list)
     base_feature_dim = 5 if args.include_chlorine else 4
@@ -2039,8 +2091,33 @@ def main() -> None:
     base_layout.extend(["head", "elevation"])
     if wn_template.pump_name_list:
         base_layout.extend([f"pump_speed_cmd_{p}" for p in wn_template.pump_name_list])
+        base_layout.extend([f"pump_headrise_{p}" for p in wn_template.pump_name_list])
     if wn_template.tank_name_list:
         base_layout.extend([f"tank_level_{t}" for t in wn_template.tank_name_list])
+    edge_feature_layout = [
+        "length_m",
+        "diameter_m",
+        "log1p_roughness",
+        "valve_setting",
+        "valve_open_flag",
+        "valve_closed_flag",
+        "valve_active_flag",
+        "valve_minor_loss",
+        "pump_curve_a",
+        "pump_curve_b",
+        "pump_curve_c",
+        "forward_direction_flag",
+        "pump_speed_cmd",
+        "pump_head_rise",
+        "unit_head_loss_per_km",
+    ]
+    edge_dim = edge_attr.shape[1]
+    edge_dynamic_columns = {
+        "direction_flag": edge_dim - 4,
+        "pump_speed": edge_dim - 3,
+        "pump_head_rise": edge_dim - 2,
+        "unit_head_loss": edge_dim - 1,
+    }
     manifest = {
         "num_extreme": int(extreme_count),
         "total_scenarios": len(manifest_records),
@@ -2050,9 +2127,12 @@ def main() -> None:
         "node_feature_layout": base_layout,
         "scenarios": manifest_records,
         "pump_names": list(wn_template.pump_name_list),
-        "pump_feature_repeats": 1 if wn_template.pump_name_list else 0,
+        "pump_feature_repeats": 2 if wn_template.pump_name_list else 0,
         "tank_names": list(wn_template.tank_name_list),
         "tank_feature_repeats": 1 if wn_template.tank_name_list else 0,
+        "edge_feature_layout": edge_feature_layout,
+        "edge_dynamic_columns": edge_dynamic_columns,
+        "hydraulic_timestep_seconds": int(args.hydraulic_timestep),
     }
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
