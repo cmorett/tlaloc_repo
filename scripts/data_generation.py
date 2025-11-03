@@ -2092,6 +2092,7 @@ def main() -> None:
     if wn_template.pump_name_list:
         base_layout.extend([f"pump_speed_cmd_{p}" for p in wn_template.pump_name_list])
         base_layout.extend([f"pump_headrise_{p}" for p in wn_template.pump_name_list])
+        base_layout.extend([f"pump_unit_headloss_{p}" for p in wn_template.pump_name_list])
     if wn_template.tank_name_list:
         base_layout.extend([f"tank_level_{t}" for t in wn_template.tank_name_list])
     edge_feature_layout = [
@@ -2127,7 +2128,7 @@ def main() -> None:
         "node_feature_layout": base_layout,
         "scenarios": manifest_records,
         "pump_names": list(wn_template.pump_name_list),
-        "pump_feature_repeats": 2 if wn_template.pump_name_list else 0,
+        "pump_feature_repeats": 3 if wn_template.pump_name_list else 0,
         "tank_names": list(wn_template.tank_name_list),
         "tank_feature_repeats": 1 if wn_template.tank_name_list else 0,
         "edge_feature_layout": edge_feature_layout,
